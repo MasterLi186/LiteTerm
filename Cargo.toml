@@ -1,0 +1,24 @@
+[package]
+name = "guishell"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight native Linux SSH client"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11" }
+adw = { package = "libadwaita", version = "0.9" }
+vte = { package = "vte4", version = "0.10" }
+cairo-rs = { version = "0.22", features = ["png"] }
+ssh2 = "0.9"
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+log = "0.4"
+env_logger = "0.11"
+crc32fast = "1"
+shellexpand = "3"
+
+[dev-dependencies]
+tempfile = "3"

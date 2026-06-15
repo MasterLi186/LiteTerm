@@ -1,0 +1,7 @@
+/target
+/dist
+/node_modules
+/.dev-deps
+/.superpowers
+src-tauri/target
+src-tauri/gen

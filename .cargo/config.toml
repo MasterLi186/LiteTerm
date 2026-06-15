@@ -1,0 +1,10 @@
+# Local dev dependency overlay for GTK4/libadwaita/VTE headers and pkg-config
+# This is needed because -dev packages are not installed system-wide.
+# Once system -dev packages are installed (sudo apt install libgtk-4-dev libadwaita-1-dev),
+# this config can be removed.
+#
+# VTE4 0.70.6 is compiled from source and installed to ~/.local.
+
+[env]
+PKG_CONFIG_PATH = "/home/lfl/ssd/code/guishell/.dev-deps/pkgconfig:/home/lfl/.local/lib/x86_64-linux-gnu/pkgconfig"
+LD_LIBRARY_PATH = "/home/lfl/.local/lib/x86_64-linux-gnu"

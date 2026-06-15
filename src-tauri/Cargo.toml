@@ -1,0 +1,29 @@
+[package]
+name = "guishell-tauri"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight SSH client"
+
+[lib]
+name = "guishell_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+ssh2 = "0.9"
+secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
+toml = "0.8"
+dirs = "6"
+log = "0.4"
+env_logger = "0.11"
+shellexpand = "3"
+crc32fast = "1"
+portable-pty = "0.8"
+uuid = { version = "1", features = ["v4"] }

@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'DejaVu Sans Mono', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #e6edf3;
+  background-color: #0d1117;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* Scale sidebar and file browser text for readability */
+aside, .file-browser-panel {
+  font-size: 13px;
+}
+
+aside .text-xs, .file-browser-panel .text-xs {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Disable browser default right-click menu on sidebar, file browser, etc.
+   Terminal area has its own custom context menu in React. */
+aside, .file-browser-panel, .tab-bar {
+  -webkit-app-region: no-drag;
+}
+
+/* xterm.js terminal should be selectable */
+.xterm {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Prevent xterm internal elements from overflowing their container.
+   The container receives explicit pixel dimensions from the resize handler,
+   so we only need overflow:hidden here as a safety net. */
+.xterm-viewport, .xterm-screen {
+  overflow: hidden;
+}
