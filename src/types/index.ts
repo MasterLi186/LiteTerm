@@ -27,7 +27,7 @@ export interface ConnectionStore {
 export interface Tab {
   id: string;
   label: string;
-  type: 'local' | 'ssh' | 'process';
+  type: 'local' | 'ssh' | 'process' | 'serial';
   sshParams?: {
     host: string;
     port: number;
@@ -35,6 +35,11 @@ export interface Tab {
     password: string | null;
     authMethod: string;
     keyPath: string | null;
+  };
+  shellPath?: string;
+  serialParams?: {
+    device: string;
+    baudRate: number;
   };
 }
 
@@ -97,4 +102,15 @@ export interface EnvVar {
 export interface ProcessFullDetail extends ProcessDetail {
   working_dir: string;
   environ: EnvVar[];
+}
+
+export interface ShellInfo {
+  name: string;
+  path: string;
+}
+
+export interface SerialPortInfo {
+  name: string;
+  path: string;
+  port_type: string;
 }
