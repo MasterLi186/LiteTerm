@@ -12,6 +12,7 @@ export interface HostConfig {
   auth: AuthMethod;
   key_path: string;
   charset: string;
+  proxy_jump?: string;
 }
 
 export interface GroupConfig {
@@ -35,6 +36,7 @@ export interface Tab {
     password: string | null;
     authMethod: string;
     keyPath: string | null;
+    proxyJump?: string | null;
   };
   shellPath?: string;
   serialParams?: {

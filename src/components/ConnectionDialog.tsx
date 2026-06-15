@@ -13,6 +13,7 @@ interface ConnectParams {
   authMethod: AuthMethod;
   keyPath: string;
   label: string;
+  proxyJump: string;
 }
 
 interface Props {
@@ -35,6 +36,7 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
   const [authMethod, setAuthMethod] = useState<AuthMethod>(editData?.host.auth || 'keyring');
   const [keyPath, setKeyPath] = useState(editData?.host.key_path || '~/.ssh/id_rsa');
   const [group, setGroup] = useState(editData?.groupId || 'default');
+  const [proxyJump, setProxyJump] = useState(editData?.host.proxy_jump || '');
 
   const isEdit = !!editData;
 
@@ -51,6 +53,7 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
       authMethod,
       keyPath,
       label: label || `${user}@${host}`,
+      proxyJump,
     };
   }
 
@@ -167,6 +170,17 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
               type="text"
               value={group}
               onChange={(e) => setGroup(e.target.value)}
+              className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-accent-cyan"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">跳板机 (ProxyJump)</label>
+            <input
+              type="text"
+              value={proxyJump}
+              onChange={(e) => setProxyJump(e.target.value)}
+              placeholder="user@bastion:22 (可选)"
               className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-accent-cyan"
             />
           </div>

@@ -23,6 +23,8 @@ pub struct HostConfig {
     pub auth: AuthMethod,
     pub key_path: String,
     pub charset: String,
+    #[serde(default)]
+    pub proxy_jump: String,
 }
 
 /// A named group of hosts, with a display label and color.
@@ -58,6 +60,7 @@ pub struct ConnectionConfig {
     pub auth: AuthMethod,
     pub key_path: String,
     pub charset: String,
+    pub proxy_jump: String,
 }
 
 impl From<&HostConfig> for ConnectionConfig {
@@ -69,6 +72,7 @@ impl From<&HostConfig> for ConnectionConfig {
             auth: h.auth.clone(),
             key_path: h.key_path.clone(),
             charset: h.charset.clone(),
+            proxy_jump: h.proxy_jump.clone(),
         }
     }
 }

@@ -2,9 +2,10 @@ use std::io::{Read, Write};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use portable_pty::{CommandBuilder, PtySize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::state::{AppState, ManagedSession, SftpRequest};
+use crate::state::{AppState, LocalTerminal, ManagedSession, SftpRequest};
 
 #[tauri::command]
 pub async fn ssh_connect(
@@ -17,9 +18,117 @@ pub async fn ssh_connect(
     auth_method: String,
     key_path: Option<String>,
     label: String,
+    proxy_jump: Option<String>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let timeout = state.settings.lock().unwrap().ssh.connect_timeout_secs;
+
+    // ProxyJump path: use system SSH client via PTY
+    if let Some(ref proxy) = proxy_jump {
+        if !proxy.is_empty() {
+            let pty_system = portable_pty::native_pty_system();
+            let pair = pty_system
+                .openpty(PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| format!("PTY open failed: {}", e))?;
+
+            let mut cmd = CommandBuilder::new("ssh");
+            cmd.arg("-J");
+            cmd.arg(proxy);
+            cmd.arg("-p");
+            cmd.arg(&port.to_string());
+            cmd.arg("-o");
+            cmd.arg("StrictHostKeyChecking=no");
+            if let Some(ref kp) = key_path {
+                if !kp.is_empty() {
+                    let expanded = shellexpand::tilde(kp);
+                    cmd.arg("-i");
+                    cmd.arg(expanded.as_ref());
+                }
+            }
+            cmd.arg(&format!("{}@{}", user, host));
+
+            let _child = pair
+                .slave
+                .spawn_command(cmd)
+                .map_err(|e| format!("SSH spawn failed: {}", e))?;
+            drop(pair.slave);
+
+            let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+            let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+
+            let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+            let id_clone = id.clone();
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let mut reader = reader;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => {
+                            let _ = app_clone.emit(
+                                "terminal-closed",
+                                serde_json::json!({"id": id_clone}),
+                            );
+                            break;
+                        }
+                        Ok(n) => {
+                            let _ = app_clone.emit(
+                                "terminal-output",
+                                serde_json::json!({"id": id_clone, "data": &buf[..n]}),
+                            );
+                        }
+                        Err(_) => {
+                            let _ = app_clone.emit(
+                                "terminal-closed",
+                                serde_json::json!({"id": id_clone}),
+                            );
+                            break;
+                        }
+                    }
+                }
+            });
+
+            std::thread::spawn(move || {
+                let mut writer = writer;
+                while let Ok(data) = input_rx.recv() {
+                    let _ = writer.write_all(&data);
+                    let _ = writer.flush();
+                }
+            });
+
+            let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u32, u32)>();
+            let master = pair.master;
+            std::thread::spawn(move || {
+                while let Ok((cols, rows)) = resize_rx.recv() {
+                    let _ = master.resize(PtySize {
+                        rows: rows as u16,
+                        cols: cols as u16,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                }
+            });
+
+            state.local_terminals.lock().unwrap().insert(
+                id.clone(),
+                LocalTerminal {
+                    id: id.clone(),
+                    input_tx,
+                    resize_tx,
+                    stop: Arc::new(AtomicBool::new(false)),
+                },
+            );
+
+            return Ok(id);
+        }
+    }
 
     let id_clone = id.clone();
     let app_clone = app.clone();

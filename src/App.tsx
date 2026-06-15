@@ -10,6 +10,9 @@ import { FileBrowser } from './components/FileManager/FileBrowser';
 import { ProcessTable } from './components/ProcessManager/ProcessTable';
 import { NewTabSelector } from './components/NewTabSelector';
 import { SshKeyManager } from './components/SshKeyManager';
+import { BatchCommand } from './components/BatchCommand';
+import { ShortcutSettings, loadShortcuts, matchShortcut } from './components/ShortcutSettings';
+import { TunnelManager } from './components/TunnelManager';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 
 function PasswordPrompt({ hostLabel, onSubmit, onCancel }: {
@@ -270,6 +273,7 @@ function App() {
                   authMethod: s.sshParams.authMethod,
                   keyPath: s.sshParams.keyPath,
                   label: s.label,
+                  proxyJump: s.sshParams.proxyJump || null,
                 });
                 const tab: Tab = { id, label: s.label, type: 'ssh', sshParams: { ...s.sshParams, password: pw || null } };
                 setTabs(prev => [...prev, tab]);
@@ -302,6 +306,41 @@ function App() {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const shortcuts = loadShortcuts();
+      if (matchShortcut(e, shortcuts.newTab)) { e.preventDefault(); setShowNewTab(true); }
+      if (matchShortcut(e, shortcuts.closeTab)) { e.preventDefault(); if (activeTabId) closeTab(activeTabId); }
+      if (matchShortcut(e, shortcuts.splitH)) {
+        e.preventDefault();
+        if (activeTabId && focusedTerminalId) handleSplit(activeTabId, focusedTerminalId, 'horizontal');
+      }
+      if (matchShortcut(e, shortcuts.splitV)) {
+        e.preventDefault();
+        if (activeTabId && focusedTerminalId) handleSplit(activeTabId, focusedTerminalId, 'vertical');
+      }
+      if (matchShortcut(e, shortcuts.nextTab)) {
+        e.preventDefault();
+        if (tabs.length > 0) {
+          const idx = tabs.findIndex(t => t.id === activeTabId);
+          const next = tabs[(idx + 1) % tabs.length];
+          if (next) setActiveTabId(next.id);
+        }
+      }
+      if (matchShortcut(e, shortcuts.prevTab)) {
+        e.preventDefault();
+        if (tabs.length > 0) {
+          const idx = tabs.findIndex(t => t.id === activeTabId);
+          const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
+          if (prev) setActiveTabId(prev.id);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTabId, focusedTerminalId, tabs]);
 
   async function loadConnections() {
     try {
@@ -412,6 +451,7 @@ function App() {
     authMethod: AuthMethod;
     keyPath: string;
     label: string;
+    proxyJump: string;
   }) {
     setShowDialog(false);
     setError(null);
@@ -431,6 +471,7 @@ function App() {
           auth: params.authMethod,
           key_path: params.keyPath,
           charset: 'UTF-8',
+          proxy_jump: params.proxyJump,
         },
       });
       await loadConnections();
@@ -446,6 +487,7 @@ function App() {
         authMethod: resolvedAuthMethod,
         keyPath: params.keyPath || null,
         label: params.label,
+        proxyJump: params.proxyJump || null,
       });
 
       if (params.password && params.authMethod === 'keyring') {
@@ -468,6 +510,7 @@ function App() {
           password: params.password || null,
           authMethod: resolvedAuthMethod,
           keyPath: params.keyPath || null,
+          proxyJump: params.proxyJump || null,
         },
       };
       setTabs((prev) => [...prev, tab]);
@@ -524,7 +567,7 @@ function App() {
   }
 
   async function doConnect(
-    hostConfig: { host: string; port: number; user: string; auth: AuthMethod; key_path: string; label: string },
+    hostConfig: { host: string; port: number; user: string; auth: AuthMethod; key_path: string; label: string; proxy_jump?: string },
     password: string | null,
   ) {
     setError(null);
@@ -538,6 +581,7 @@ function App() {
         authMethod: resolvedAuthMethod,
         keyPath: hostConfig.key_path || null,
         label: hostConfig.label,
+        proxyJump: hostConfig.proxy_jump || null,
       });
 
       if (password && hostConfig.auth === 'keyring') {
@@ -560,6 +604,7 @@ function App() {
           password,
           authMethod: resolvedAuthMethod,
           keyPath: hostConfig.key_path || null,
+          proxyJump: hostConfig.proxy_jump || null,
         },
       };
       setTabs((prev) => [...prev, tab]);
@@ -689,6 +734,7 @@ function App() {
           authMethod: tab.sshParams.authMethod,
           keyPath: tab.sshParams.keyPath,
           label: tab.label,
+          proxyJump: tab.sshParams.proxyJump || null,
         });
         const newTab: Tab = {
           id: newId,
@@ -764,6 +810,7 @@ function App() {
           authMethod: tab.sshParams.authMethod,
           keyPath: tab.sshParams.keyPath,
           label: tab.label,
+          proxyJump: tab.sshParams.proxyJump || null,
         });
       } else {
         newTerminalId = await invoke<string>('open_local_terminal');
@@ -801,6 +848,9 @@ function App() {
   }
 
   const [showSshKeyManager, setShowSshKeyManager] = useState(false);
+  const [showBatchCommand, setShowBatchCommand] = useState(false);
+  const [showShortcutSettings, setShowShortcutSettings] = useState(false);
+  const [showTunnelManager, setShowTunnelManager] = useState(false);
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
@@ -1030,6 +1080,28 @@ function App() {
           >
             +
           </button>
+          <div className="flex-1" />
+          <button
+            onClick={() => setShowBatchCommand(true)}
+            className="px-2 py-1 text-gray-500 hover:text-accent-cyan text-xs flex-shrink-0"
+            title="批量命令"
+          >
+            {'>>'}
+          </button>
+          <button
+            onClick={() => setShowTunnelManager(true)}
+            className="px-2 py-1 text-gray-500 hover:text-accent-cyan text-xs flex-shrink-0"
+            title="SSH 隧道"
+          >
+            {'<>'}
+          </button>
+          <button
+            onClick={() => setShowShortcutSettings(true)}
+            className="px-2 py-1 text-gray-500 hover:text-accent-cyan text-xs flex-shrink-0"
+            title="快捷键设置"
+          >
+            {'#'}
+          </button>
         </div>
 
         {/* Tab context menu */}
@@ -1258,6 +1330,7 @@ function App() {
                   auth: params.authMethod,
                   key_path: params.keyPath,
                   charset: 'UTF-8',
+                  proxy_jump: params.proxyJump,
                 },
               }).then(() => {
                 if (params.password && params.authMethod === 'keyring') {
@@ -1275,7 +1348,7 @@ function App() {
             invoke('save_connection', {
               groupId: params.groupId, groupLabel: params.groupLabel, groupColor: params.groupColor,
               hostId: params.hostId,
-              config: { label: params.label, host: params.host, port: params.port, user: params.user, auth: params.authMethod, key_path: params.keyPath, charset: 'UTF-8' },
+              config: { label: params.label, host: params.host, port: params.port, user: params.user, auth: params.authMethod, key_path: params.keyPath, charset: 'UTF-8', proxy_jump: params.proxyJump },
             }).then(() => {
               if (params.password && params.authMethod === 'keyring') {
                 invoke('store_password', { user: params.user, host: params.host, port: params.port, password: params.password }).catch(() => {});
@@ -1304,6 +1377,21 @@ function App() {
       {/* SSH Key Manager */}
       {showSshKeyManager && (
         <SshKeyManager onClose={() => setShowSshKeyManager(false)} />
+      )}
+
+      {/* Batch Command */}
+      {showBatchCommand && (
+        <BatchCommand onClose={() => setShowBatchCommand(false)} tabs={tabs} />
+      )}
+
+      {/* Shortcut Settings */}
+      {showShortcutSettings && (
+        <ShortcutSettings onClose={() => setShowShortcutSettings(false)} />
+      )}
+
+      {/* Tunnel Manager */}
+      {showTunnelManager && (
+        <TunnelManager onClose={() => setShowTunnelManager(false)} connections={connections} />
       )}
     </div>
   );
