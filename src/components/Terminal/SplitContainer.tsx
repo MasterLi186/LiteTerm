@@ -9,9 +9,10 @@ interface SplitContainerProps {
   onSplit: (terminalId: string, direction: 'horizontal' | 'vertical') => void;
   onClose: (terminalId: string) => void;
   onFocusTerminal: (terminalId: string) => void;
+  onOpenRecording?: (filePath: string) => void;
 }
 
-export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onClose, onFocusTerminal }: SplitContainerProps) {
+export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onClose, onFocusTerminal, onOpenRecording }: SplitContainerProps) {
   if (node.type === 'terminal') {
     return (
       <TerminalPane
@@ -20,6 +21,7 @@ export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onCl
         onSplit={(direction) => onSplit(node.terminalId, direction)}
         onClosePane={() => onClose(node.terminalId)}
         onFocus={() => onFocusTerminal(node.terminalId)}
+        onOpenRecording={onOpenRecording}
       />
     );
   }
@@ -32,12 +34,13 @@ export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onCl
       onSplit={onSplit}
       onClose={onClose}
       onFocusTerminal={onFocusTerminal}
+      onOpenRecording={onOpenRecording}
     />
   );
 }
 
 /** Inner component for split nodes so we can use hooks unconditionally. */
-function SplitNodeView({ node, isActive, activeTerminalId, onSplit, onClose, onFocusTerminal }: SplitContainerProps & { node: Extract<SplitNode, { type: 'split' }> }) {
+function SplitNodeView({ node, isActive, activeTerminalId, onSplit, onClose, onFocusTerminal, onOpenRecording }: SplitContainerProps & { node: Extract<SplitNode, { type: 'split' }> }) {
   const [ratio, setRatio] = useState(node.ratio);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -99,6 +102,7 @@ function SplitNodeView({ node, isActive, activeTerminalId, onSplit, onClose, onF
           onSplit={onSplit}
           onClose={onClose}
           onFocusTerminal={onFocusTerminal}
+          onOpenRecording={onOpenRecording}
         />
       </div>
       {/* Draggable divider */}
@@ -124,6 +128,7 @@ function SplitNodeView({ node, isActive, activeTerminalId, onSplit, onClose, onF
           onSplit={onSplit}
           onClose={onClose}
           onFocusTerminal={onFocusTerminal}
+          onOpenRecording={onOpenRecording}
         />
       </div>
     </div>

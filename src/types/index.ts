@@ -28,7 +28,7 @@ export interface ConnectionStore {
 export interface Tab {
   id: string;
   label: string;
-  type: 'local' | 'ssh' | 'process' | 'serial';
+  type: 'local' | 'ssh' | 'process' | 'serial' | 'recording';
   sshParams?: {
     host: string;
     port: number;
@@ -43,6 +43,7 @@ export interface Tab {
     device: string;
     baudRate: number;
   };
+  recordingPath?: string;
 }
 
 export interface DiskItem {

@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { save } from '@tauri-apps/plugin-dialog';
+import { save, open } from '@tauri-apps/plugin-dialog';
 import * as Zmodem from 'zmodem.js';
 import '@xterm/xterm/css/xterm.css';
 import type { ITheme } from '@xterm/xterm';
@@ -244,9 +244,10 @@ interface Props {
   onSplit?: (direction: 'horizontal' | 'vertical') => void;
   onClosePane?: () => void;
   onFocus?: () => void;
+  onOpenRecording?: (filePath: string) => void;
 }
 
-export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFocus }: Props) {
+export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFocus, onOpenRecording }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -256,6 +257,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   const [logging, setLogging] = useState(false);
   const logBufferRef = useRef<string[]>([]);
   const logFileNameRef = useRef<string>('');
+  const [recording, setRecording] = useState(false);
+  const isRecordingRef = useRef(false);
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -375,6 +378,10 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           const text = new TextDecoder().decode(bytes);
           logBufferRef.current.push(text);
         }
+        if (isRecordingRef.current) {
+          const text = new TextDecoder().decode(bytes);
+          invoke('record_event', { terminalId, data: text }).catch(() => {});
+        }
       },
       sender: (octets: number[]) => {
         invoke('terminal_write', { id: terminalId, data: Array.from(octets) });
@@ -397,6 +404,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           term.write(data);
           if (logFileNameRef.current) {
             logBufferRef.current.push(new TextDecoder().decode(data));
+          }
+          if (isRecordingRef.current) {
+            invoke('record_event', { terminalId, data: new TextDecoder().decode(data) }).catch(() => {});
           }
         }
       }
@@ -536,6 +546,54 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     }
   }
 
+  async function handleStartRecording() {
+    const now = new Date();
+    const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+    const defaultName = `terminal_${ts}.cast`;
+
+    const filePath = await save({
+      title: '选择录屏保存位置',
+      defaultPath: defaultName,
+      filters: [{ name: '录屏文件', extensions: ['cast'] }],
+    });
+
+    if (!filePath) return;
+
+    const term = termRef.current;
+    const cols = term?.cols || 80;
+    const rows = term?.rows || 24;
+
+    try {
+      await invoke('start_recording', {
+        terminalId,
+        filePath,
+        width: cols,
+        height: rows,
+      });
+      isRecordingRef.current = true;
+      setRecording(true);
+    } catch (_) {}
+  }
+
+  async function handleStopRecording() {
+    isRecordingRef.current = false;
+    setRecording(false);
+    try {
+      await invoke('stop_recording', { terminalId });
+    } catch (_) {}
+  }
+
+  async function handleOpenRecording() {
+    const filePath = await open({
+      title: '选择录屏文件',
+      multiple: false,
+      filters: [{ name: '录屏文件', extensions: ['cast'] }],
+    });
+    if (filePath && onOpenRecording) {
+      onOpenRecording(filePath as string);
+    }
+  }
+
   function handleChangeTheme(themeName: string) {
     localStorage.setItem('guishell_terminal_theme', themeName);
     notifyThemeChange();
@@ -573,6 +631,10 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     logging
       ? { label: '⏹ 停止录制日志', onClick: handleStopLog }
       : { label: '⏺ 开始录制日志', onClick: handleStartLog },
+    recording
+      ? { label: '⏹ 停止录屏', onClick: handleStopRecording }
+      : { label: '⏺ 开始录屏', onClick: handleStartRecording },
+    { label: '▶ 回放录屏', onClick: handleOpenRecording },
     { label: '', onClick: () => {}, separator: true },
     { label: '水平分屏', onClick: () => onSplit?.('horizontal') },
     { label: '垂直分屏', onClick: () => onSplit?.('vertical') },
@@ -611,7 +673,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           overflow: 'hidden',
         }}
       />
-      {logging && (
+      {logging && !recording && (
         <div style={{
           position: 'absolute', top: 8, right: 8, zIndex: 10,
           display: 'flex', alignItems: 'center', gap: '6px',
@@ -621,6 +683,19 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         }} onClick={handleStopLog}>
           <span style={{ color: '#f85149', animation: 'pulse 1.5s infinite' }}>●</span>
           <span style={{ color: '#f85149' }}>录制中</span>
+          <span style={{ color: '#8b949e' }}>点击停止</span>
+        </div>
+      )}
+      {recording && (
+        <div style={{
+          position: 'absolute', top: 8, right: 8, zIndex: 10,
+          display: 'flex', alignItems: 'center', gap: '6px',
+          background: 'rgba(0,212,255,0.15)', border: '1px solid rgba(0,212,255,0.3)',
+          borderRadius: '4px', padding: '3px 10px', fontSize: '11px',
+          cursor: 'pointer',
+        }} onClick={handleStopRecording}>
+          <span style={{ color: '#00d4ff', animation: 'pulse 1.5s infinite' }}>●</span>
+          <span style={{ color: '#00d4ff' }}>录屏中</span>
           <span style={{ color: '#8b949e' }}>点击停止</span>
         </div>
       )}

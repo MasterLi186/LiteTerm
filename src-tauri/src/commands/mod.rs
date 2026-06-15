@@ -7,5 +7,6 @@ pub mod serial;
 pub mod sftp;
 pub mod ssh;
 pub mod ssh_keys;
+pub mod recording;
 pub mod terminal;
 pub mod tunnel;

@@ -31,6 +31,7 @@ pub fn run() {
             settings: Mutex::new(settings),
             sftp_sessions: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
+            recordings: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::terminal::open_local_terminal,
@@ -69,6 +70,10 @@ pub fn run() {
             commands::tunnel::create_tunnel,
             commands::tunnel::list_tunnels,
             commands::tunnel::close_tunnel,
+            commands::recording::start_recording,
+            commands::recording::stop_recording,
+            commands::recording::record_event,
+            commands::recording::is_recording,
         ])
         .setup(|app| {
             // Inject JS to suppress the native webview right-click menu.
