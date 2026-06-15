@@ -1,17 +1,94 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save } from '@tauri-apps/plugin-dialog';
 import * as Zmodem from 'zmodem.js';
 import '@xterm/xterm/css/xterm.css';
+import type { ITheme } from '@xterm/xterm';
+
+// ---- Terminal Themes ----
+const TERMINAL_THEMES: Record<string, ITheme> = {
+  '暗色默认': {
+    background: '#0d1117', foreground: '#e6edf3', cursor: '#00d4ff',
+    selectionBackground: '#264f78',
+    black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+    blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#b1bac4',
+    brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+    brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+    brightCyan: '#56d364', brightWhite: '#f0f6fc',
+  },
+  'Monokai': {
+    background: '#272822', foreground: '#f8f8f2', cursor: '#f8f8f0',
+    selectionBackground: '#49483e',
+    black: '#272822', red: '#f92672', green: '#a6e22e', yellow: '#f4bf75',
+    blue: '#66d9ef', magenta: '#ae81ff', cyan: '#a1efe4', white: '#f8f8f2',
+    brightBlack: '#75715e', brightRed: '#f92672', brightGreen: '#a6e22e',
+    brightYellow: '#f4bf75', brightBlue: '#66d9ef', brightMagenta: '#ae81ff',
+    brightCyan: '#a1efe4', brightWhite: '#f9f8f5',
+  },
+  'Solarized Dark': {
+    background: '#002b36', foreground: '#839496', cursor: '#93a1a1',
+    selectionBackground: '#073642',
+    black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900',
+    blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
+    brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#586e75',
+    brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4',
+    brightCyan: '#93a1a1', brightWhite: '#fdf6e3',
+  },
+  'Dracula': {
+    background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2',
+    selectionBackground: '#44475a',
+    black: '#21222c', red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c',
+    blue: '#bd93f9', magenta: '#ff79c6', cyan: '#8be9fd', white: '#f8f8f2',
+    brightBlack: '#6272a4', brightRed: '#ff6e6e', brightGreen: '#69ff94',
+    brightYellow: '#ffffa5', brightBlue: '#d6acff', brightMagenta: '#ff92df',
+    brightCyan: '#a4ffff', brightWhite: '#ffffff',
+  },
+  'One Dark': {
+    background: '#282c34', foreground: '#abb2bf', cursor: '#528bff',
+    selectionBackground: '#3e4451',
+    black: '#282c34', red: '#e06c75', green: '#98c379', yellow: '#e5c07b',
+    blue: '#61afef', magenta: '#c678dd', cyan: '#56b6c2', white: '#abb2bf',
+    brightBlack: '#5c6370', brightRed: '#e06c75', brightGreen: '#98c379',
+    brightYellow: '#e5c07b', brightBlue: '#61afef', brightMagenta: '#c678dd',
+    brightCyan: '#56b6c2', brightWhite: '#ffffff',
+  },
+  '浅色': {
+    background: '#ffffff', foreground: '#383a42', cursor: '#526eff',
+    selectionBackground: '#d7d7ff',
+    black: '#383a42', red: '#e45649', green: '#50a14f', yellow: '#c18401',
+    blue: '#4078f2', magenta: '#a626a4', cyan: '#0184bc', white: '#a0a1a7',
+    brightBlack: '#696c77', brightRed: '#e45649', brightGreen: '#50a14f',
+    brightYellow: '#c18401', brightBlue: '#4078f2', brightMagenta: '#a626a4',
+    brightCyan: '#0184bc', brightWhite: '#ffffff',
+  },
+};
+
+/** Get the current theme name from localStorage */
+function getTerminalThemeName(): string {
+  return localStorage.getItem('guishell_terminal_theme') || '暗色默认';
+}
+
+/** Get the current theme object */
+function getTerminalTheme(): ITheme {
+  return TERMINAL_THEMES[getTerminalThemeName()] || TERMINAL_THEMES['暗色默认'];
+}
+
+// Global event for theme change notification
+const themeChangeListeners = new Set<() => void>();
+function notifyThemeChange() {
+  themeChangeListeners.forEach(fn => fn());
+}
 
 interface ContextMenuItem {
   label: string;
   onClick: () => void;
   disabled?: boolean;
   separator?: boolean;
+  submenu?: ContextMenuItem[];
 }
 
 function ContextMenu({ x, y, onClose, items }: {
@@ -20,6 +97,8 @@ function ContextMenu({ x, y, onClose, items }: {
   onClose: () => void;
   items: ContextMenuItem[];
 }) {
+  const [hoveredSubmenu, setHoveredSubmenu] = useState<number | null>(null);
+
   useEffect(() => {
     const handleClick = () => onClose();
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -41,6 +120,40 @@ function ContextMenu({ x, y, onClose, items }: {
       {items.map((item, i) =>
         item.separator ? (
           <div key={i} className="border-t border-surface-border my-1" />
+        ) : item.submenu ? (
+          <div
+            key={i}
+            className="relative"
+            onMouseEnter={() => setHoveredSubmenu(i)}
+            onMouseLeave={() => setHoveredSubmenu(null)}
+          >
+            <button
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200 flex items-center justify-between"
+            >
+              {item.label}
+              <span className="text-xs text-gray-500 ml-2">{'▶'}</span>
+            </button>
+            {hoveredSubmenu === i && (
+              <div
+                className="absolute left-full top-0 bg-surface-light border border-surface-border rounded shadow-lg py-1 min-w-[140px]"
+                style={{ marginLeft: '2px' }}
+              >
+                {item.submenu.map((sub, j) => (
+                  <button
+                    key={j}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      sub.onClick();
+                      onClose();
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
+                  >
+                    {sub.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         ) : (
           <button
             key={i}
@@ -138,10 +251,14 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [logging, setLogging] = useState(false);
   const logBufferRef = useRef<string[]>([]);
   const logFileNameRef = useRef<string>('');
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [zmodemTransfer, setZmodemTransfer] = useState<{
     filename: string;
     bytesReceived: number;
@@ -157,35 +274,25 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       rightClickSelectsWord: true,
       fontSize: 14,
       fontFamily: "'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace",
-      theme: {
-        background: '#0d1117',
-        foreground: '#e6edf3',
-        cursor: '#00d4ff',
-        selectionBackground: '#264f78',
-        black: '#484f58',
-        red: '#ff7b72',
-        green: '#3fb950',
-        yellow: '#d29922',
-        blue: '#58a6ff',
-        magenta: '#bc8cff',
-        cyan: '#39d353',
-        white: '#b1bac4',
-        brightBlack: '#6e7681',
-        brightRed: '#ffa198',
-        brightGreen: '#56d364',
-        brightYellow: '#e3b341',
-        brightBlue: '#79c0ff',
-        brightMagenta: '#d2a8ff',
-        brightCyan: '#56d364',
-        brightWhite: '#f0f6fc',
-      },
+      theme: getTerminalTheme(),
     });
 
     const fitAddon = new FitAddon();
+    const searchAddon = new SearchAddon();
     term.loadAddon(fitAddon);
+    term.loadAddon(searchAddon);
     term.open(containerRef.current);
     termRef.current = term;
     fitRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
+
+    // Listen for theme changes from other panes / context menu
+    const onThemeChange = () => {
+      if (termRef.current) {
+        termRef.current.options.theme = getTerminalTheme();
+      }
+    };
+    themeChangeListeners.add(onThemeChange);
 
     // Force fit: read size from wrapper, write to container, fit, refresh
     const forceFit = () => {
@@ -212,6 +319,15 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       }
     };
     requestAnimationFrame(tryInitFit);
+
+    // Ctrl+Shift+F to toggle search bar
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'F' && e.type === 'keydown') {
+        setSearchVisible(prev => !prev);
+        return false; // prevent terminal from receiving this key
+      }
+      return true;
+    });
 
     // Select-to-copy: auto copy selection to clipboard
     term.onSelectionChange(() => {
@@ -313,11 +429,20 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       observer.disconnect();
       window.removeEventListener('resize', doFit);
       resizeTimers.forEach(t => clearTimeout(t));
+      themeChangeListeners.delete(onThemeChange);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
+      searchAddonRef.current = null;
     };
   }, [terminalId]);
+
+  // Focus search input when search bar becomes visible
+  useEffect(() => {
+    if (searchVisible && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [searchVisible]);
 
   // Refit when tab becomes active
   useEffect(() => {
@@ -411,11 +536,39 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     }
   }
 
+  function handleChangeTheme(themeName: string) {
+    localStorage.setItem('guishell_terminal_theme', themeName);
+    notifyThemeChange();
+  }
+
+  function handleSearchNext() {
+    if (searchAddonRef.current && searchTerm) {
+      searchAddonRef.current.findNext(searchTerm);
+    }
+  }
+
+  function handleSearchPrevious() {
+    if (searchAddonRef.current && searchTerm) {
+      searchAddonRef.current.findPrevious(searchTerm);
+    }
+  }
+
+  const currentThemeName = getTerminalThemeName();
+
+  const themeSubmenuItems: ContextMenuItem[] = Object.keys(TERMINAL_THEMES).map(name => ({
+    label: name === currentThemeName ? `✓ ${name}` : `   ${name}`,
+    onClick: () => handleChangeTheme(name),
+  }));
+
   const contextMenuItems: ContextMenuItem[] = [
     { label: '复制', onClick: handleCopy },
     { label: '粘贴', onClick: handlePaste },
     { label: '全选', onClick: handleSelectAll },
     { label: '清屏', onClick: handleClear },
+    { label: '', onClick: () => {}, separator: true },
+    { label: '搜索 (Ctrl+Shift+F)', onClick: () => setSearchVisible(true) },
+    { label: '', onClick: () => {}, separator: true },
+    { label: '终端主题', onClick: () => {}, submenu: themeSubmenuItems },
     { label: '', onClick: () => {}, separator: true },
     logging
       ? { label: '⏹ 停止录制日志', onClick: handleStopLog }
@@ -469,6 +622,64 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           <span style={{ color: '#f85149', animation: 'pulse 1.5s infinite' }}>●</span>
           <span style={{ color: '#f85149' }}>录制中</span>
           <span style={{ color: '#8b949e' }}>点击停止</span>
+        </div>
+      )}
+      {searchVisible && (
+        <div style={{
+          position: 'absolute', top: 8, right: 8, zIndex: 20,
+          display: 'flex', alignItems: 'center', gap: '4px',
+          background: 'rgba(22,27,34,0.95)', border: '1px solid #30363d',
+          borderRadius: '6px', padding: '4px 8px', fontSize: '12px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+        }}>
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                if (e.shiftKey) handleSearchPrevious();
+                else handleSearchNext();
+              }
+              if (e.key === 'Escape') {
+                setSearchVisible(false);
+                setSearchTerm('');
+              }
+            }}
+            placeholder="搜索..."
+            style={{
+              background: '#0d1117', border: '1px solid #30363d', borderRadius: '4px',
+              padding: '3px 8px', color: '#e6edf3', outline: 'none', width: '180px',
+              fontSize: '12px',
+            }}
+          />
+          <button
+            onClick={handleSearchPrevious}
+            title="上一个 (Shift+Enter)"
+            style={{
+              background: 'transparent', border: '1px solid #30363d', borderRadius: '4px',
+              color: '#8b949e', padding: '3px 8px', cursor: 'pointer', fontSize: '11px',
+              whiteSpace: 'nowrap',
+            }}
+          >上一个</button>
+          <button
+            onClick={handleSearchNext}
+            title="下一个 (Enter)"
+            style={{
+              background: 'transparent', border: '1px solid #30363d', borderRadius: '4px',
+              color: '#8b949e', padding: '3px 8px', cursor: 'pointer', fontSize: '11px',
+              whiteSpace: 'nowrap',
+            }}
+          >下一个</button>
+          <button
+            onClick={() => { setSearchVisible(false); setSearchTerm(''); }}
+            title="关闭 (Esc)"
+            style={{
+              background: 'transparent', border: 'none', color: '#8b949e',
+              cursor: 'pointer', fontSize: '14px', padding: '0 4px', lineHeight: 1,
+            }}
+          >{'×'}</button>
         </div>
       )}
       {contextMenu && (
