@@ -395,20 +395,24 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser }: Props) {
     if (!sessionId) return;
     setRemoteLoading(true);
     setRemoteError(null);
-    try {
-      const entries = await invoke<FileEntry[]>('sftp_list_dir', { sessionId, path });
-      setRemoteFiles(entries);
-    } catch {
-      // Retry once after delay (SFTP may not be ready)
-      await new Promise(r => setTimeout(r, 2000));
+
+    // Retry up to 3 times with increasing delay (SFTP session may not be ready)
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const entries = await invoke<FileEntry[]>('sftp_list_dir', { sessionId, path });
         setRemoteFiles(entries);
-      } catch (e2) {
-        setRemoteError(`${e2}`);
-        setRemoteFiles([]);
+        setRemoteLoading(false);
+        return;
+      } catch {
+        if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+        }
       }
     }
+
+    // All retries failed
+    setRemoteError('无法读取远程目录，请手动输入路径');
+    setRemoteFiles([]);
     setRemoteLoading(false);
   }, [sessionId]);
 

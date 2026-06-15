@@ -439,7 +439,9 @@ function App() {
       keyPath: keyPath || null,
     }).catch((e) => console.error('Monitor start failed:', e));
 
-    // Start SFTP session — await so file browser can use it
+    // Delay SFTP start to let SSH session fully stabilize
+    await new Promise(r => setTimeout(r, 5000));
+
     try {
       await invoke('start_sftp_session', {
         sessionId,
