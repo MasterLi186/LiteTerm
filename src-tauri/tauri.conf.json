@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/refs/heads/v2/crates/tauri-cli/schema.json",
-  "productName": "GuiShell",
-  "version": "0.1.0",
-  "identifier": "com.guishell.app",
+  "productName": "LiteTerm",
+  "version": "0.4.0",
+  "identifier": "com.liteterm.app",
   "build": {
     "frontendDist": "../dist",
     "beforeBuildCommand": "npm run build"
@@ -10,7 +10,7 @@
   "app": {
     "windows": [
       {
-        "title": "GuiShell",
+        "title": "LiteTerm",
         "width": 1280,
         "height": 800,
         "resizable": true,
