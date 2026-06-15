@@ -10,4 +10,4 @@ if [ ! -f "$BINARY" ] || [ ! -d "dist" ]; then
 fi
 
 echo "启动 GuiShell..."
-exec "$BINARY" "$@"
+exec "$BINARY" "$@" 2>/dev/null
