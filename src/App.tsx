@@ -598,6 +598,8 @@ function App() {
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
+  const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
+  const [editingConn, setEditingConn] = useState<{ groupId: string; hostId: string } | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const sidebarDragging = useRef(false);
   const [fileBrowserHeight, setFileBrowserHeight] = useState(256);
@@ -654,6 +656,11 @@ function App() {
                         <button
                           key={hostId}
                           onClick={() => handleConnectExisting(groupId, hostId)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setConnContextMenu({ x: e.clientX, y: e.clientY, groupId, hostId });
+                          }}
                           className="w-full text-left pl-6 pr-2 py-0.5 text-xs text-gray-300 hover:bg-surface-lighter rounded truncate"
                           title={`点击连接 ${host.host}:${host.port}`}
                         >
@@ -666,6 +673,50 @@ function App() {
             </div>
           )}
         </div>
+
+        {/* Connection context menu */}
+        {connContextMenu && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setConnContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setConnContextMenu(null); }} />
+            <div
+              className="fixed z-50 bg-surface-light border border-surface-border rounded shadow-lg py-1 min-w-[140px]"
+              style={{ left: connContextMenu.x, top: connContextMenu.y }}
+            >
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
+                onClick={() => { handleConnectExisting(connContextMenu.groupId, connContextMenu.hostId); setConnContextMenu(null); }}
+              >
+                连接
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
+                onClick={() => { setShowDialog(true); setConnContextMenu(null); }}
+              >
+                新建会话
+              </button>
+              <div className="border-t border-surface-border my-1" />
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
+                onClick={() => { setEditingConn({ groupId: connContextMenu.groupId, hostId: connContextMenu.hostId }); setShowDialog(true); setConnContextMenu(null); }}
+              >
+                编辑属性
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-accent-red"
+                onClick={async () => {
+                  const { groupId, hostId } = connContextMenu;
+                  try {
+                    await invoke('delete_connection', { groupId, hostId });
+                    await loadConnections();
+                  } catch (e) { setError(`删除失败: ${e}`); }
+                  setConnContextMenu(null);
+                }}
+              >
+                删除
+              </button>
+            </div>
+          </>
+        )}
 
         {/* System info — local or remote */}
         <SystemInfoPanel
@@ -970,8 +1021,54 @@ function App() {
       {/* Connection dialog */}
       {showDialog && (
         <ConnectionDialog
-          onClose={() => setShowDialog(false)}
-          onConnect={handleConnect}
+          onClose={() => { setShowDialog(false); setEditingConn(null); }}
+          onConnect={(params) => {
+            if (editingConn) {
+              // Edit mode: save config and reload, don't connect
+              invoke('save_connection', {
+                groupId: params.groupId,
+                groupLabel: params.groupLabel,
+                groupColor: params.groupColor,
+                hostId: params.hostId,
+                config: {
+                  label: params.label,
+                  host: params.host,
+                  port: params.port,
+                  user: params.user,
+                  auth: params.authMethod,
+                  key_path: params.keyPath,
+                  charset: 'UTF-8',
+                },
+              }).then(() => {
+                if (params.password && params.authMethod === 'keyring') {
+                  invoke('store_password', { user: params.user, host: params.host, port: params.port, password: params.password }).catch(() => {});
+                }
+                loadConnections();
+              }).catch(e => setError(`保存失败: ${e}`));
+              setShowDialog(false);
+              setEditingConn(null);
+            } else {
+              handleConnect(params);
+            }
+          }}
+          onSaveOnly={(params) => {
+            invoke('save_connection', {
+              groupId: params.groupId, groupLabel: params.groupLabel, groupColor: params.groupColor,
+              hostId: params.hostId,
+              config: { label: params.label, host: params.host, port: params.port, user: params.user, auth: params.authMethod, key_path: params.keyPath, charset: 'UTF-8' },
+            }).then(() => {
+              if (params.password && params.authMethod === 'keyring') {
+                invoke('store_password', { user: params.user, host: params.host, port: params.port, password: params.password }).catch(() => {});
+              }
+              loadConnections();
+            }).catch(e => setError(`保存失败: ${e}`));
+            setShowDialog(false);
+          }}
+          editData={editingConn ? (() => {
+            const g = connections.groups[editingConn.groupId];
+            const h = g?.hosts[editingConn.hostId];
+            return h ? { groupId: editingConn.groupId, hostId: editingConn.hostId, host: h } : undefined;
+          })() : undefined}
         />
       )}
 

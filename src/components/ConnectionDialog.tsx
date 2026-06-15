@@ -1,40 +1,49 @@
 import { useState } from 'react';
-import type { AuthMethod } from '../types';
+import type { AuthMethod, HostConfig } from '../types';
+
+interface ConnectParams {
+  groupId: string;
+  groupLabel: string;
+  groupColor: string;
+  hostId: string;
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  authMethod: AuthMethod;
+  keyPath: string;
+  label: string;
+}
 
 interface Props {
   onClose: () => void;
-  onConnect: (params: {
+  onConnect: (params: ConnectParams) => void;
+  onSaveOnly?: (params: ConnectParams) => void;
+  editData?: {
     groupId: string;
-    groupLabel: string;
-    groupColor: string;
     hostId: string;
-    host: string;
-    port: number;
-    user: string;
-    password: string;
-    authMethod: AuthMethod;
-    keyPath: string;
-    label: string;
-  }) => void;
+    host: HostConfig;
+  };
 }
 
-export function ConnectionDialog({ onClose, onConnect }: Props) {
-  const [label, setLabel] = useState('');
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('22');
-  const [user, setUser] = useState('root');
+export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: Props) {
+  const [label, setLabel] = useState(editData?.host.label || '');
+  const [host, setHost] = useState(editData?.host.host || '');
+  const [port, setPort] = useState(String(editData?.host.port || 22));
+  const [user, setUser] = useState(editData?.host.user || 'root');
   const [password, setPassword] = useState('');
-  const [authMethod, setAuthMethod] = useState<AuthMethod>('keyring');
-  const [keyPath, setKeyPath] = useState('~/.ssh/id_rsa');
-  const [group, setGroup] = useState('default');
+  const [authMethod, setAuthMethod] = useState<AuthMethod>(editData?.host.auth || 'keyring');
+  const [keyPath, setKeyPath] = useState(editData?.host.key_path || '~/.ssh/id_rsa');
+  const [group, setGroup] = useState(editData?.groupId || 'default');
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onConnect({
+  const isEdit = !!editData;
+
+  function buildParams(): ConnectParams {
+    return {
       groupId: group,
       groupLabel: group,
       groupColor: '#58a6ff',
-      hostId: `${host}:${port}`,
+      hostId: editData?.hostId || `${host}:${port}`,
       host,
       port: parseInt(port, 10) || 22,
       user,
@@ -42,7 +51,12 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
       authMethod,
       keyPath,
       label: label || `${user}@${host}`,
-    });
+    };
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onConnect(buildParams());
   };
 
   return (
@@ -51,7 +65,7 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
         onSubmit={handleSubmit}
         className="bg-surface-light border border-surface-border rounded-lg p-6 w-96 shadow-2xl"
       >
-        <h2 className="text-lg font-semibold text-gray-200 mb-4">新建连接</h2>
+        <h2 className="text-lg font-semibold text-gray-200 mb-4">{isEdit ? '编辑连接' : '新建连接'}</h2>
 
         <div className="space-y-3">
           <div>
@@ -114,7 +128,7 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
 
           {authMethod === 'keyring' && (
             <div>
-              <label className="block text-xs text-gray-400 mb-1">密码</label>
+              <label className="block text-xs text-gray-400 mb-1">密码{isEdit ? ' (留空则不修改)' : ''}</label>
               <input
                 type="password"
                 value={password}
@@ -166,11 +180,23 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
           >
             取消
           </button>
+          {!isEdit && onSaveOnly && (
+            <button
+              type="button"
+              onClick={() => {
+                if (!host) return;
+                onSaveOnly(buildParams());
+              }}
+              className="px-4 py-1.5 text-sm text-gray-300 border border-surface-border rounded hover:bg-surface-lighter"
+            >
+              只保存
+            </button>
+          )}
           <button
             type="submit"
             className="px-4 py-1.5 text-sm text-white bg-accent-cyan/20 border border-accent-cyan/50 rounded hover:bg-accent-cyan/30"
           >
-            连接
+            {isEdit ? '保存' : '保存并连接'}
           </button>
         </div>
       </form>
