@@ -8,3 +8,4 @@ pub mod sftp;
 pub mod ssh;
 pub mod ssh_keys;
 pub mod terminal;
+pub mod tunnel;

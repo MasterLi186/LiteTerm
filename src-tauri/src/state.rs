@@ -8,6 +8,7 @@ pub struct AppState {
     pub connections: Mutex<crate::config::connections::ConnectionStore>,
     pub settings: Mutex<crate::config::settings::Settings>,
     pub sftp_sessions: Mutex<HashMap<String, crate::commands::sftp::SftpHandle>>,
+    pub tunnels: Mutex<HashMap<String, crate::commands::tunnel::TunnelHandle>>,
 }
 
 pub struct ManagedSession {

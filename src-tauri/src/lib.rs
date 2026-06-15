@@ -30,6 +30,7 @@ pub fn run() {
             connections: Mutex::new(connections),
             settings: Mutex::new(settings),
             sftp_sessions: Mutex::new(HashMap::new()),
+            tunnels: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::terminal::open_local_terminal,
@@ -65,6 +66,9 @@ pub fn run() {
             commands::ssh_keys::list_ssh_keys,
             commands::ssh_keys::generate_ssh_key,
             commands::ssh_keys::read_ssh_public_key,
+            commands::tunnel::create_tunnel,
+            commands::tunnel::list_tunnels,
+            commands::tunnel::close_tunnel,
         ])
         .setup(|app| {
             // Inject JS to suppress the native webview right-click menu.
