@@ -154,7 +154,7 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
       {/* ── Gauges ── */}
       <Card title="资源">
         <div style={{ padding: '8px 6px 4px' }}>
-          <GaugeBar label="CPU" value={data.cpu_percent} detail={`${data.cpu_percent.toFixed(1)}%`} />
+          <GaugeBar label={data.cpu_info ? `CPU (${data.cpu_info})` : 'CPU'} value={data.cpu_percent} detail={`${data.cpu_percent.toFixed(1)}%`} />
           <GaugeBar label="内存" value={data.memory_used_percent} detail={data.memory_text} />
           <GaugeBar label="交换" value={data.swap_percent} detail={data.swap_text} />
         </div>

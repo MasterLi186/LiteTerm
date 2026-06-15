@@ -40,6 +40,7 @@ pub struct MonitorPayload {
     pub net_tx_rate: u64,
     pub net_interface: String,
     pub net_interfaces: Vec<String>,
+    pub cpu_info: String,
     pub processes: Vec<ProcessInfo>,
 }
 
@@ -54,7 +55,7 @@ fn format_kb_to_human(kb: u64) -> String {
 }
 
 /// Split the combined output by sentinel lines and parse each section.
-fn parse_sections(output: &str) -> (String, String, String, String, String, String, String) {
+fn parse_sections(output: &str) -> (String, String, String, String, String, String, String, String) {
     let mut stat = String::new();
     let mut mem = String::new();
     let mut disk = String::new();
@@ -62,6 +63,7 @@ fn parse_sections(output: &str) -> (String, String, String, String, String, Stri
     let mut load = String::new();
     let mut uptime = String::new();
     let mut ps = String::new();
+    let mut cpuinfo = String::new();
 
     let mut current_section = "";
     for line in output.lines() {
@@ -74,6 +76,7 @@ fn parse_sections(output: &str) -> (String, String, String, String, String, Stri
             "===LOAD===" => { current_section = "load"; continue; }
             "===UPTIME===" => { current_section = "uptime"; continue; }
             "===PS===" => { current_section = "ps"; continue; }
+            "===CPUINFO===" => { current_section = "cpuinfo"; continue; }
             "===END===" => { current_section = ""; continue; }
             _ => {}
         }
@@ -85,11 +88,30 @@ fn parse_sections(output: &str) -> (String, String, String, String, String, Stri
             "load" => { load.push_str(line); load.push('\n'); }
             "uptime" => { uptime.push_str(line); uptime.push('\n'); }
             "ps" => { ps.push_str(line); ps.push('\n'); }
+            "cpuinfo" => { cpuinfo.push_str(line); cpuinfo.push('\n'); }
             _ => {}
         }
     }
 
-    (stat, mem, disk, net, load, uptime, ps)
+    (stat, mem, disk, net, load, uptime, ps, cpuinfo)
+}
+
+fn parse_cpuinfo(cpuinfo_text: &str) -> (String, u32) {
+    let mut model = String::new();
+    let mut cores: u32 = 0;
+    for line in cpuinfo_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("model name") {
+            if let Some(name) = trimmed.split(':').nth(1) {
+                model = name.trim().to_string();
+            }
+        } else if cores == 0 {
+            if let Ok(n) = trimmed.parse::<u32>() {
+                if cores == 0 { cores = n; }
+            }
+        }
+    }
+    (model, cores)
 }
 
 fn exec_command(session: &ssh2::Session, cmd: &str) -> Result<String, String> {
@@ -225,7 +247,7 @@ pub async fn start_monitor(
 
             match exec_command(&session, cmd) {
                 Ok(output) => {
-                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text) =
+                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text, cpuinfo_text) =
                         parse_sections(&output);
 
                     // CPU
@@ -359,6 +381,14 @@ pub async fn start_monitor(
                         net_tx_rate,
                         net_interface: net_iface,
                         net_interfaces: all_ifaces,
+                        cpu_info: {
+                            let (model, cores) = parse_cpuinfo(&cpuinfo_text);
+                            if model.is_empty() {
+                                format!("{}核", cores)
+                            } else {
+                                format!("{} ({}核)", model, cores)
+                            }
+                        },
                         processes,
                     };
 
@@ -401,7 +431,7 @@ pub async fn start_local_monitor(
         loop {
             match exec_local_command(cmd) {
                 Ok(output) => {
-                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text) =
+                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text, cpuinfo_text) =
                         parse_sections(&output);
 
                     let cpu_metrics = parse_proc_stat_cpu(&stat_text);
@@ -464,6 +494,10 @@ pub async fn start_local_monitor(
                         memory_text: memory_display, swap_text: swap_display, swap_percent,
                         uptime_text: uptime_display, load_text: load_display, disk_items,
                         net_rx_rate, net_tx_rate, net_interface: net_iface, net_interfaces: all_ifaces,
+                        cpu_info: {
+                            let (model, cores) = parse_cpuinfo(&cpuinfo_text);
+                            if model.is_empty() { format!("{}核", cores) } else { format!("{} ({}核)", model, cores) }
+                        },
                         processes,
                     };
                     let _ = app_clone.emit("monitor-data", payload);

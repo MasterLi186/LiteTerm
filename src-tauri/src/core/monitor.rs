@@ -358,6 +358,7 @@ pub fn collect_command() -> &'static str {
         "echo '===LOAD==='; cat /proc/loadavg; ",
         "echo '===UPTIME==='; cat /proc/uptime; ",
         "echo '===PS==='; ps aux --sort=-%cpu | head -20; ",
+        "echo '===CPUINFO==='; grep -c ^processor /proc/cpuinfo; grep 'model name' /proc/cpuinfo | head -1; nproc; ",
         "echo '===END==='"
     )
 }
