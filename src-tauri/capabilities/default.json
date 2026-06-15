@@ -8,6 +8,8 @@
     "shell:allow-open",
     "core:event:default",
     "core:event:allow-listen",
-    "core:event:allow-emit"
+    "core:event:allow-emit",
+    "dialog:default",
+    "dialog:allow-save"
   ]
 }

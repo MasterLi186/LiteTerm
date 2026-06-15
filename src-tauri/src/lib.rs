@@ -23,6 +23,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             sessions: Mutex::new(HashMap::new()),
             local_terminals: Mutex::new(HashMap::new()),
@@ -35,6 +36,10 @@ pub fn run() {
             commands::terminal::terminal_write,
             commands::terminal::terminal_resize,
             commands::terminal::close_terminal,
+            commands::terminal::list_shells,
+            commands::terminal::open_shell_terminal,
+            commands::serial::list_serial_ports,
+            commands::serial::open_serial_terminal,
             commands::ssh::ssh_connect,
             commands::connection::load_connections,
             commands::connection::save_connection,

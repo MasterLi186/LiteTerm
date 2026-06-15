@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { save } from '@tauri-apps/plugin-dialog';
 import * as Zmodem from 'zmodem.js';
 import '@xterm/xterm/css/xterm.css';
 
@@ -138,6 +139,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [logging, setLogging] = useState(false);
+  const logBufferRef = useRef<string[]>([]);
+  const logFileNameRef = useRef<string>('');
   const [zmodemTransfer, setZmodemTransfer] = useState<{
     filename: string;
     bytesReceived: number;
@@ -249,7 +253,12 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     // ZMODEM sentry: intercepts ZMODEM sessions from the data stream
     const sentry = new Zmodem.Sentry({
       to_terminal: (octets: number[]) => {
-        term.write(new Uint8Array(octets));
+        const bytes = new Uint8Array(octets);
+        term.write(bytes);
+        if (logBufferRef.current.length > 0 || logFileNameRef.current) {
+          const text = new TextDecoder().decode(bytes);
+          logBufferRef.current.push(text);
+        }
       },
       sender: (octets: number[]) => {
         invoke('terminal_write', { id: terminalId, data: Array.from(octets) });
@@ -269,8 +278,10 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         try {
           sentry.consume(data);
         } catch (e) {
-          // If sentry fails (e.g. after abort), fall back to direct write
           term.write(data);
+          if (logFileNameRef.current) {
+            logBufferRef.current.push(new TextDecoder().decode(data));
+          }
         }
       }
     });
@@ -366,11 +377,49 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     termRef.current?.clear();
   }
 
+  async function handleStartLog() {
+    const now = new Date();
+    const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+    const defaultName = `terminal_${ts}.log`;
+
+    const filePath = await save({
+      title: '选择日志保存位置',
+      defaultPath: defaultName,
+      filters: [{ name: '日志文件', extensions: ['log', 'txt'] }],
+    });
+
+    if (!filePath) return;
+
+    logFileNameRef.current = filePath;
+    logBufferRef.current = [];
+    setLogging(true);
+  }
+
+  async function handleStopLog() {
+    const content = logBufferRef.current.join('');
+    const filename = logFileNameRef.current;
+    logFileNameRef.current = '';
+    logBufferRef.current = [];
+    setLogging(false);
+
+    if (content && filename) {
+      const clean = content.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+      const bytes = Array.from(new TextEncoder().encode(clean));
+      try {
+        await invoke('save_file', { path: filename, data: bytes });
+      } catch (_) {}
+    }
+  }
+
   const contextMenuItems: ContextMenuItem[] = [
     { label: '复制', onClick: handleCopy },
     { label: '粘贴', onClick: handlePaste },
     { label: '全选', onClick: handleSelectAll },
     { label: '清屏', onClick: handleClear },
+    { label: '', onClick: () => {}, separator: true },
+    logging
+      ? { label: '⏹ 停止录制日志', onClick: handleStopLog }
+      : { label: '⏺ 开始录制日志', onClick: handleStartLog },
     { label: '', onClick: () => {}, separator: true },
     { label: '水平分屏', onClick: () => onSplit?.('horizontal') },
     { label: '垂直分屏', onClick: () => onSplit?.('vertical') },
@@ -409,6 +458,19 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           overflow: 'hidden',
         }}
       />
+      {logging && (
+        <div style={{
+          position: 'absolute', top: 8, right: 8, zIndex: 10,
+          display: 'flex', alignItems: 'center', gap: '6px',
+          background: 'rgba(248,81,73,0.15)', border: '1px solid rgba(248,81,73,0.3)',
+          borderRadius: '4px', padding: '3px 10px', fontSize: '11px',
+          cursor: 'pointer',
+        }} onClick={handleStopLog}>
+          <span style={{ color: '#f85149', animation: 'pulse 1.5s infinite' }}>●</span>
+          <span style={{ color: '#f85149' }}>录制中</span>
+          <span style={{ color: '#8b949e' }}>点击停止</span>
+        </div>
+      )}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}

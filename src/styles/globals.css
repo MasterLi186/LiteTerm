@@ -53,6 +53,12 @@ aside, .file-browser-panel, .tab-bar {
   -webkit-app-region: no-drag;
 }
 
+/* Recording indicator blink */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* xterm.js terminal should be selectable */
 .xterm {
   -webkit-user-select: text;
