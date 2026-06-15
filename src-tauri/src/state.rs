@@ -23,6 +23,7 @@ pub struct LocalTerminal {
     pub id: String,
     pub input_tx: std::sync::mpsc::Sender<Vec<u8>>,
     pub resize_tx: std::sync::mpsc::Sender<(u32, u32)>,
+    pub stop: Arc<AtomicBool>,
 }
 
 pub enum SftpRequest {
