@@ -2,176 +2,139 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## 项目概述
 
-GuiShell is a FinalShell replacement — a lightweight Linux SSH client built with Tauri 2 (Rust backend) + React/TypeScript (frontend) + xterm.js (terminal emulation). All UI text is Chinese.
+LiteTerm 是一个轻量级跨平台 SSH 客户端（FinalShell / Tabby / XShell 开源替代品），基于 Tauri 2 (Rust) + React (TypeScript) + xterm.js 构建。所有界面文本为中文。commit 信息也使用中文。
 
-There is also a legacy GTK4 version in the root `src/` Rust files and root `Cargo.toml` — this is superseded by the Tauri version but kept for its test suite.
-
-## Build & Run
+## 构建与运行
 
 ```bash
-./run.sh              # Auto-builds frontend+backend if stale, then launches
-./build.sh dev        # Quick build (frontend + backend, no bundling)
-./build.sh release    # Production bundle with installer
-./build.sh debug      # Debug build with devtools
+./build.sh      # 清理缓存 → 编译前端 → 编译后端（每次都全量重建）
+./run.sh        # 直接运行已编译的二进制（不编译，需先 build）
 ```
 
-Manual build steps:
+手动步骤：
 ```bash
-npm run build                      # Frontend → dist/
-cd src-tauri && cargo build        # Backend → src-tauri/target/debug/guishell-tauri
+npm run build                      # 前端 → dist/
+cd src-tauri && cargo build        # 后端 → src-tauri/target/debug/guishell-tauri
 ```
 
-Do NOT use `npx tauri dev` — the system hits file descriptor limits with the file watcher. Always build then run the binary directly.
+**禁止使用 `npx tauri dev`** — 系统文件描述符不足，file watcher 会崩溃。
 
-## Tests
-
-Tests are for the Rust core layer only (the legacy root Cargo.toml):
+发布构建：
 ```bash
-cargo test                                    # All tests (runs from project root against root Cargo.toml)
-cargo test --test zmodem_frame_test           # Single test file
-cargo test --test monitor_parse_test -v       # Verbose single test
+npx tauri build                    # 生成 deb/rpm/AppImage/dmg/msi/exe
+git tag v0.x.0 && git push origin v0.x.0  # 触发 CI 三平台构建 + Release
 ```
 
-Test files are in `tests/` and test modules from `src/` (the GTK4 era code). The same core modules are copied into `src-tauri/src/` and share identical logic.
+## 测试
 
-## Architecture
-
-### Two Codebases Coexist
-
-| Path | Purpose | Status |
-|------|---------|--------|
-| `src/*.rs` + root `Cargo.toml` | Legacy GTK4 version | Tests only |
-| `src-tauri/` | Tauri 2 Rust backend | Active |
-| `src/*.tsx` + `index.html` | React frontend | Active |
-
-### Tauri Backend (`src-tauri/src/`)
-
-```
-lib.rs          — Tauri app setup, command registration, AppState initialization
-state.rs        — AppState (Mutex-wrapped HashMaps for sessions, terminals, connections, settings, sftp)
-commands/       — Tauri IPC command handlers (one file per domain)
-  terminal.rs   — Local shell via portable-pty (open, write, resize, close)
-  ssh.rs        — SSH connect (auth, shell channel, non-blocking read loop)
-  connection.rs — CRUD for saved connections (TOML persistence)
-  keyring.rs    — GNOME Keyring store/retrieve via secret-service
-  monitor.rs    — System metrics collection over SSH (separate connection per session)
-  sftp.rs       — SFTP file operations (separate connection per session)
-config/         — Data models with serde (Settings, ConnectionStore, KeyringEntry)
-core/           — Business logic, no UI dependency
-  ssh.rs        — SshConnection wrapper (connect, authenticate, open_shell_channel)
-  session.rs    — SessionState machine (Connecting → Connected → Disconnected)
-  monitor.rs    — /proc parsers (CPU, memory, disk, network, load), MetricBuffer ring buffer
-  sftp.rs       — SftpOps wrapper for ssh2::Sftp
-  transfer.rs   — TransferQueue with concurrency control
-  zmodem/       — ZMODEM protocol (frame codec, byte stream detector, send/receive state machines)
-plugin/         — MetricPlugin trait and PluginRegistry (extensible monitoring)
+Rust 核心层测试（使用项目根目录的 Cargo.toml）：
+```bash
+cargo test                                    # 全部测试
+cargo test --test zmodem_frame_test           # 单个测试文件
+cargo test --test monitor_parse_test -v       # 详细输出
 ```
 
-### Key Threading Pattern
+测试文件在 `tests/`，测试 `src/` 下的旧 GTK4 代码模块（与 `src-tauri/src/` 中的核心逻辑相同）。
 
-`ssh2::Session` is `!Send` — each SSH subsystem (terminal, monitor, SFTP) creates its own TCP+SSH connection on a dedicated thread. Communication with the frontend uses:
-- `std::sync::mpsc` channels for input (frontend → backend)
-- `app_handle.emit("event-name", payload)` for output (backend → frontend)
+## 架构
 
-Reader threads have a 500ms startup delay to let the frontend register event listeners before data flows.
+### 两套代码共存
 
-### React Frontend (`src/`)
+| 路径 | 用途 | 状态 |
+|------|------|------|
+| `src/*.rs` + 根 `Cargo.toml` | 旧 GTK4 版本 | 仅保留测试 |
+| `src-tauri/` | Tauri 2 Rust 后端 | 活跃开发 |
+| `src/*.tsx` + `index.html` | React 前端 | 活跃开发 |
+
+### 后端 Rust (`src-tauri/src/`)
 
 ```
-App.tsx                          — Main layout, tab management, connection flow
-components/Terminal/TerminalPane — xterm.js wrapper with two-div resize architecture
-components/Sidebar/SystemInfoPanel — FinalShell-style system monitor (CPU/mem/disk/net/processes)
-components/FileManager/FileBrowser — Tree + file list dual-pane browser
-components/ConnectionDialog      — SSH connection add/edit form
-types/index.ts                   — TypeScript interfaces matching Rust structs
-styles/globals.css               — Tailwind + dark theme + xterm overrides
+lib.rs            — Tauri 应用启动、命令注册、AppState 初始化
+state.rs          — AppState（Mutex HashMap 管理会话、终端、连接、SFTP、隧道、录屏）
+commands/
+  terminal.rs     — 本地终端（portable-pty）、Shell 列表
+  ssh.rs          — SSH 连接（libssh2 / ProxyJump 走系统 ssh -J）
+  connection.rs   — 连接配置 CRUD（TOML 持久化）
+  keyring.rs      — GNOME Keyring 密码存取
+  monitor.rs      — 系统监控采集（SSH exec / 本地 /proc）
+  sftp.rs         — SFTP 文件操作 + 下载上传 + save_file
+  serial.rs       — 串口终端（serialport crate）
+  tunnel.rs       — SSH 端口转发（本地隧道）
+  process.rs      — 远程进程列表 + 详情
+  recording.rs    — 终端录屏（asciicast v2 格式）
+  config_io.rs    — 导入/导出配置
+  ssh_keys.rs     — SSH 密钥管理
+config/           — 数据模型（Settings, ConnectionStore, KeyringEntry）
+core/             — 业务逻辑（无 UI 依赖）
+  monitor.rs      — /proc 解析器、MetricBuffer 环形缓冲区
+  zmodem/         — ZMODEM 协议（帧编解码、检测器、收发状态机）
 ```
 
-### xterm.js Resize Architecture
+### 关键线程模型
 
-The TerminalPane uses a two-div pattern to prevent xterm's canvas from blowing out the flex layout:
-- **wrapperRef** (outer): `position: absolute; inset: 0` — sized by parent flex, observed by ResizeObserver
-- **containerRef** (inner): receives explicit pixel dimensions from wrapper's `getBoundingClientRect()` before `fitAddon.fit()`
+`ssh2::Session` 是 `!Send` — 每个 SSH 子系统（终端、监控、SFTP）在独立线程上创建自己的 TCP+SSH 连接。通信方式：
+- `std::sync::mpsc` 通道：前端 → 后端输入
+- `app_handle.emit("event-name", payload)`：后端 → 前端输出
+- `AtomicBool` stop flag：用于终止线程（串口、隧道、监控）
 
-Resize fires at multiple delays (50/150/400ms) to catch window animation. Always call `term.refresh()` after `fit()`.
+Reader 线程有 500ms 启动延迟，等前端注册事件监听器。
 
-## Config Files
+### 前端 React (`src/`)
 
-User config stored at `~/.config/guishell/`:
-- `connections.toml` — saved SSH connections (passwords in GNOME Keyring, never on disk)
-- `settings.toml` — terminal font, appearance, transfer settings, SSH keepalive
-- `monitor.toml` — monitoring panel configuration
-
-## System Dependencies
-
-VTE 0.70.6 compiled from source at `~/.local/` (Ubuntu 22.04 ships 0.68 without GTK4 support). GTK4 dev headers installed via `.dev-deps/` overlay. See `.cargo/config.toml` for PKG_CONFIG_PATH setup.
-
-Required system packages: `libgtk-4-dev libadwaita-1-dev libsecret-1-dev libssh2-1-dev libcairo2-dev`
-
-# CLAUDE.md
-
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
-## 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
 ```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
+App.tsx                           — 主布局、标签管理、连接流程、快捷键、重连逻辑
+components/Terminal/TerminalPane  — xterm.js 封装（双 div resize 架构、搜索、主题、录屏、ZMODEM）
+components/Terminal/SplitContainer— 分屏递归渲染
+components/Sidebar/SystemInfoPanel— 卡片式系统监控面板（CPU/内存/进程/网络/磁盘）
+components/FileManager/FileBrowser— FileZilla 风格双栏文件管理器（本地+远程 SFTP）
+components/ProcessManager/        — 进程表格 + 进程详情
+components/ConnectionDialog       — SSH 连接新建/编辑对话框
+components/NewTabSelector         — 新建标签选择器（Shell/SSH/串口）
+components/TunnelManager          — SSH 端口转发管理
+components/BatchCommand           — 批量命令执行
+components/ShortcutSettings       — 快捷键自定义
+components/SshKeyManager          — SSH 密钥管理
+components/RecordingPlayer        — 终端录屏回放
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+### xterm.js Resize 架构
 
----
+TerminalPane 使用双 div 模式防止 xterm 画布撑爆 flex 布局：
+- **wrapperRef**（外层）：`position: absolute; inset: 0` — 由父级 flex 决定大小，ResizeObserver 监听此 div
+- **containerRef**（内层）：在 fit() 前从 wrapper 的 `getBoundingClientRect()` 获取精确像素尺寸
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+Resize 在 50/150/400ms 三个延迟点触发。fit() 后必须调用 `term.refresh()`。
+
+### SSH 连接初始 PTY 尺寸
+
+`sshConnect()` 辅助函数从窗口尺寸估算 cols/rows 传给后端，避免硬编码 80x24。连接后 xterm.js 的 `onResize` 事件会持续同步实际尺寸。
+
+## 配置文件
+
+用户配置存储在 `~/.config/guishell/`：
+- `connections.toml` — SSH 连接书签（密码在 GNOME Keyring，不写入磁盘）
+- `settings.toml` — 终端字体、外观、传输、SSH keepalive 设置
+
+前端本地存储（localStorage）：
+- `guishell_terminal_theme` — 终端主题名称
+- `guishell_cmd_history` — 命令历史
+- `guishell_snippets` — 命令收藏
+- `guishell_sessions` — 会话持久化（自动重连）
+- `guishell_shortcuts` — 自定义快捷键
+
+## 跨平台注意事项
+
+- `secret-service` crate 仅 Linux（`cfg(target_os = "linux")`），其他平台 keyring 返回 stub
+- `std::os::unix::fs::MetadataExt` 用 `cfg(unix)` 条件编译，Windows 回退
+- `exec_local_command` 在非 Unix 平台返回错误（本地监控依赖 /proc）
+- `.cargo/config.toml` 是本地开发用的 PKG_CONFIG_PATH，已加入 .gitignore 不提交
+
+## CI/CD
+
+GitHub Actions（`.github/workflows/build.yml`）：
+- 触发条件：推送 `v*` tag 或手动触发
+- 三平台构建：Ubuntu 22.04 / macOS-latest / Windows-latest
+- 自动生成 changelog（上一个 tag 到当前的 commit 列表）
+- 产物：deb/rpm/AppImage/dmg/msi/exe
