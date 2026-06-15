@@ -50,6 +50,30 @@ jobs:
             libudev-dev \
             patchelf
 
+      - name: Generate changelog
+        id: changelog
+        if: startsWith(github.ref, 'refs/tags/') && matrix.target == 'linux'
+        run: |
+          # Get commits since last tag
+          PREV_TAG=$(git tag --sort=-creatordate | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "${{ github.ref_name }}" ]; then
+            LOG=$(git log --pretty=format:"- %s" -20)
+          else
+            LOG=$(git log --pretty=format:"- %s" ${PREV_TAG}..HEAD)
+          fi
+          # Write to output (handle multiline)
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "## 更新内容" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "$LOG" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "---" >> $GITHUB_OUTPUT
+          echo "下载对应平台的安装包:" >> $GITHUB_OUTPUT
+          echo "- **Linux**: .deb / .rpm / .AppImage" >> $GITHUB_OUTPUT
+          echo "- **macOS**: .dmg" >> $GITHUB_OUTPUT
+          echo "- **Windows**: .msi / .exe" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -60,7 +84,7 @@ jobs:
         with:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('LiteTerm {0}', github.ref_name) || '' }}
-          releaseBody: 'See the assets below for downloads.'
+          releaseBody: ${{ startsWith(github.ref, 'refs/tags/') && steps.changelog.outputs.body || 'See the assets below for downloads.' }}
           releaseDraft: false
           prerelease: false
 
