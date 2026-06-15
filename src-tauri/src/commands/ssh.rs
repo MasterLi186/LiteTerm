@@ -19,6 +19,8 @@ pub async fn ssh_connect(
     key_path: Option<String>,
     label: String,
     proxy_jump: Option<String>,
+    cols: Option<u32>,
+    rows: Option<u32>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let timeout = state.settings.lock().unwrap().ssh.connect_timeout_secs;
@@ -29,8 +31,8 @@ pub async fn ssh_connect(
             let pty_system = portable_pty::native_pty_system();
             let pair = pty_system
                 .openpty(PtySize {
-                    rows: 24,
-                    cols: 80,
+                    rows: rows.unwrap_or(36) as u16,
+                    cols: cols.unwrap_or(120) as u16,
                     pixel_width: 0,
                     pixel_height: 0,
                 })
@@ -208,7 +210,9 @@ pub async fn ssh_connect(
                 return;
             }
         };
-        if let Err(e) = channel.request_pty("xterm-256color", None, Some((80, 24, 0, 0))) {
+        let pty_cols = cols.unwrap_or(120);
+        let pty_rows = rows.unwrap_or(36);
+        if let Err(e) = channel.request_pty("xterm-256color", None, Some((pty_cols, pty_rows, 0, 0))) {
             let _ = status_tx.send(Err(format!("PTY request failed: {}", e)));
             return;
         }

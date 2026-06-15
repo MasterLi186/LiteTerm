@@ -276,6 +276,7 @@ function App() {
                   keyPath: s.sshParams.keyPath,
                   label: s.label,
                   proxyJump: s.sshParams.proxyJump || null,
+              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
                 });
                 const tab: Tab = { id, label: s.label, type: 'ssh', sshParams: { ...s.sshParams, password: pw || null } };
                 setTabs(prev => [...prev, tab]);
@@ -482,6 +483,7 @@ function App() {
         keyPath: tab.sshParams!.keyPath,
         label: tab.label,
         proxyJump: tab.sshParams!.proxyJump || null,
+              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
       });
 
       // Success: update the tab with new terminal ID
@@ -565,6 +567,7 @@ function App() {
         keyPath: params.keyPath || null,
         label: params.label,
         proxyJump: params.proxyJump || null,
+              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
       });
 
       if (params.password && params.authMethod === 'keyring') {
@@ -588,6 +591,7 @@ function App() {
           authMethod: resolvedAuthMethod,
           keyPath: params.keyPath || null,
           proxyJump: params.proxyJump || null,
+              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
         },
       };
       setTabs((prev) => [...prev, tab]);
@@ -659,6 +663,7 @@ function App() {
         keyPath: hostConfig.key_path || null,
         label: hostConfig.label,
         proxyJump: hostConfig.proxy_jump || null,
+              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
       });
 
       if (password && hostConfig.auth === 'keyring') {
@@ -682,6 +687,7 @@ function App() {
           authMethod: resolvedAuthMethod,
           keyPath: hostConfig.key_path || null,
           proxyJump: hostConfig.proxy_jump || null,
+              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
         },
       };
       setTabs((prev) => [...prev, tab]);
@@ -821,6 +827,7 @@ function App() {
           keyPath: tab.sshParams.keyPath,
           label: tab.label,
           proxyJump: tab.sshParams.proxyJump || null,
+              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
         });
         const newTab: Tab = {
           id: newId,
@@ -897,6 +904,7 @@ function App() {
           keyPath: tab.sshParams.keyPath,
           label: tab.label,
           proxyJump: tab.sshParams.proxyJump || null,
+              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
         });
       } else {
         newTerminalId = await invoke<string>('open_local_terminal');
