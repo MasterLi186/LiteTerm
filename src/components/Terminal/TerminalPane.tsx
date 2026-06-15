@@ -150,6 +150,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
 
     const term = new Terminal({
       cursorBlink: true,
+      rightClickSelectsWord: true,
       fontSize: 14,
       fontFamily: "'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace",
       theme: {
@@ -207,6 +208,32 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       }
     };
     requestAnimationFrame(tryInitFit);
+
+    // Select-to-copy: auto copy selection to clipboard
+    term.onSelectionChange(() => {
+      const sel = term.getSelection();
+      if (sel) {
+        navigator.clipboard.writeText(sel).catch(() => {});
+      }
+    });
+
+    // Middle-click paste (mouseup only, prevent double-paste)
+    const handleMiddleClick = (e: MouseEvent) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        navigator.clipboard.readText().then((text) => {
+          if (text) {
+            const bytes = Array.from(new TextEncoder().encode(text));
+            invoke('terminal_write', { id: terminalId, data: bytes });
+          }
+        }).catch(() => {});
+      }
+    };
+    containerRef.current.addEventListener('mouseup', handleMiddleClick);
+    containerRef.current.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.button === 1) e.preventDefault();
+    });
 
     // User input -> Tauri
     term.onData((data) => {
