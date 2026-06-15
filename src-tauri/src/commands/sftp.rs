@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -44,20 +45,33 @@ pub async fn list_local_dir(path: String) -> Result<Vec<FileEntry>, String> {
     for entry in read_dir {
         let entry = entry.map_err(|e| e.to_string())?;
         let meta = entry.metadata().map_err(|e| e.to_string())?;
-        let mode = meta.mode();
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        #[cfg(unix)]
+        let (permissions, owner, group) = {
+            let mode = meta.mode();
+            (mode_to_string(mode, meta.is_dir()), meta.uid().to_string(), meta.gid().to_string())
+        };
+        #[cfg(not(unix))]
+        let (permissions, owner, group) = {
+            let perm = if meta.permissions().readonly() { "r--r--r--" } else { "rw-rw-rw-" };
+            let p = format!("{}{}", if meta.is_dir() { "d" } else { "-" }, perm);
+            (p, String::new(), String::new())
+        };
+
         entries.push(FileEntry {
             name: entry.file_name().to_string_lossy().to_string(),
             is_dir: meta.is_dir(),
             size: meta.len(),
-            mtime: meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            permissions: mode_to_string(mode, meta.is_dir()),
-            owner: meta.uid().to_string(),
-            group: meta.gid().to_string(),
+            mtime,
+            permissions,
+            owner,
+            group,
         });
     }
 
