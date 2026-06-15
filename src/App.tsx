@@ -16,6 +16,17 @@ import { TunnelManager } from './components/TunnelManager';
 import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 
+function getTerminalSize() {
+  return {
+    cols: Math.floor((window.innerWidth - 280) / 8),
+    rows: Math.floor((window.innerHeight - 200) / 17),
+  };
+}
+
+async function sshConnect(params: Record<string, unknown>): Promise<string> {
+  return invoke<string>('ssh_connect', { ...params, ...getTerminalSize() });
+}
+
 function PasswordPrompt({ hostLabel, onSubmit, onCancel }: {
   hostLabel: string;
   onSubmit: (password: string) => void;
@@ -267,7 +278,7 @@ function App() {
                 if (stored) pw = stored;
               }
               if (pw || s.sshParams.authMethod !== 'password') {
-                const id = await invoke<string>('ssh_connect', {
+                const id = await sshConnect({
                   host: s.sshParams.host,
                   port: s.sshParams.port,
                   user: s.sshParams.user,
@@ -276,7 +287,6 @@ function App() {
                   keyPath: s.sshParams.keyPath,
                   label: s.label,
                   proxyJump: s.sshParams.proxyJump || null,
-              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
                 });
                 const tab: Tab = { id, label: s.label, type: 'ssh', sshParams: { ...s.sshParams, password: pw || null } };
                 setTabs(prev => [...prev, tab]);
@@ -476,7 +486,7 @@ function App() {
     if (cancelled) return;
 
     try {
-      const newId = await invoke<string>('ssh_connect', {
+      const newId = await sshConnect({
         host: tab.sshParams!.host,
         port: tab.sshParams!.port,
         user: tab.sshParams!.user,
@@ -485,7 +495,6 @@ function App() {
         keyPath: tab.sshParams!.keyPath,
         label: tab.label,
         proxyJump: tab.sshParams!.proxyJump || null,
-              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
       });
 
       // Success: update the tab with new terminal ID
@@ -560,7 +569,7 @@ function App() {
       const resolvedAuthMethod = params.authMethod === 'keyring' ? 'password' : params.authMethod;
 
       // Connect
-      const id = await invoke<string>('ssh_connect', {
+      const id = await sshConnect({
         host: params.host,
         port: params.port,
         user: params.user,
@@ -569,7 +578,6 @@ function App() {
         keyPath: params.keyPath || null,
         label: params.label,
         proxyJump: params.proxyJump || null,
-              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
       });
 
       if (params.password && params.authMethod === 'keyring') {
@@ -593,7 +601,6 @@ function App() {
           authMethod: resolvedAuthMethod,
           keyPath: params.keyPath || null,
           proxyJump: params.proxyJump || null,
-              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
         },
       };
       setTabs((prev) => [...prev, tab]);
@@ -656,7 +663,7 @@ function App() {
     setError(null);
     const resolvedAuthMethod = hostConfig.auth === 'keyring' ? 'password' : hostConfig.auth;
     try {
-      const id = await invoke<string>('ssh_connect', {
+      const id = await sshConnect({
         host: hostConfig.host,
         port: hostConfig.port,
         user: hostConfig.user,
@@ -665,7 +672,6 @@ function App() {
         keyPath: hostConfig.key_path || null,
         label: hostConfig.label,
         proxyJump: hostConfig.proxy_jump || null,
-              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
       });
 
       if (password && hostConfig.auth === 'keyring') {
@@ -689,7 +695,6 @@ function App() {
           authMethod: resolvedAuthMethod,
           keyPath: hostConfig.key_path || null,
           proxyJump: hostConfig.proxy_jump || null,
-              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
         },
       };
       setTabs((prev) => [...prev, tab]);
@@ -820,7 +825,7 @@ function App() {
 
     if (tab.type === 'ssh' && tab.sshParams) {
       try {
-        const newId = await invoke<string>('ssh_connect', {
+        const newId = await sshConnect({
           host: tab.sshParams.host,
           port: tab.sshParams.port,
           user: tab.sshParams.user,
@@ -829,7 +834,6 @@ function App() {
           keyPath: tab.sshParams.keyPath,
           label: tab.label,
           proxyJump: tab.sshParams.proxyJump || null,
-              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
         });
         const newTab: Tab = {
           id: newId,
@@ -897,7 +901,7 @@ function App() {
 
     try {
       if (tab?.type === 'ssh' && tab.sshParams) {
-        newTerminalId = await invoke<string>('ssh_connect', {
+        newTerminalId = await sshConnect({
           host: tab.sshParams.host,
           port: tab.sshParams.port,
           user: tab.sshParams.user,
@@ -906,7 +910,6 @@ function App() {
           keyPath: tab.sshParams.keyPath,
           label: tab.label,
           proxyJump: tab.sshParams.proxyJump || null,
-              cols: Math.floor((window.innerWidth - 280) / 8), rows: Math.floor((window.innerHeight - 200) / 17),
         });
       } else {
         newTerminalId = await invoke<string>('open_local_terminal');
