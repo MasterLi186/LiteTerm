@@ -7,6 +7,7 @@ import { ConnectionDialog } from './components/ConnectionDialog';
 import { SystemInfoPanel } from './components/Sidebar/SystemInfoPanel';
 import { FileBrowser } from './components/FileManager/FileBrowser';
 import { ProcessTable } from './components/ProcessManager/ProcessTable';
+import { NewTabSelector } from './components/NewTabSelector';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 
 function PasswordPrompt({ hostLabel, onSubmit, onCancel }: {
@@ -33,6 +34,141 @@ function PasswordPrompt({ hostLabel, onSubmit, onCancel }: {
           <button onClick={() => onSubmit(password)} className="px-3 py-1 text-sm bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30">连接</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CommandInputBar({ terminalId }: { terminalId: string | null }) {
+  const [history, setHistory] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('guishell_cmd_history') || '[]'); } catch { return []; }
+  });
+  const [showHistory, setShowHistory] = useState(false);
+  const [showSpeed, setShowSpeed] = useState(false);
+  const [txSpeed, setTxSpeed] = useState(0);
+  const [rxSpeed, setRxSpeed] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const txBytesRef = useRef(0);
+  const rxBytesRef = useRef(0);
+
+  // Track terminal data throughput
+  useEffect(() => {
+    const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
+      if (terminalId && event.payload.id === terminalId) {
+        rxBytesRef.current += event.payload.data.length;
+      }
+    });
+    const interval = setInterval(() => {
+      setRxSpeed(rxBytesRef.current);
+      setTxSpeed(txBytesRef.current);
+      rxBytesRef.current = 0;
+      txBytesRef.current = 0;
+    }, 1000);
+    return () => { unlisten.then(fn => fn()); clearInterval(interval); };
+  }, [terminalId]);
+
+  function sendCommand(cmd: string) {
+    if (!cmd || !terminalId) return;
+    invoke('terminal_write', { id: terminalId, data: Array.from(new TextEncoder().encode(cmd + '\n')) });
+    txBytesRef.current += cmd.length + 1;
+    // Add to history (dedupe, max 50)
+    const updated = [cmd, ...history.filter(h => h !== cmd)].slice(0, 50);
+    setHistory(updated);
+    localStorage.setItem('guishell_cmd_history', JSON.stringify(updated));
+  }
+
+  function formatSpeed(bytes: number): string {
+    if (bytes < 1024) return `${bytes}B/s`;
+    if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)}K/s`;
+    return `${(bytes / 1048576).toFixed(1)}M/s`;
+  }
+
+  return (
+    <div className="h-8 bg-surface-light border-t border-b border-surface-border flex items-center px-2 gap-2 relative">
+      <span className="text-xs text-gray-500 flex-shrink-0">命令输入:</span>
+      <input
+        ref={inputRef}
+        className="flex-1 bg-surface border border-surface-border rounded px-2 py-0.5 text-xs outline-none focus:border-accent-cyan text-gray-200 min-w-0"
+        placeholder="输入命令后回车发送到终端"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && e.currentTarget.value) {
+            sendCommand(e.currentTarget.value);
+            e.currentTarget.value = '';
+            setShowHistory(false);
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setShowHistory(true);
+          }
+          if (e.key === 'Escape') {
+            setShowHistory(false);
+          }
+        }}
+      />
+      <button
+        onClick={() => { setShowHistory(!showHistory); setShowSpeed(false); }}
+        className={`text-xs px-2 py-0.5 border border-surface-border rounded flex-shrink-0 ${showHistory ? 'text-accent-cyan bg-accent-cyan/10' : 'text-gray-400 hover:text-white'}`}
+      >
+        历史
+      </button>
+      <button
+        onClick={() => { setShowSpeed(!showSpeed); setShowHistory(false); }}
+        className={`text-xs px-2 py-0.5 border border-surface-border rounded flex-shrink-0 ${showSpeed ? 'text-accent-cyan bg-accent-cyan/10' : 'text-gray-400 hover:text-white'}`}
+      >
+        速度
+      </button>
+
+      {/* History popup */}
+      {showHistory && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setShowHistory(false)} />
+          <div className="absolute bottom-9 right-16 z-40 bg-surface-light border border-surface-border rounded shadow-lg w-80 max-h-64 overflow-y-auto">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface-border">
+              <span className="text-xs text-gray-400">命令历史 ({history.length})</span>
+              {history.length > 0 && (
+                <button
+                  onClick={() => { setHistory([]); localStorage.removeItem('guishell_cmd_history'); }}
+                  className="text-[10px] text-gray-500 hover:text-accent-red"
+                >清空</button>
+              )}
+            </div>
+            {history.length === 0 ? (
+              <div className="px-3 py-4 text-xs text-gray-500 text-center">暂无历史记录</div>
+            ) : (
+              history.map((cmd, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    sendCommand(cmd);
+                    if (inputRef.current) inputRef.current.value = '';
+                    setShowHistory(false);
+                  }}
+                  className="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-lighter truncate font-mono border-b border-surface-border/30 last:border-b-0"
+                >
+                  {cmd}
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Speed popup */}
+      {showSpeed && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setShowSpeed(false)} />
+          <div className="absolute bottom-9 right-2 z-40 bg-surface-light border border-surface-border rounded shadow-lg w-48 p-3">
+            <div className="text-xs text-gray-400 mb-2">终端传输速率</div>
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-gray-500">↑ 发送</span>
+              <span className="text-accent-green font-mono">{formatSpeed(txSpeed)}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-500">↓ 接收</span>
+              <span className="text-accent-cyan font-mono">{formatSpeed(rxSpeed)}</span>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -75,6 +211,7 @@ function App() {
   const [splitTrees, setSplitTrees] = useState<Record<string, SplitNode>>({});
   const [focusedTerminalId, setFocusedTerminalId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showNewTab, setShowNewTab] = useState(false);
   const [passwordPrompt, setPasswordPrompt] = useState<{
     groupId: string;
     hostId: string;
@@ -193,6 +330,35 @@ function App() {
       }, 300);
     } catch (e) {
       setError(`打开终端失败: ${e}`);
+    }
+  }
+
+  async function openShellTerminal(shellPath: string, shellName: string) {
+    try {
+      const id = await invoke<string>('open_shell_terminal', { shellPath });
+      const tab: Tab = { id, label: shellName, type: 'local', shellPath };
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(id);
+      setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
+      setFocusedTerminalId(id);
+      setTimeout(() => {
+        invoke('terminal_resize', { id, cols: 120, rows: 36 }).catch(() => {});
+      }, 300);
+    } catch (e) {
+      setError(`打开终端失败: ${e}`);
+    }
+  }
+
+  async function openSerialTerminal(device: string, baudRate: number, name: string) {
+    try {
+      const id = await invoke<string>('open_serial_terminal', { device, baudRate });
+      const tab: Tab = { id, label: `串口: ${name}`, type: 'serial', serialParams: { device, baudRate } };
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(id);
+      setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
+      setFocusedTerminalId(id);
+    } catch (e) {
+      setError(`打开串口失败: ${e}`);
     }
   }
 
@@ -513,6 +679,10 @@ function App() {
       } catch (e) {
         setError(`复制连接失败: ${e}`);
       }
+    } else if (tab.type === 'serial' && tab.serialParams) {
+      openSerialTerminal(tab.serialParams.device, tab.serialParams.baudRate, tab.label.replace('串口: ', ''));
+    } else if (tab.shellPath) {
+      openShellTerminal(tab.shellPath, tab.label);
     } else {
       openLocalTerminal();
     }
@@ -783,6 +953,9 @@ function App() {
               {tab.type === 'process' && (
                 <span className="text-accent-cyan text-xs">{'◉'}</span>
               )}
+              {tab.type === 'serial' && (
+                <span className="text-accent-yellow text-xs">{'●'}</span>
+              )}
               {tab.label}
               <span
                 onClick={(e) => {
@@ -797,9 +970,9 @@ function App() {
             </div>
           ))}
           <button
-            onClick={openLocalTerminal}
+            onClick={() => setShowNewTab(true)}
             className="px-2 py-1 text-gray-500 hover:text-white text-sm flex-shrink-0"
-            title="新建终端"
+            title="新建标签页"
           >
             +
           </button>
@@ -955,28 +1128,9 @@ function App() {
         </div>
 
         {/* Command input bar */}
-        <div className="h-8 bg-surface-light border-t border-b border-surface-border flex items-center px-2 gap-2">
-          <span className="text-xs text-gray-500 flex-shrink-0">命令输入:</span>
-          <input
-            className="flex-1 bg-surface border border-surface-border rounded px-2 py-0.5 text-xs outline-none focus:border-accent-cyan text-gray-200 min-w-0"
-            placeholder="输入命令后回车发送到终端"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && e.currentTarget.value && activeTabId) {
-                invoke('terminal_write', {
-                  id: focusedTerminalId || activeTabId,
-                  data: Array.from(new TextEncoder().encode(e.currentTarget.value + '\n')),
-                });
-                e.currentTarget.value = '';
-              }
-            }}
-          />
-          <button className="text-xs text-gray-400 hover:text-white px-2 py-0.5 border border-surface-border rounded flex-shrink-0">
-            历史
-          </button>
-          <button className="text-xs text-gray-400 hover:text-white px-2 py-0.5 border border-surface-border rounded flex-shrink-0">
-            速度
-          </button>
-        </div>
+        <CommandInputBar
+          terminalId={focusedTerminalId || activeTabId}
+        />
 
         {/* File browser: drag handle + toggle + panel */}
         {fileBrowserOpen && (
@@ -1017,6 +1171,18 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* New tab selector */}
+      {showNewTab && (
+        <NewTabSelector
+          onClose={() => setShowNewTab(false)}
+          onOpenShell={openShellTerminal}
+          onConnectSSH={(groupId, hostId) => { setShowNewTab(false); handleConnectExisting(groupId, hostId); }}
+          onNewSSH={() => { setShowNewTab(false); setShowDialog(true); }}
+          onOpenSerial={openSerialTerminal}
+          connections={connections}
+        />
+      )}
 
       {/* Connection dialog */}
       {showDialog && (
