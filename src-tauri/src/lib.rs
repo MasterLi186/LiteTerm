@@ -59,6 +59,12 @@ pub fn run() {
             commands::sftp::local_delete,
             commands::process::get_process_list,
             commands::process::get_process_detail,
+            commands::config_io::export_config,
+            commands::config_io::import_config,
+            commands::config_io::read_text_file,
+            commands::ssh_keys::list_ssh_keys,
+            commands::ssh_keys::generate_ssh_key,
+            commands::ssh_keys::read_ssh_public_key,
         ])
         .setup(|app| {
             // Inject JS to suppress the native webview right-click menu.

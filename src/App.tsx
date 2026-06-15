@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { save, open } from '@tauri-apps/plugin-dialog';
 import { TerminalPane } from './components/Terminal/TerminalPane';
 import { SplitContainer } from './components/Terminal/SplitContainer';
 import { ConnectionDialog } from './components/ConnectionDialog';
@@ -8,6 +9,7 @@ import { SystemInfoPanel } from './components/Sidebar/SystemInfoPanel';
 import { FileBrowser } from './components/FileManager/FileBrowser';
 import { ProcessTable } from './components/ProcessManager/ProcessTable';
 import { NewTabSelector } from './components/NewTabSelector';
+import { SshKeyManager } from './components/SshKeyManager';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 
 function PasswordPrompt({ hostLabel, onSubmit, onCancel }: {
@@ -594,6 +596,40 @@ function App() {
     doConnect(hostConfig, password);
   }
 
+  async function handleExportConfig() {
+    try {
+      const content = await invoke<string>('export_config');
+      const filePath = await save({
+        title: '导出配置',
+        defaultPath: 'guishell_connections.toml',
+        filters: [{ name: 'TOML 文件', extensions: ['toml'] }],
+      });
+      if (filePath) {
+        const bytes = Array.from(new TextEncoder().encode(content));
+        await invoke('save_file', { path: filePath, data: bytes });
+      }
+    } catch (e) {
+      setError(`导出配置失败: ${e}`);
+    }
+  }
+
+  async function handleImportConfig() {
+    try {
+      const filePath = await open({
+        title: '导入配置',
+        multiple: false,
+        filters: [{ name: 'TOML 文件', extensions: ['toml'] }],
+      });
+      if (filePath) {
+        const content = await invoke<string>('read_text_file', { path: filePath as string });
+        await invoke('import_config', { content });
+        await loadConnections();
+      }
+    } catch (e) {
+      setError(`导入配置失败: ${e}`);
+    }
+  }
+
   function closeTab(id: string) {
     const tab = tabs.find((t) => t.id === id);
     if (tab && tab.type !== 'process') {
@@ -764,6 +800,7 @@ function App() {
     });
   }
 
+  const [showSshKeyManager, setShowSshKeyManager] = useState(false);
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
@@ -793,13 +830,30 @@ function App() {
               <span className="text-[10px]">{sidebarConnectionsOpen ? '▼' : '▶'}</span>
               <span>连接管理</span>
             </button>
-            <button
-              onClick={() => setShowDialog(true)}
-              className="text-accent-cyan hover:text-white text-base leading-none"
-              title="新建连接"
-            >
-              +
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleImportConfig}
+                className="text-gray-500 hover:text-accent-cyan text-[10px] leading-none px-1"
+                title="导入配置"
+              >{'↓'}</button>
+              <button
+                onClick={handleExportConfig}
+                className="text-gray-500 hover:text-accent-cyan text-[10px] leading-none px-1"
+                title="导出配置"
+              >{'↑'}</button>
+              <button
+                onClick={() => setShowSshKeyManager(true)}
+                className="text-gray-500 hover:text-accent-cyan text-[10px] leading-none px-1"
+                title="SSH 密钥管理"
+              >{'⚷'}</button>
+              <button
+                onClick={() => setShowDialog(true)}
+                className="text-accent-cyan hover:text-white text-base leading-none"
+                title="新建连接"
+              >
+                +
+              </button>
+            </div>
           </div>
           {sidebarConnectionsOpen && (
             <div className="px-2 pb-2">
@@ -1245,6 +1299,11 @@ function App() {
           onSubmit={handlePasswordSubmit}
           onCancel={() => setPasswordPrompt(null)}
         />
+      )}
+
+      {/* SSH Key Manager */}
+      {showSshKeyManager && (
+        <SshKeyManager onClose={() => setShowSshKeyManager(false)} />
       )}
     </div>
   );
