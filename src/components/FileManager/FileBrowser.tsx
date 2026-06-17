@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { FileEntry } from '../../types';
+import { log } from '../../utils/logger';
 
 // --- Utilities ---
 
@@ -342,9 +343,10 @@ interface Props {
   sessionId: string | null;
   activeTerminalId?: string | null;
   sshUser?: string;
+  sftpReady?: number;
 }
 
-export function FileBrowser({ sessionId, activeTerminalId, sshUser }: Props) {
+export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }: Props) {
   const [activeTab, setActiveTab] = useState<'file' | 'cmd'>('file');
   const [showHidden, setShowHidden] = useState(false);
 
@@ -379,48 +381,67 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser }: Props) {
   // --- Load functions ---
 
   const loadLocalFiles = useCallback(async (path: string) => {
+    log('FileBrowser', `loadLocalFiles: ${path}`);
     setLocalLoading(true);
     setLocalError(null);
     try {
       const entries = await invoke<FileEntry[]>('list_local_dir', { path });
+      log('FileBrowser', `loadLocalFiles OK: ${entries.length} entries`);
       setLocalFiles(entries);
     } catch (e) {
+      log('FileBrowser', `loadLocalFiles ERROR: ${e}`);
       setLocalError(`${e}`);
       setLocalFiles([]);
     }
     setLocalLoading(false);
   }, []);
 
+  const remoteFilesRef = useRef<FileEntry[]>([]);
   const loadRemoteFiles = useCallback(async (path: string) => {
     if (!sessionId) return;
-    setRemoteLoading(true);
+    log('FileBrowser', `loadRemoteFiles: session=${sessionId}, path=${path}`);
+    if (remoteFilesRef.current.length === 0) setRemoteLoading(true);
     setRemoteError(null);
 
-    // Retry up to 3 times with increasing delay (SFTP session may not be ready)
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const entries = await invoke<FileEntry[]>('sftp_list_dir', { sessionId, path });
+        log('FileBrowser', `loadRemoteFiles OK: ${entries.length} entries (attempt ${attempt})`);
         setRemoteFiles(entries);
+        remoteFilesRef.current = entries;
         setRemoteLoading(false);
         return;
-      } catch {
+      } catch (e) {
+        log('FileBrowser', `loadRemoteFiles attempt ${attempt} FAILED: ${e}`);
         if (attempt < 2) {
           await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
         }
       }
     }
 
-    // All retries failed
+    if (remoteFilesRef.current.length > 0) {
+      log('FileBrowser', 'loadRemoteFiles: keeping existing files after all retries failed');
+      setRemoteLoading(false);
+      return;
+    }
+
     setRemoteError('无法读取远程目录，请手动输入路径');
     setRemoteFiles([]);
+    remoteFilesRef.current = [];
     setRemoteLoading(false);
   }, [sessionId]);
 
-  // Reset remote path when session or user changes
+  // Reset remote path when switching to a different user
+  const prevSshUserRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (sessionId) {
-      const home = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
-      setRemotePath(home);
+      if (sshUser !== prevSshUserRef.current) {
+        const home = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
+        setRemotePath(home);
+      }
+      prevSshUserRef.current = sshUser;
+    } else {
+      prevSshUserRef.current = undefined;
     }
   }, [sessionId, sshUser]);
 
@@ -429,14 +450,16 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser }: Props) {
     loadLocalFiles(localPath);
   }, [localPath]);
 
+  // sftpReady 变化时说明 SFTP session 刚建立成功，触发刷新
   useEffect(() => {
     if (sessionId) {
       loadRemoteFiles(remotePath);
     } else {
       setRemoteFiles([]);
+      remoteFilesRef.current = [];
       setRemoteError(null);
     }
-  }, [remotePath, sessionId]);
+  }, [remotePath, sessionId, sftpReady]);
 
   // Listen for transfer progress events
   useEffect(() => {
@@ -513,6 +536,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser }: Props) {
     if (!sessionId) return;
     const remoteFilePath = joinPath(remotePath, entry.name);
     const localFilePath = joinPath(localPath, entry.name);
+    log('FileBrowser', `handleDownload: remote=${remoteFilePath}, local=${localFilePath}, session=${sessionId}`);
     const transferId = `${Date.now()}-${entry.name}`;
     setTransfers(prev => [...prev, {
       id: transferId,
@@ -528,9 +552,10 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser }: Props) {
         remotePath: remoteFilePath,
         localPath: localFilePath,
       });
-      // Refresh local pane
+      log('FileBrowser', `handleDownload OK: ${entry.name}`);
       loadLocalFiles(localPath);
     } catch (e) {
+      log('FileBrowser', `handleDownload ERROR: ${e}`);
       setTransfers(prev => prev.map(t =>
         t.id === transferId ? { ...t, status: 'error' as const, error: `${e}` } : t
       ));
@@ -541,6 +566,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser }: Props) {
     if (!sessionId) return;
     const localFilePath = joinPath(localPath, entry.name);
     const remoteFilePath = joinPath(remotePath, entry.name);
+    log('FileBrowser', `handleUpload: local=${localFilePath}, remote=${remoteFilePath}, session=${sessionId}`);
     const transferId = `${Date.now()}-${entry.name}`;
     setTransfers(prev => [...prev, {
       id: transferId,
@@ -556,9 +582,10 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser }: Props) {
         localPath: localFilePath,
         remotePath: remoteFilePath,
       });
-      // Refresh remote pane
+      log('FileBrowser', `handleUpload OK: ${entry.name}`);
       loadRemoteFiles(remotePath);
     } catch (e) {
+      log('FileBrowser', `handleUpload ERROR: ${e}`);
       setTransfers(prev => prev.map(t =>
         t.id === transferId ? { ...t, status: 'error' as const, error: `${e}` } : t
       ));

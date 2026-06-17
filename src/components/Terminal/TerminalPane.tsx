@@ -214,22 +214,32 @@ async function handleZmodemDetection(
           offset += p.length;
         }
 
+        // 弹出保存对话框让用户选择保存位置
         try {
-          await invoke('save_file', {
-            path: `~/Downloads/${filename}`,
-            data: Array.from(merged),
+          const savePath = await save({
+            title: '保存下载文件',
+            defaultPath: filename,
+            filters: [{ name: '所有文件', extensions: ['*'] }],
           });
+          if (savePath) {
+            await invoke('save_file', { path: savePath, data: Array.from(merged) });
+          }
         } catch (e) {
-          console.error('Failed to save ZMODEM file:', e);
+          console.error('ZMODEM 保存失败:', e);
         }
 
         setZmodemTransfer({ filename, bytesReceived: totalLen, totalSize, status: 'complete' });
+        // 完成后 5 秒自动关闭进度条
+        setTimeout(() => setZmodemTransfer(null), 5000);
       });
     });
 
     session.on('session_end', () => {
       setTimeout(() => setZmodemTransfer(null), 3000);
     });
+
+    // 兜底：30 秒后强制关闭进度条（防止 session_end 没触发）
+    setTimeout(() => setZmodemTransfer(null), 30000);
 
     session.start();
   } else {
@@ -794,8 +804,12 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
               </>
             )}
             {zmodemTransfer.status === 'complete' && (
-              <span style={{ color: '#3fb950' }}>{'✓'} {'完成'}</span>
+              <span style={{ color: '#3fb950' }}>{'✓ 完成'}</span>
             )}
+            <button
+              onClick={() => setZmodemTransfer(null)}
+              style={{ color: '#8b949e', background: 'none', border: 'none', cursor: 'pointer', fontSize: '14px', padding: '0 4px', marginLeft: '4px' }}
+            >{'×'}</button>
           </div>
         </div>
       )}

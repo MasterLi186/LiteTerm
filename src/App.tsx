@@ -15,6 +15,7 @@ import { ShortcutSettings, loadShortcuts, matchShortcut } from './components/Sho
 import { TunnelManager } from './components/TunnelManager';
 import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
+import { log } from './utils/logger';
 
 function getTerminalSize() {
   return {
@@ -438,6 +439,8 @@ function App() {
     authMethod: string,
     keyPath: string | null,
   ) {
+    log('SFTP', `启动监控和SFTP, sessionId=${sessionId}, host=${host}, pw=${password ? '有' : '无'}`);
+
     // Start monitor in background
     invoke('start_monitor', {
       sessionId,
@@ -447,24 +450,34 @@ function App() {
       password: password || null,
       authMethod,
       keyPath: keyPath || null,
-    }).catch((e) => console.error('Monitor start failed:', e));
+    }).catch((e) => log('监控', `启动失败: ${e}`));
 
     // Delay SFTP start to let SSH session fully stabilize
+    log('SFTP', '等待5秒后启动SFTP session...');
     await new Promise(r => setTimeout(r, 5000));
 
-    try {
-      await invoke('start_sftp_session', {
-        sessionId,
-        host,
-        port,
-        user,
-        password: password || null,
-        authMethod,
-        keyPath: keyPath || null,
-      });
-    } catch (e) {
-      console.error('SFTP session start failed:', e);
+    // SFTP 连接重试，最多3次
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        log('SFTP', `第${attempt}次尝试建立SFTP session...`);
+        await invoke('start_sftp_session', {
+          sessionId,
+          host,
+          port,
+          user,
+          password: password || null,
+          authMethod,
+          keyPath: keyPath || null,
+        });
+        log('SFTP', `SFTP session 建立成功`);
+        setSftpReady(prev => prev + 1);
+        return;
+      } catch (e) {
+        log('SFTP', `第${attempt}次失败: ${e}`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+      }
     }
+    log('SFTP', 'SFTP session 建立最终失败');
   }
 
   async function attemptReconnect(tab: Tab, attempt = 1) {
@@ -662,6 +675,7 @@ function App() {
   ) {
     setError(null);
     const resolvedAuthMethod = hostConfig.auth === 'keyring' ? 'password' : hostConfig.auth;
+    log('连接', `doConnect ${hostConfig.host}:${hostConfig.port} user=${hostConfig.user} auth=${resolvedAuthMethod} pw=${password ? '有' : '无'}`);
     try {
       const id = await sshConnect({
         host: hostConfig.host,
@@ -952,6 +966,7 @@ function App() {
   const [showTunnelManager, setShowTunnelManager] = useState(false);
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
+  const [sftpReady, setSftpReady] = useState(0);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
@@ -1230,6 +1245,66 @@ function App() {
               >
                 复制标签页
               </button>
+              {(() => {
+                const t = tabs.find(t => t.id === tabContextMenu.tabId);
+                return t?.type === 'ssh' && t.sshParams ? (
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-accent-cyan"
+                    onClick={async () => {
+                      const tab = t;
+                      const sp = tab.sshParams!;
+                      setTabContextMenu(null);
+                      log('重连', `开始重连 ${sp.host}:${sp.port}, authMethod=${sp.authMethod}, password=${sp.password ? '有' : '无'}`);
+
+                      // 如果密码为空且认证方式是密码，先从 keyring 取
+                      let pw = sp.password;
+                      if (!pw && sp.authMethod === 'password') {
+                        try {
+                          const stored = await invoke<string | null>('retrieve_password', {
+                            user: sp.user, host: sp.host, port: sp.port,
+                          });
+                          if (stored) pw = stored;
+                          log('重连', `从 keyring 获取密码: ${stored ? '成功' : '失败'}`);
+                        } catch (e) {
+                          log('重连', `keyring 查询异常: ${e}`);
+                        }
+                      }
+
+                      // 关闭旧终端
+                      log('重连', `关闭旧终端 ${tab.id}`);
+                      invoke('close_terminal', { id: tab.id }).catch(() => {});
+
+                      try {
+                        log('重连', `发起 SSH 连接...`);
+                        const newId = await sshConnect({
+                          host: sp.host, port: sp.port, user: sp.user,
+                          password: pw, authMethod: sp.authMethod,
+                          keyPath: sp.keyPath, proxyJump: sp.proxyJump || null,
+                          label: tab.label,
+                        });
+                        log('重连', `连接成功, newId=${newId}`);
+
+                        setTabs(prev => prev.map(x => x.id === tab.id ? { ...x, id: newId, sshParams: { ...sp, password: pw } } : x));
+                        setSplitTrees(prev => {
+                          const next = { ...prev };
+                          delete next[tab.id];
+                          next[newId] = { type: 'terminal' as const, terminalId: newId };
+                          return next;
+                        });
+                        setActiveTabId(newId);
+                        setFocusedTerminalId(newId);
+                        setTimeout(() => invoke('terminal_resize', { id: newId, cols: 120, rows: 36 }).catch(() => {}), 300);
+                        startMonitorAndSftp(newId, sp.host, sp.port, sp.user, pw, sp.authMethod, sp.keyPath);
+                      } catch (e) {
+                        log('重连', `失败: ${e}`);
+                        setError(`重连失败: ${e}`);
+                      }
+                    }}
+                  >
+                    重新连接
+                  </button>
+                ) : null;
+              })()}
               <div className="border-t border-surface-border my-1" />
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
@@ -1509,7 +1584,7 @@ function App() {
             className="border-t border-surface-border bg-surface-light flex flex-col file-browser-panel flex-shrink-0"
             style={{ height: `${fileBrowserHeight}px` }}
           >
-            <FileBrowser sessionId={activeSshSessionId} activeTerminalId={activeTabId} sshUser={activeTab?.sshParams?.user} />
+            <FileBrowser sessionId={activeSshSessionId} activeTerminalId={activeTabId} sshUser={activeTab?.sshParams?.user} sftpReady={sftpReady} />
           </div>
         )}
       </main>

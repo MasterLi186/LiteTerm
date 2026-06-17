@@ -102,9 +102,13 @@ pub async fn start_sftp_session(
     )
     .map_err(|e| format!("SFTP连接失败: {}", e))?;
 
+    tcp.set_nodelay(true).ok();
+
     let mut session = ssh2::Session::new().map_err(|e| format!("SSH会话创建失败: {}", e))?;
     session.set_tcp_stream(tcp);
     session.handshake().map_err(|e| format!("SSH握手失败: {}", e))?;
+    session.set_keepalive(true, 30);
+    session.set_timeout(30_000);
 
     // Authenticate
     match auth_method.as_str() {
@@ -319,40 +323,86 @@ pub async fn sftp_upload(
     local_path: String,
     remote_path: String,
 ) -> Result<(), String> {
+    use std::io::Write as LogWrite;
+
+    let log_path = dirs::home_dir().unwrap_or_default().join("guishell_transfer.log");
+    let mut log = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(&log_path).ok();
+
+    macro_rules! log {
+        ($($arg:tt)*) => {
+            if let Some(ref mut f) = log {
+                let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                let _ = writeln!(f, "[{}.{:03}] {}", d.as_secs(), d.subsec_millis(), format!($($arg)*));
+            }
+        };
+    }
+
+    log!("UPLOAD START: session={}, local={}, remote={}", session_id, local_path, remote_path);
+
+    let expanded_local = shellexpand::tilde(&local_path).to_string();
     let meta =
-        std::fs::metadata(&local_path).map_err(|e| format!("无法读取本地文件信息: {}", e))?;
+        std::fs::metadata(&expanded_local).map_err(|e| {
+            let msg = format!("无法读取本地文件信息: {} (path={})", e, expanded_local);
+            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            msg
+        })?;
     let total = meta.len();
+    log!("Local file size: {} bytes", total);
 
     let sftp_sessions = state.sftp_sessions.lock().unwrap();
     let handle = sftp_sessions
         .get(&session_id)
-        .ok_or_else(|| "SFTP会话未找到".to_string())?;
+        .ok_or_else(|| {
+            let msg = format!("SFTP会话未找到, session_id={}", session_id);
+            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            msg
+        })?;
 
+    log!("Creating remote file: {}", remote_path);
     let mut remote_file = handle
         .sftp
         .create(Path::new(&remote_path))
-        .map_err(|e| format!("无法创建远程文件: {}", e))?;
+        .map_err(|e| {
+            let msg = format!("无法创建远程文件: {} (path={})", e, remote_path);
+            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            msg
+        })?;
 
     let mut local_file =
-        std::fs::File::open(&local_path).map_err(|e| format!("无法打开本地文件: {}", e))?;
+        std::fs::File::open(&expanded_local).map_err(|e| {
+            let msg = format!("无法打开本地文件: {} (path={})", e, expanded_local);
+            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            msg
+        })?;
 
-    let filename = Path::new(&local_path)
+    let filename = Path::new(&expanded_local)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    log!("Starting transfer: {}", filename);
     let mut buf = [0u8; 32768];
     let mut bytes_so_far: u64 = 0;
     loop {
         let n = local_file
             .read(&mut buf)
-            .map_err(|e| format!("读取本地文件失败: {}", e))?;
+            .map_err(|e| {
+                let msg = format!("读取本地文件失败: {} (bytes_so_far={})", e, bytes_so_far);
+                if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+                msg
+            })?;
         if n == 0 {
             break;
         }
         remote_file
             .write_all(&buf[..n])
-            .map_err(|e| format!("写入远程文件失败: {}", e))?;
+            .map_err(|e| {
+                let msg = format!("写入远程文件失败: {} (bytes_so_far={})", e, bytes_so_far);
+                if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+                msg
+            })?;
         bytes_so_far += n as u64;
         let _ = app.emit(
             "transfer-progress",
@@ -365,6 +415,7 @@ pub async fn sftp_upload(
         );
     }
 
+    log!("UPLOAD COMPLETE: {} bytes transferred", bytes_so_far);
     Ok(())
 }
 
