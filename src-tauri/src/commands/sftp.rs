@@ -111,7 +111,7 @@ pub async fn start_sftp_session(
         format!("SFTP连接失败: {}", e)
     })?;
 
-    // SFTP 连接不禁用 Nagle — 大文件传输需要 Nagle 合并小包减少拥塞
+    tcp.set_nodelay(true).ok();
     tcp.set_write_timeout(None).ok();
     tcp.set_read_timeout(None).ok();
 
@@ -318,7 +318,7 @@ pub async fn sftp_download(
         .unwrap_or_default();
 
     app_log!("SFTP", "Starting transfer: {}", filename);
-    let mut buf = [0u8; 262144];
+    let mut buf = [0u8; 32768];
     let mut bytes_so_far: u64 = 0;
     loop {
         let n = remote_file
@@ -354,24 +354,6 @@ pub async fn sftp_download(
     Ok(())
 }
 
-/// Remove a (possibly broken) SFTP session so it can be recreated.
-#[tauri::command]
-pub async fn remove_sftp_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
-    state.sftp_sessions.lock().unwrap().remove(&session_id);
-    app_log!("SFTP", "已移除 SFTP session: {}", session_id);
-    Ok(())
-}
-
-/// Cancel a running transfer by key.
-#[tauri::command]
-pub async fn cancel_transfer(state: State<'_, AppState>, transfer_key: String) -> Result<(), String> {
-    if let Some(flag) = state.transfer_cancel.lock().unwrap().get(&transfer_key) {
-        flag.store(true, std::sync::atomic::Ordering::Relaxed);
-        app_log!("SFTP", "CANCEL requested: {}", transfer_key);
-    }
-    Ok(())
-}
-
 /// Upload a local file to a remote path via SFTP, emitting progress events.
 #[tauri::command]
 pub async fn sftp_upload(
@@ -382,11 +364,6 @@ pub async fn sftp_upload(
     remote_path: String,
 ) -> Result<(), String> {
     app_log!("SFTP", "UPLOAD START: session={}, local={}, remote={}", session_id, local_path, remote_path);
-
-    // 注册 cancel flag
-    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let transfer_key = format!("upload-{}", Path::new(&remote_path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
-    state.transfer_cancel.lock().unwrap().insert(transfer_key.clone(), cancel_flag.clone());
 
     let expanded_local = shellexpand::tilde(&local_path).to_string();
     let meta =
@@ -430,18 +407,10 @@ pub async fn sftp_upload(
         .unwrap_or_default();
 
     app_log!("SFTP", "Starting transfer: {}", filename);
-    let mut buf = [0u8; 262144];
+    let mut buf = [0u8; 32768];
     let mut bytes_so_far: u64 = 0;
     let mut last_log_mb: u64 = 0;
     loop {
-        // 检查取消
-        if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-            app_log!("SFTP", "UPLOAD CANCELLED at {} bytes", bytes_so_far);
-            drop(remote_file);
-            let _ = handle.sftp.unlink(Path::new(&remote_path));
-            state.transfer_cancel.lock().unwrap().remove(&transfer_key);
-            return Err("传输已取消".to_string());
-        }
         let n = local_file
             .read(&mut buf)
             .map_err(|e| {
@@ -477,7 +446,6 @@ pub async fn sftp_upload(
         );
     }
 
-    state.transfer_cancel.lock().unwrap().remove(&transfer_key);
     app_log!("SFTP", "UPLOAD COMPLETE: {} bytes transferred", bytes_so_far);
     Ok(())
 }

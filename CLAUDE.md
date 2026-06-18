@@ -131,19 +131,6 @@ Resize 在 50/150/400ms 三个延迟点触发。fit() 后必须调用 `term.refr
 - `exec_local_command` 在非 Unix 平台返回错误（本地监控依赖 /proc）
 - `.cargo/config.toml` 是本地开发用的 PKG_CONFIG_PATH，已加入 .gitignore 不提交
 
-## 代码审查（硬性要求）
-
-每次修改代码后，**必须**先通过子代理 review 审查，审查通过后才能编译（`./build.sh`）。
-
-流程：
-1. 完成代码修改
-2. 派发 Sonnet 子代理（`Agent` tool, `model: sonnet`）执行 code review
-3. 子代理审查内容：正确性、是否引入 bug、是否与现有逻辑冲突、边界条件
-4. 子代理返回 PASS 或 FAIL + 原因
-5. PASS → 编译；FAIL → 修复后重新审查
-
-**禁止跳过审查直接编译。** 这是项目的质量门禁，没有例外。
-
 ## CI/CD
 
 GitHub Actions（`.github/workflows/build.yml`）：

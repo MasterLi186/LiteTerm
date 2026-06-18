@@ -414,12 +414,13 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
   const [localLoading, setLocalLoading] = useState(false);
   const [localSelected, setLocalSelected] = useState<string | null>(null);
 
-  // Remote pane state — per-session 路径缓存
+  // Remote pane state — per-session path cache
   const sessionPathsRef = useRef<Record<string, string>>({});
-  const [remotePath, setRemotePathRaw] = useState(() => {
-    if (!sessionId) return '/home';
-    return sessionPathsRef.current[sessionId] || (sshUser === 'root' ? '/root' : sshUser ? `/home/${sshUser}` : '/home');
-  });
+  const getSessionPath = (sid: string | null) => {
+    if (!sid) return '/home';
+    return sessionPathsRef.current[sid] || (sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home');
+  };
+  const [remotePath, setRemotePathRaw] = useState(() => getSessionPath(sessionId));
   const setRemotePath = (path: string) => {
     setRemotePathRaw(path);
     if (sessionId) sessionPathsRef.current[sessionId] = path;
@@ -505,50 +506,50 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
     loadingSessionRef.current = null;
   }, [sessionId]);
 
-  // session 切换时恢复路径；sftpReady 变化时查询真实 home 目录
-  const homeQueriedSessions = useRef<Set<string>>(new Set());
+  // session 切换时恢复该 session 的路径缓存，首次则查询远端 home
+  const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     loadingSessionRef.current = null;
-    if (!sessionId) return;
-
-    // 恢复缓存路径
-    if (sessionPathsRef.current[sessionId]) {
-      setRemotePathRaw(sessionPathsRef.current[sessionId]);
+    if (sessionId && sessionId !== prevSessionIdRef.current) {
+      prevSessionIdRef.current = sessionId;
+      if (sessionPathsRef.current[sessionId]) {
+        // 已有缓存，直接恢复
+        setRemotePathRaw(sessionPathsRef.current[sessionId]);
+      } else {
+        // 首次：查询真实 home 目录
+        const fallback = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
+        setRemotePathRaw(fallback);
+        sessionPathsRef.current[sessionId] = fallback;
+        invoke<string>('sftp_exec', { sessionId, command: 'echo $HOME' })
+          .then(home => {
+            if (home && home.startsWith('/')) {
+              log('FileBrowser', `远端 home (${sessionId}): ${home}`);
+              setRemotePath(home);
+            }
+          })
+          .catch(() => {});
+      }
     }
-
-    // 尚未成功查询过 home 目录则查询（sftpReady 变化时也会重试）
-    if (!homeQueriedSessions.current.has(sessionId)) {
-      invoke<string>('sftp_exec', { sessionId, command: 'echo $HOME' })
-        .then(home => {
-          if (home && home.startsWith('/')) {
-            log('FileBrowser', `远端 home (${sessionId}): ${home}`);
-            homeQueriedSessions.current.add(sessionId);
-            setRemotePath(home);
-          }
-        })
-        .catch((e) => {
-          log('FileBrowser', `sftp_exec HOME 失败 (${sessionId}): ${e}`);
-        });
+    if (!sessionId) {
+      prevSessionIdRef.current = null;
     }
-  }, [sessionId, sftpReady]);
+  }, [sessionId, sshUser]);
 
   // Initial load
   useEffect(() => {
     loadLocalFiles(localPath);
   }, [localPath]);
 
-  // 加载远程文件：sftpReady 变化或用户手动切换路径时触发
+  // sftpReady 变化时说明 SFTP session 刚建立成功，触发刷新
   useEffect(() => {
-    if (!sessionId) {
+    if (sessionId) {
+      loadRemoteFiles(remotePath);
+    } else {
       setRemoteFiles([]);
       remoteFilesRef.current = [];
       setRemoteError(null);
-      return;
     }
-    if (sftpReady > 0) {
-      loadRemoteFiles(remotePath);
-    }
-  }, [remotePath, sftpReady]);
+  }, [remotePath, sessionId, sftpReady]);
 
   // Listen for transfer progress events
   useEffect(() => {

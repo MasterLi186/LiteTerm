@@ -176,7 +176,7 @@ function ContextMenu({ x, y, onClose, items }: {
   );
 }
 
-/** Handle a detected ZMODEM session (receive only; send/upload uses SFTP). */
+/** Handle a detected ZMODEM session (receive only; send is handled by Rust zmodem_send). */
 async function handleZmodemDetection(
   detection: any,
   terminalId: string,
@@ -246,7 +246,7 @@ async function handleZmodemDetection(
 
     session.start();
   } else {
-    // Send session（用户手动 rz）或无 pending files — 直接关闭
+    // Send session — handled by Rust backend (zmodem_send command)
     session.close();
   }
 }

@@ -1051,7 +1051,7 @@ function App() {
   const [fileBrowserHeight, setFileBrowserHeight] = useState(256);
   const fbDragging = useRef(false);
 
-  // 拖拽文件到终端上传：通过 SFTP 上传到远端当前工作目录
+  // 拖拽文件到终端上传：通过 ZMODEM 上传（Rust 后端处理）
   useEffect(() => {
     const webview = getCurrentWebview();
     const unlisten = webview.onDragDropEvent((event) => {
@@ -1064,44 +1064,17 @@ function App() {
         setDragOverTerminal(false);
         const paths = event.payload.paths;
         if (!paths.length) return;
-        const sid = activeSshSessionId;
-
-        log('拖拽上传', `${paths.length} 个文件通过 SFTP 上传`, paths);
-        (async () => {
-          // 1. 通过 SFTP session 的 exec 通道获取远端用户的 home 目录（exec 通道初始 cwd）
-          let remoteDir: string;
-          try {
-            remoteDir = await invoke<string>('sftp_exec', { sessionId: sid, command: 'pwd' });
-            log('拖拽上传', `远端目录: ${remoteDir}`);
-          } catch (e) {
-            log('拖拽上传', `获取远端目录失败: ${e}, 回退到 home`);
-            const sshTab = tabs.find(t => t.id === sid);
-            const user = sshTab?.sshParams?.user || 'root';
-            remoteDir = user === 'root' ? '/root' : `/home/${user}`;
-          }
-
-          // 2. 逐个上传文件
-          let successCount = 0;
-          for (const localAbsPath of paths) {
-            const filename = localAbsPath.replace(/\\/g, '/').split('/').pop() || 'file';
-            const remotePath = `${remoteDir}/${filename}`;
-            try {
-              await invoke('sftp_upload', { sessionId: sid, localPath: localAbsPath, remotePath });
-              log('拖拽上传', `完成: ${filename} → ${remotePath}`);
-              successCount++;
-            } catch (e) {
-              log('拖拽上传', `失败: ${filename} - ${e}`);
-              setError(`上传失败: ${filename} - ${e}`);
-            }
-          }
-          if (successCount > 0) {
-            log('拖拽上传', `${successCount}/${paths.length} 个文件上传成功到 ${remoteDir}`);
-          }
-        })();
+        log('拖拽上传', `${paths.length} 个文件通过 ZMODEM 上传`, paths);
+        invoke('zmodem_send', { sessionId: activeSshSessionId, files: paths })
+          .then(() => log('拖拽上传', '完成'))
+          .catch((e) => {
+            log('拖拽上传', `失败: ${e}`);
+            setError(`上传失败: ${e}`);
+          });
       }
     });
     return () => { unlisten.then(fn => fn()); };
-  }, [activeSshSessionId, tabs]);
+  }, [activeSshSessionId]);
 
   // 全局传输进度监听
   useEffect(() => {
@@ -1427,6 +1400,10 @@ function App() {
                           log('重连', `keyring 查询异常: ${e}`);
                         }
                       }
+
+                      // 清除报错和传输弹窗
+                      setError(null);
+                      setGlobalTransfers({});
 
                       // 关闭旧终端
                       log('重连', `关闭旧终端 ${tab.id}`);
@@ -1880,6 +1857,17 @@ function App() {
                       </span>
                       <span className="text-gray-300 truncate flex-1 min-w-0">{t.filename}</span>
                       <span className="text-gray-500 text-[10px] flex-shrink-0">{done ? '完成' : sizeStr}</span>
+                      {!done && (
+                        <button
+                          onClick={() => {
+                            const cancelKey = `${t.direction}-${t.filename}`;
+                            invoke('cancel_transfer', { transferKey: cancelKey }).catch(() => {});
+                            setGlobalTransfers(prev => { const n = { ...prev }; delete n[cancelKey]; return n; });
+                          }}
+                          className="text-gray-500 hover:text-accent-red flex-shrink-0 ml-1"
+                          title="取消传输"
+                        ><IconClose size={11} /></button>
+                      )}
                     </div>
                     <div className="h-1.5 bg-surface rounded-full overflow-hidden">
                       <div
