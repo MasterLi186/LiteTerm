@@ -218,6 +218,17 @@ pub async fn sftp_exec(
     Ok(output.trim().to_string())
 }
 
+/// Flip the cancel flag for an in-progress transfer (keyed `<direction>-<filename>`).
+/// Used by the progress panel's cancel button (e.g. ZMODEM upload).
+#[tauri::command]
+pub async fn cancel_transfer(state: State<'_, AppState>, transfer_key: String) -> Result<(), String> {
+    if let Some(flag) = state.transfer_cancel.lock().unwrap().get(&transfer_key) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        app_log!("SFTP", "cancel_transfer: {}", transfer_key);
+    }
+    Ok(())
+}
+
 /// List files in a remote directory via SFTP.
 #[tauri::command]
 pub async fn sftp_list_dir(

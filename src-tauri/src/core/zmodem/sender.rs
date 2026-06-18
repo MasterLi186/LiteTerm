@@ -4,11 +4,10 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use super::{DecodedFrame, FrameType, ESCCTL};
-use super::{ZCRCE, ZCRCG, ZCRCQ, ZCRCW};
+use super::{ZCRCE, ZCRCG, ZCRCW};
 use super::encode::*;
 
 const SUBPACKET_SIZE: usize = 8192;
-const WINDOW_SUBPACKETS: usize = 32; // send ZCRCQ every 32 subpackets for flow control
 
 pub struct FileInfo {
     pub path: PathBuf,
@@ -35,7 +34,6 @@ enum State {
     WaitFileAccept,
     SendData,
     SentEof,
-    SendZfin,
     WaitZfinReply,
     Done,
 }
@@ -67,6 +65,11 @@ impl ZmodemSender {
 
     pub fn is_done(&self) -> bool {
         self.state == State::Done
+    }
+
+    /// Whether the sender is actively streaming file data (caller should pump chunks).
+    pub fn in_send_data(&self) -> bool {
+        self.state == State::SendData
     }
 
     /// Generate the initial ZRQINIT to kick off the session
@@ -124,15 +127,11 @@ impl ZmodemSender {
             State::SentEof => {
                 match frame.frame_type {
                     FrameType::ZRINIT => {
-                        let name = self.current_file_name();
-                        let action = SenderAction::FileComplete(name);
-                        // Advance to next file or finish
-                        let next = self.advance_to_next_file();
-                        // Return file complete first; caller should also process next
-                        return match next {
-                            SenderAction::AllComplete => SenderAction::FileComplete(self.files[self.current_idx.saturating_sub(1)].name.clone()),
-                            _ => action,
-                        };
+                        // Current file fully received. Advance — this returns the
+                        // NEXT action to send (ZFILE for the next file, or ZFIN to
+                        // end the session). It MUST be returned so the frame is
+                        // actually written to the wire.
+                        return self.advance_to_next_file();
                     }
                     FrameType::ZRPOS => {
                         let offset = frame.offset() as u64;
@@ -178,14 +177,10 @@ impl ZmodemSender {
         self.file_offset += n as u64;
         self.subpacket_count += 1;
 
-        // Choose subpacket end type
-        let end_type = if self.subpacket_count % WINDOW_SUBPACKETS == 0 {
-            ZCRCQ // request ZACK for flow control
-        } else {
-            ZCRCG // continue nonstop
-        };
-
-        let encoded = encode_data_subpacket(&buf[..n], end_type);
+        // 纯流式（lrzsz streaming mode）：所有数据子包用 ZCRCG 连续发送，
+        // 不用 ZCRCQ 请求 ZACK（ZCRCQ 要求发送方暂停等待 ZACK，否则协议失步）。
+        // 错误恢复完全依赖接收方的 ZRPOS（seek 重传）。
+        let encoded = encode_data_subpacket(&buf[..n], ZCRCG);
 
         Some(SenderAction::Send(encoded))
     }
@@ -261,14 +256,6 @@ impl ZmodemSender {
     fn send_zfin(&mut self) -> SenderAction {
         self.state = State::WaitZfinReply;
         SenderAction::Send(encode_zhex_header(FrameType::ZFIN as u8, [0; 4]))
-    }
-
-    fn current_file_name(&self) -> String {
-        if self.current_idx < self.files.len() {
-            self.files[self.current_idx].name.clone()
-        } else {
-            String::new()
-        }
     }
 }
 

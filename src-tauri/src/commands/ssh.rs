@@ -140,9 +140,9 @@ pub async fn ssh_connect(
     let (status_tx, status_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
     let zmodem_active = Arc::new(AtomicBool::new(false));
-    let zmodem_tx: Arc<Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>> = Arc::new(Mutex::new(None));
+    let zmodem_request: Arc<Mutex<Option<crate::state::ZmodemSendRequest>>> = Arc::new(Mutex::new(None));
     let zmodem_active_clone = zmodem_active.clone();
-    let zmodem_tx_clone = zmodem_tx.clone();
+    let zmodem_request_clone = zmodem_request.clone();
 
     std::thread::spawn(move || {
         app_log!("SSH", "SSH CONNECT START: {}:{} user={} auth={}", host, port, user, auth_method);
@@ -280,9 +280,54 @@ pub async fn ssh_connect(
         let id_for_read = id_clone.clone();
         let mut last_keepalive = std::time::Instant::now();
         loop {
+            // ZMODEM upload: when signaled, run the whole protocol inline on this
+            // thread (we own the channel). One thread, one decoder, network-paced.
+            if zmodem_active_clone.load(std::sync::atomic::Ordering::Acquire) {
+                let req = zmodem_request_clone.lock().unwrap().take();
+                if let Some(req) = req {
+                    // Panic-isolate the protocol so a bug can't silently kill the
+                    // reader thread (which would freeze the terminal and hang the
+                    // waiting command). On panic, still answer the command.
+                    let result_tx = req.result_tx;
+                    let files = req.files;
+                    let cancel = req.cancel;
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        crate::commands::zmodem::run_zmodem_send(
+                            &mut channel,
+                            &session,
+                            files,
+                            &app_clone,
+                            &cancel,
+                        )
+                    }))
+                    .unwrap_or_else(|_| {
+                        app_log!("ZMODEM", "run_zmodem_send panic");
+                        Err("ZMODEM 内部错误".to_string())
+                    });
+                    zmodem_active_clone.store(false, std::sync::atomic::Ordering::Release);
+                    let _ = result_tx.send(r);
+                    // Refresh the shell prompt after the transfer.
+                    session.set_blocking(false);
+                    let _ = channel.write(b"\r");
+                    let _ = channel.flush();
+                    last_keepalive = std::time::Instant::now();
+                    continue;
+                }
+            }
+
+            // Answer any orphaned ZMODEM request before exiting so the command
+            // never blocks forever on a dropped connection.
+            let answer_orphan = || {
+                if let Some(req) = zmodem_request_clone.lock().unwrap().take() {
+                    zmodem_active_clone.store(false, std::sync::atomic::Ordering::Release);
+                    let _ = req.result_tx.send(Err("连接已关闭".to_string()));
+                }
+            };
+
             let mut buf = [0u8; 4096];
             match channel.read(&mut buf) {
                 Ok(0) => {
+                    answer_orphan();
                     let _ = app_clone.emit(
                         "terminal-closed",
                         serde_json::json!({"id": id_for_read}),
@@ -290,23 +335,17 @@ pub async fn ssh_connect(
                     break;
                 }
                 Ok(n) => {
-                    if zmodem_active_clone.load(std::sync::atomic::Ordering::Acquire) {
-                        let guard = zmodem_tx_clone.lock().unwrap();
-                        if let Some(ref tx) = *guard {
-                            let _ = tx.send(buf[..n].to_vec());
-                        }
-                    } else {
-                        let _ = app_clone.emit(
-                            "terminal-output",
-                            serde_json::json!({
-                                "id": id_for_read,
-                                "data": &buf[..n],
-                            }),
-                        );
-                    }
+                    let _ = app_clone.emit(
+                        "terminal-output",
+                        serde_json::json!({
+                            "id": id_for_read,
+                            "data": &buf[..n],
+                        }),
+                    );
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(_) => {
+                    answer_orphan();
                     let _ = app_clone.emit(
                         "terminal-closed",
                         serde_json::json!({"id": id_for_read}),
@@ -315,34 +354,9 @@ pub async fn ssh_connect(
                 }
             }
 
-            // Write user input — non-blocking, drain reads on WouldBlock to avoid deadlock
+            // Write user input (keyboard) — non-blocking
             while let Ok(data) = input_rx.try_recv() {
-                let mut offset = 0;
-                let mut retries = 0;
-                while offset < data.len() {
-                    match channel.write(&data[offset..]) {
-                        Ok(n) => { offset += n; retries = 0; }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            // Drain pending read data to free SSH window
-                            let mut drain_buf = [0u8; 8192];
-                            if let Ok(n) = channel.read(&mut drain_buf) {
-                                if n > 0 {
-                                    if zmodem_active_clone.load(std::sync::atomic::Ordering::Acquire) {
-                                        if let Some(ref tx) = *zmodem_tx_clone.lock().unwrap() {
-                                            let _ = tx.send(drain_buf[..n].to_vec());
-                                        }
-                                    } else {
-                                        let _ = app_clone.emit("terminal-output", serde_json::json!({"id": id_for_read, "data": &drain_buf[..n]}));
-                                    }
-                                }
-                            }
-                            retries += 1;
-                            if retries > 5000 { break; }
-                            std::thread::sleep(std::time::Duration::from_millis(1));
-                        }
-                        Err(_) => break,
-                    }
-                }
+                let _ = channel.write_all(&data);
                 let _ = channel.flush();
             }
 
@@ -376,7 +390,7 @@ pub async fn ssh_connect(
                     monitor_stop,
                     sftp_request_tx: sftp_tx,
                     zmodem_active,
-                    zmodem_tx,
+                    zmodem_request,
                 },
             );
             Ok(id)

@@ -20,8 +20,18 @@ pub struct ManagedSession {
     pub resize_tx: std::sync::mpsc::Sender<(u32, u32)>,
     pub monitor_stop: Arc<AtomicBool>,
     pub sftp_request_tx: std::sync::mpsc::Sender<SftpRequest>,
+    /// Set true by zmodem_send to tell the reader thread to run a ZMODEM transfer.
     pub zmodem_active: Arc<AtomicBool>,
-    pub zmodem_tx: Arc<Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>>,
+    /// The pending ZMODEM send request, consumed by the reader thread.
+    pub zmodem_request: Arc<Mutex<Option<ZmodemSendRequest>>>,
+}
+
+/// A ZMODEM upload request handed from the `zmodem_send` command to the SSH
+/// reader thread (which owns the channel).
+pub struct ZmodemSendRequest {
+    pub files: Vec<crate::core::zmodem::sender::FileInfo>,
+    pub result_tx: std::sync::mpsc::Sender<Result<(), String>>,
+    pub cancel: Arc<AtomicBool>,
 }
 
 pub struct LocalTerminal {

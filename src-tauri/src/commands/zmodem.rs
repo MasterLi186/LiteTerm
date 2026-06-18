@@ -1,14 +1,19 @@
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_log;
 use crate::core::zmodem::decode::ZmodemDecoder;
+use crate::core::zmodem::encode::zcancel;
 use crate::core::zmodem::sender::{FileInfo, SenderAction, ZmodemSender};
-use crate::state::AppState;
+use crate::core::zmodem::DecodedFrame;
+use crate::state::{AppState, ZmodemSendRequest};
 
+/// Frontend-invoked ZMODEM upload. Hands a request to the session's reader
+/// thread (which owns the SSH channel) and blocks for the result.
 #[tauri::command]
 pub async fn zmodem_send(
     state: State<'_, AppState>,
@@ -16,6 +21,7 @@ pub async fn zmodem_send(
     session_id: String,
     files: Vec<String>,
 ) -> Result<(), String> {
+    let _ = app;
     app_log!("ZMODEM", "SEND START: session={}, files={}", session_id, files.len());
 
     // Collect file info
@@ -25,217 +31,259 @@ pub async fn zmodem_send(
         let path = PathBuf::from(&expanded);
         let meta = std::fs::metadata(&path)
             .map_err(|e| format!("无法读取文件: {} - {}", path_str, e))?;
-        let name = path.file_name()
+        let name = path
+            .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path_str.clone());
-        let mtime = meta.modified().ok()
+        let mtime = meta
+            .modified()
+            .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        file_infos.push(FileInfo {
-            path,
-            name,
-            size: meta.len(),
-            mtime,
-        });
+        file_infos.push(FileInfo { path, name, size: meta.len(), mtime });
     }
 
-    // Get session resources
-    let (input_tx, zmodem_active, zmodem_tx_holder) = {
+    // Acquire session resources
+    let (request_slot, zmodem_active) = {
         let sessions = state.sessions.lock().unwrap();
-        let session = sessions.get(&session_id)
-            .ok_or_else(|| "会话未找到".to_string())?;
-        // Guard against concurrent invocations on the same session
+        let session = sessions
+            .get(&session_id)
+            .ok_or_else(|| "会话未找到（仅直连 SSH 终端支持拖拽上传）".to_string())?;
         if session.zmodem_active.load(Ordering::Acquire) {
             return Err("ZMODEM 传输已在进行中".to_string());
         }
-        (
-            session.input_tx.clone(),
-            session.zmodem_active.clone(),
-            session.zmodem_tx.clone(),
-        )
+        (session.zmodem_request.clone(), session.zmodem_active.clone())
     };
 
-    // Create channel for receiving terminal output from the reader thread
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    // Cancel flag — registered in transfer_cancel under the same key the
+    // frontend progress panel uses (`zmodem-upload-<filename>`), so the
+    // existing cancel_transfer command flips it.
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut cancels = state.transfer_cancel.lock().unwrap();
+        for f in &file_infos {
+            cancels.insert(format!("zmodem-upload-{}", f.name), cancel.clone());
+        }
+    }
+    let cancel_keys: Vec<String> = file_infos
+        .iter()
+        .map(|f| format!("zmodem-upload-{}", f.name))
+        .collect();
 
-    // Activate ZMODEM mode — store tx first (Release on Mutex unlock), then set flag (Release)
-    *zmodem_tx_holder.lock().unwrap() = Some(tx);
+    // Submit the request and signal the reader thread.
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    *request_slot.lock().unwrap() = Some(ZmodemSendRequest {
+        files: file_infos,
+        result_tx,
+        cancel,
+    });
     zmodem_active.store(true, Ordering::Release);
 
-    // Send "rz\r" to start rz on the remote
-    if input_tx.send(b"rz\r".to_vec()).is_err() {
-        zmodem_active.store(false, Ordering::Release);
-        *zmodem_tx_holder.lock().unwrap() = None;
-        return Err("终端连接已断开，请重新连接后再试".into());
-    }
+    // Block (on a blocking thread) for the reader thread's result.
+    let result = tokio::task::spawn_blocking(move || {
+        result_rx
+            .recv()
+            .unwrap_or_else(|_| Err("ZMODEM 处理线程无响应".into()))
+    })
+    .await
+    .map_err(|e| format!("ZMODEM 线程异常: {}", e))?;
 
-    // Run the protocol on a blocking thread
-    let app_clone = app.clone();
-    let session_id_clone = session_id.clone();
-    let join_result = tokio::task::spawn_blocking(move || {
-        run_zmodem_protocol(file_infos, input_tx, rx, app_clone, &session_id_clone)
-    }).await;
-
-    // Always deactivate ZMODEM mode regardless of outcome (including panics)
-    zmodem_active.store(false, Ordering::Release);
-    *zmodem_tx_holder.lock().unwrap() = None;
-
-    let result = join_result.map_err(|e| format!("ZMODEM 线程异常: {}", e))?;
-
-    app_log!("ZMODEM", "SEND END: session={}, result={:?}", session_id, result.is_ok());
-
-    // Send a newline to refresh the prompt
+    // Clean up cancel keys
     {
-        let sessions = state.sessions.lock().unwrap();
-        if let Some(session) = sessions.get(&session_id) {
-            let _ = session.input_tx.send(b"\r".to_vec());
+        let mut cancels = state.transfer_cancel.lock().unwrap();
+        for k in &cancel_keys {
+            cancels.remove(k);
         }
     }
 
+    app_log!("ZMODEM", "SEND END: session={}, ok={}", session_id, result.is_ok());
     result
 }
 
-fn run_zmodem_protocol(
-    files: Vec<FileInfo>,
-    input_tx: std::sync::mpsc::Sender<Vec<u8>>,
-    rx: std::sync::mpsc::Receiver<Vec<u8>>,
-    app: AppHandle,
-    session_id: &str,
+/// Write a full buffer to the SSH channel, interleaving reads on WouldBlock so
+/// the single-threaded read/write loop never deadlocks. Inbound bytes are fed
+/// to the SAME decoder (no cross-thread reordering) and decoded frames queued.
+fn zm_write(
+    channel: &mut ssh2::Channel,
+    decoder: &mut ZmodemDecoder,
+    pending: &mut Vec<DecodedFrame>,
+    data: &[u8],
 ) -> Result<(), String> {
-    let _ = session_id; // used for logging context
+    use std::io::{Read, Write};
+    let mut off = 0usize;
+    let mut last = Instant::now();
+    while off < data.len() {
+        match channel.write(&data[off..]) {
+            Ok(0) => {
+                if last.elapsed() > Duration::from_secs(60) {
+                    return Err("写入停滞超时".into());
+                }
+            }
+            Ok(n) => {
+                off += n;
+                last = Instant::now();
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Drain remote to free the SSH window; feed the single decoder.
+                let mut rb = [0u8; 8192];
+                match channel.read(&mut rb) {
+                    Ok(n) if n > 0 => {
+                        last = Instant::now();
+                        if ZmodemDecoder::detect_cancel(&rb[..n]) {
+                            return Err("远端取消传输".into());
+                        }
+                        for f in decoder.feed(&rb[..n]) {
+                            pending.push(f);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(e) => return Err(format!("读取错误: {}", e)),
+                }
+                if last.elapsed() > Duration::from_secs(60) {
+                    return Err("写入停滞超时".into());
+                }
+            }
+            Err(e) => return Err(format!("写入错误: {}", e)),
+        }
+    }
+    let _ = channel.flush();
+    Ok(())
+}
+
+/// Run the full ZMODEM send protocol on the SSH reader thread, owning the
+/// channel for both read and write. One thread, one decoder, network-paced.
+pub fn run_zmodem_send(
+    channel: &mut ssh2::Channel,
+    session: &ssh2::Session,
+    files: Vec<FileInfo>,
+    app: &AppHandle,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    use std::io::Read;
+
+    session.set_blocking(false);
+
     let mut sender = ZmodemSender::new(files);
     let mut decoder = ZmodemDecoder::new();
+    let mut pending: Vec<DecodedFrame> = Vec::new();
 
-    // Send ZRQINIT to initiate
-    match sender.start() {
-        SenderAction::Send(data) => { let _ = input_tx.send(data); }
-        _ => {}
+    app_log!("ZMODEM", "run_zmodem_send 启动");
+
+    // Kick rz on the remote, then announce ourselves.
+    zm_write(channel, &mut decoder, &mut pending, b"rz\r")?;
+    if let SenderAction::Send(d) = sender.start() {
+        zm_write(channel, &mut decoder, &mut pending, &d)?;
     }
 
-    let mut last_progress = Instant::now();
-    let timeout = Duration::from_secs(30);
     let mut last_activity = Instant::now();
+    let mut last_progress = Instant::now();
+    let mut last_keepalive = Instant::now();
+
+    let emit_progress = |sender: &ZmodemSender, app: &AppHandle| {
+        if let Some(SenderAction::Progress { bytes_sent, total, filename }) = sender.progress() {
+            let _ = app.emit(
+                "transfer-progress",
+                serde_json::json!({
+                    "filename": filename,
+                    "bytes_transferred": bytes_sent,
+                    "total_bytes": total,
+                    "direction": "zmodem-upload"
+                }),
+            );
+        }
+    };
 
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            app_log!("ZMODEM", "用户取消");
+            let _ = zm_write(channel, &mut decoder, &mut pending, &zcancel());
+            return Err("传输已取消".into());
+        }
         if sender.is_done() {
             break;
         }
-
-        // Check for timeout
-        if last_activity.elapsed() > timeout {
-            app_log!("ZMODEM", "TIMEOUT: 30 秒无响应");
-            let _ = input_tx.send(crate::core::zmodem::encode::zcancel());
-            return Err("ZMODEM 超时".into());
+        if last_activity.elapsed() > Duration::from_secs(60) {
+            app_log!("ZMODEM", "TIMEOUT: 60 秒无网络活动");
+            let _ = zm_write(channel, &mut decoder, &mut pending, &zcancel());
+            return Err("ZMODEM 超时(60 秒无网络活动)".into());
         }
 
-        // Try to receive data from the reader thread (non-blocking with short timeout)
-        match rx.recv_timeout(Duration::from_millis(10)) {
-            Ok(data) => {
+        // 1. Read inbound bytes → decoder → queue frames.
+        let mut rb = [0u8; 8192];
+        match channel.read(&mut rb) {
+            Ok(0) => return Err("连接已关闭".into()),
+            Ok(n) => {
                 last_activity = Instant::now();
-
-                // Check for cancel (5+ CAN bytes)
-                if ZmodemDecoder::detect_cancel(&data) {
-                    app_log!("ZMODEM", "远端取消");
+                if ZmodemDecoder::detect_cancel(&rb[..n]) {
                     return Err("远端取消传输".into());
                 }
-
-                // Parse frames
-                let frames = decoder.feed(&data);
-                for frame in frames {
-                    app_log!("ZMODEM", "收到帧: {:?} offset={}", frame.frame_type, frame.offset());
-                    match sender.handle_frame(&frame) {
-                        SenderAction::Send(out) => { let _ = input_tx.send(out); }
-                        SenderAction::Error(e) => {
-                            app_log!("ZMODEM", "ERROR: {}", e);
-                            let _ = input_tx.send(crate::core::zmodem::encode::zcancel());
-                            return Err(e);
-                        }
-                        SenderAction::FileComplete(name) => {
-                            app_log!("ZMODEM", "文件完成: {}", name);
-                        }
-                        SenderAction::AllComplete => {
-                            app_log!("ZMODEM", "所有文件传输完成");
-                        }
-                        SenderAction::Progress { .. } | SenderAction::None => {}
-                    }
+                for f in decoder.feed(&rb[..n]) {
+                    pending.push(f);
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("终端连接断开".into());
-            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(format!("读取错误: {}", e)),
         }
 
-        // Pump data while in SendData state
-        let mut chunk_count = 0u64;
-        while let Some(action) = sender.next_data_chunk() {
-            match action {
-                SenderAction::Send(data) => {
-                    if input_tx.send(data).is_err() {
-                        return Err("终端写入通道断开".into());
-                    }
+        // 2. Process queued frames.
+        let frames: Vec<DecodedFrame> = pending.drain(..).collect();
+        for frame in frames {
+            app_log!("ZMODEM", "帧 {:?} off={}", frame.frame_type, frame.offset());
+            match sender.handle_frame(&frame) {
+                SenderAction::Send(out) => {
+                    zm_write(channel, &mut decoder, &mut pending, &out)?;
                     last_activity = Instant::now();
-                    chunk_count += 1;
                 }
                 SenderAction::Error(e) => {
-                    let _ = input_tx.send(crate::core::zmodem::encode::zcancel());
+                    let _ = zm_write(channel, &mut decoder, &mut pending, &zcancel());
                     return Err(e);
                 }
-                _ => {
-                    app_log!("ZMODEM", "next_data_chunk 返回非 Send: chunk_count={}", chunk_count);
-                    break;
+                SenderAction::FileComplete(name) => {
+                    app_log!("ZMODEM", "文件完成: {}", name);
+                    emit_progress(&sender, app);
                 }
-            }
-
-            // Emit progress every 200ms
-            if last_progress.elapsed() > Duration::from_millis(200) {
-                if let Some(SenderAction::Progress { bytes_sent, total, filename }) = sender.progress() {
-                    let _ = app.emit("transfer-progress", serde_json::json!({
-                        "filename": filename,
-                        "bytes_transferred": bytes_sent,
-                        "total_bytes": total,
-                        "direction": "zmodem-upload"
-                    }));
+                SenderAction::AllComplete => {
+                    app_log!("ZMODEM", "全部文件完成");
                 }
-                last_progress = Instant::now();
-            }
-
-            // Check for incoming frames during data sending (non-blocking)
-            if let Ok(data) = rx.try_recv() {
-                last_activity = Instant::now();
-                if ZmodemDecoder::detect_cancel(&data) {
-                    return Err("远端取消传输".into());
-                }
-                let frames = decoder.feed(&data);
-                for frame in frames {
-                    app_log!("ZMODEM", "数据发送中收到帧: {:?} offset={}", frame.frame_type, frame.offset());
-                    match sender.handle_frame(&frame) {
-                        SenderAction::Send(out) => {
-                            app_log!("ZMODEM", "handle_frame 产出 Send, len={}", out.len());
-                            let _ = input_tx.send(out);
-                        }
-                        SenderAction::Error(e) => {
-                            let _ = input_tx.send(crate::core::zmodem::encode::zcancel());
-                            return Err(e);
-                        }
-                        _ => {}
-                    }
-                }
+                _ => {}
             }
         }
-        app_log!("ZMODEM", "数据发送循环结束, chunk_count={}, sender.is_done={}", chunk_count, sender.is_done());
+
+        // 3. Pump ONE data chunk if streaming (network-paced — zm_write blocks
+        //    until the chunk is actually on the wire). Real progress, bounded RAM.
+        if sender.in_send_data() {
+            match sender.next_data_chunk() {
+                Some(SenderAction::Send(chunk)) => {
+                    zm_write(channel, &mut decoder, &mut pending, &chunk)?;
+                    last_activity = Instant::now();
+                    if last_progress.elapsed() > Duration::from_millis(150) {
+                        emit_progress(&sender, app);
+                        last_progress = Instant::now();
+                    }
+                }
+                Some(SenderAction::Error(e)) => {
+                    let _ = zm_write(channel, &mut decoder, &mut pending, &zcancel());
+                    return Err(e);
+                }
+                _ => {}
+            }
+        } else if pending.is_empty() {
+            // Waiting on the remote — yield briefly to avoid a busy spin.
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // SSH keepalive (transfers are activity, but keep the timer honest).
+        if last_keepalive.elapsed() >= Duration::from_secs(15) {
+            let _ = session.keepalive_send();
+            last_keepalive = Instant::now();
+        }
     }
 
-    // Final progress
-    if let Some(SenderAction::Progress { bytes_sent, total, filename }) = sender.progress() {
-        let _ = app.emit("transfer-progress", serde_json::json!({
-            "filename": filename,
-            "bytes_transferred": bytes_sent,
-            "total_bytes": total,
-            "direction": "zmodem-upload"
-        }));
-    }
-
+    emit_progress(&sender, app);
+    app_log!("ZMODEM", "run_zmodem_send 完成");
     Ok(())
 }
