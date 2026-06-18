@@ -1401,6 +1401,10 @@ function App() {
                         }
                       }
 
+                      // 清除报错和传输弹窗
+                      setError(null);
+                      setGlobalTransfers({});
+
                       // 关闭旧终端
                       log('重连', `关闭旧终端 ${tab.id}`);
                       invoke('close_terminal', { id: tab.id }).catch(() => {});
