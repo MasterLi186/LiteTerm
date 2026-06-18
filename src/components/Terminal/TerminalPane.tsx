@@ -183,8 +183,9 @@ async function handleZmodemDetection(
     filename: string;
     bytesReceived: number;
     totalSize: number;
-    status: 'receiving' | 'complete';
+    status: 'receiving' | 'sending' | 'complete';
   } | null>>,
+  pendingUploadFiles?: Array<{ name: string; data: Uint8Array }>,
 ) {
   const session = detection.confirm();
   const role: string = session.type;
@@ -244,8 +245,29 @@ async function handleZmodemDetection(
     setTimeout(() => setZmodemTransfer(null), 30000);
 
     session.start();
+  } else if (role === 'send' && pendingUploadFiles && pendingUploadFiles.length > 0) {
+    // Send session — upload files via ZMODEM (triggered by rz)
+    for (const file of pendingUploadFiles) {
+      setZmodemTransfer({ filename: file.name, bytesReceived: 0, totalSize: file.data.length, status: 'sending' });
+      try {
+        const xfer = await session.send_offer({ name: file.name, size: file.data.length });
+        if (xfer) {
+          const CHUNK = 8192;
+          for (let i = 0; i < file.data.length; i += CHUNK) {
+            const end = Math.min(i + CHUNK, file.data.length);
+            await xfer.send(Array.from(file.data.subarray(i, end)));
+            setZmodemTransfer(prev => prev ? { ...prev, bytesReceived: end } : null);
+          }
+          await xfer.end();
+        }
+      } catch (e) {
+        console.error('ZMODEM 上传失败:', e);
+      }
+    }
+    setZmodemTransfer(prev => prev ? { ...prev, status: 'complete' } : null);
+    setTimeout(() => setZmodemTransfer(null), 5000);
+    session.close();
   } else {
-    // Send session — not yet implemented, just abort gracefully
     session.close();
   }
 }
@@ -257,9 +279,10 @@ interface Props {
   onClosePane?: () => void;
   onFocus?: () => void;
   onOpenRecording?: (filePath: string) => void;
+  onRegisterUpload?: (upload: (files: Array<{ name: string; data: Uint8Array }>) => void) => void;
 }
 
-export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFocus, onOpenRecording }: Props) {
+export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFocus, onOpenRecording, onRegisterUpload }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -278,8 +301,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     filename: string;
     bytesReceived: number;
     totalSize: number;
-    status: 'receiving' | 'complete';
+    status: 'receiving' | 'sending' | 'complete';
   } | null>(null);
+  const pendingUploadRef = useRef<Array<{ name: string; data: Uint8Array }>>([]);
 
   useEffect(() => {
     if (!containerRef.current || !wrapperRef.current || termRef.current) return;
@@ -406,9 +430,21 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         // Detection was retracted (not actually ZMODEM)
       },
       on_detect: (detection: any) => {
-        handleZmodemDetection(detection, terminalId, setZmodemTransfer);
+        const files = pendingUploadRef.current.length > 0 ? [...pendingUploadRef.current] : undefined;
+        pendingUploadRef.current = [];
+        handleZmodemDetection(detection, terminalId, setZmodemTransfer, files);
       },
     });
+
+    // 注册上传函数：外部调用时设置 pending files 并发送 rz 命令
+    if (onRegisterUpload) {
+      onRegisterUpload((files) => {
+        pendingUploadRef.current = files;
+        const rzCmd = 'rz\n';
+        const bytes = Array.from(new TextEncoder().encode(rzCmd));
+        invoke('terminal_write', { id: terminalId, data: bytes });
+      });
+    }
 
     // Listen for output from Tauri — pass through ZMODEM sentry
     const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
@@ -789,6 +825,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
             <span style={{ color: '#00d4ff', fontWeight: 'bold' }}>ZMODEM</span>
+            <span style={{ color: zmodemTransfer.status === 'sending' ? '#3fb950' : '#00d4ff', fontSize: '11px' }}>
+              {zmodemTransfer.status === 'sending' ? '↑' : '↓'}
+            </span>
             <span style={{ color: '#e6edf3' }}>
               {zmodemTransfer.filename || '等待传输...'}
             </span>

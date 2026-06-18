@@ -61,6 +61,7 @@ pub fn run() {
             commands::sftp::save_file,
             commands::sftp::local_delete,
             commands::sftp::local_rename,
+            commands::sftp::read_local_file,
             commands::process::get_process_list,
             commands::process::get_process_detail,
             commands::config_io::export_config,

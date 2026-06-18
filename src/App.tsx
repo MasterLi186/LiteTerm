@@ -969,6 +969,7 @@ function App() {
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
+  const terminalUploadFns = useRef<Record<string, (files: Array<{ name: string; data: Uint8Array }>) => void>>({});
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
@@ -978,7 +979,7 @@ function App() {
   const [fileBrowserHeight, setFileBrowserHeight] = useState(256);
   const fbDragging = useRef(false);
 
-  // 拖拽文件到终端上传：窗口级监听
+  // 拖拽文件到终端上传：通过 ZMODEM rz 上传到终端当前目录
   useEffect(() => {
     const webview = getCurrentWebview();
     const unlisten = webview.onDragDropEvent((event) => {
@@ -991,29 +992,34 @@ function App() {
         setDragOverTerminal(false);
         const paths = event.payload.paths;
         if (!paths.length) return;
-        const sshTab = tabs.find(t => t.id === activeSshSessionId);
-        if (!sshTab?.sshParams) return;
-        const user = sshTab.sshParams.user;
-        const remoteDir = user === 'root' ? '/root' : `/home/${user}`;
-        log('拖拽上传', `${paths.length} 个文件 → ${remoteDir}`, paths);
-        for (const localAbsPath of paths) {
-          const filename = localAbsPath.replace(/\\/g, '/').split('/').pop() || 'file';
-          const remotePath = `${remoteDir}/${filename}`;
-          invoke('sftp_upload', {
-            sessionId: activeSshSessionId,
-            localPath: localAbsPath,
-            remotePath,
-          }).then(() => {
-            log('拖拽上传', `完成: ${filename}`);
-          }).catch((e) => {
-            log('拖拽上传', `失败: ${filename} - ${e}`);
-            setError(`上传失败: ${filename} - ${e}`);
-          });
+
+        const uploadFn = terminalUploadFns.current[activeSshSessionId];
+        if (!uploadFn) {
+          setError('终端未就绪，无法上传');
+          return;
         }
+
+        log('拖拽上传', `${paths.length} 个文件通过 ZMODEM rz 上传`, paths);
+        (async () => {
+          const files: Array<{ name: string; data: Uint8Array }> = [];
+          for (const p of paths) {
+            const filename = p.replace(/\\/g, '/').split('/').pop() || 'file';
+            try {
+              const data = await invoke<number[]>('read_local_file', { path: p });
+              files.push({ name: filename, data: new Uint8Array(data) });
+            } catch (e) {
+              log('拖拽上传', `读取文件失败: ${p} - ${e}`);
+              setError(`读取文件失败: ${filename} - ${e}`);
+            }
+          }
+          if (files.length > 0) {
+            uploadFn(files);
+          }
+        })();
       }
     });
     return () => { unlisten.then(fn => fn()); };
-  }, [activeSshSessionId, tabs]);
+  }, [activeSshSessionId]);
 
   return (
     <div className="h-screen w-screen flex bg-surface text-gray-200 overflow-hidden" style={{ maxHeight: '100vh', maxWidth: '100vw' }}>
@@ -1472,6 +1478,7 @@ function App() {
                     onClose={(termId) => handleClosePane(tab.id, termId)}
                     onFocusTerminal={setFocusedTerminalId}
                     onOpenRecording={openRecordingTab}
+                    onRegisterUpload={(termId, fn) => { terminalUploadFns.current[termId] = fn; }}
                   />
                   {dragOverTerminal && tab.id === activeTabId && tab.type === 'ssh' && (
                     <div style={{
@@ -1483,7 +1490,7 @@ function App() {
                       pointerEvents: 'none',
                     }}>
                       <span style={{ color: '#00d4ff', fontSize: '14px', fontWeight: 600 }}>
-                        释放文件上传到远程服务器
+                        释放文件通过 ZMODEM 上传到当前目录
                       </span>
                     </div>
                   )}

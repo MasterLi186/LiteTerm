@@ -494,6 +494,13 @@ pub async fn local_delete(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Read a local file and return its contents as bytes.
+#[tauri::command]
+pub async fn read_local_file(path: String) -> Result<Vec<u8>, String> {
+    let expanded = shellexpand::tilde(&path).to_string();
+    std::fs::read(&expanded).map_err(|e| format!("读取文件失败: {}", e))
+}
+
 /// Rename a local file or directory.
 #[tauri::command]
 pub async fn local_rename(old_path: String, new_path: String) -> Result<(), String> {
