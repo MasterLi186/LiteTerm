@@ -108,7 +108,6 @@ pub async fn start_sftp_session(
     session.set_tcp_stream(tcp);
     session.handshake().map_err(|e| format!("SSH握手失败: {}", e))?;
     session.set_keepalive(true, 30);
-    session.set_timeout(30_000);
 
     // Authenticate
     match auth_method.as_str() {
@@ -412,6 +411,7 @@ pub async fn sftp_upload(
     log!("Starting transfer: {}", filename);
     let mut buf = [0u8; 32768];
     let mut bytes_so_far: u64 = 0;
+    let mut last_log_mb: u64 = 0;
     loop {
         let n = local_file
             .read(&mut buf)
@@ -431,6 +431,12 @@ pub async fn sftp_upload(
                 msg
             })?;
         bytes_so_far += n as u64;
+        // 每 10MB 记录一次进度
+        let current_mb = bytes_so_far / (10 * 1024 * 1024);
+        if current_mb > last_log_mb {
+            last_log_mb = current_mb;
+            log!("PROGRESS: {}MB / {}MB", bytes_so_far / (1024 * 1024), total / (1024 * 1024));
+        }
         let _ = app.emit(
             "transfer-progress",
             serde_json::json!({
