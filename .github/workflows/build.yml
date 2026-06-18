@@ -63,15 +63,34 @@ jobs:
         run: |
           PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${{ github.ref_name }}$" | head -1)
           if [ -z "$PREV_TAG" ]; then
-            LOG=$(git log --pretty=format:"- %s" -30)
+            COMMITS=$(git log --pretty=format:"%s" -30)
           else
-            LOG=$(git log --pretty=format:"- %s" ${PREV_TAG}..${{ github.ref_name }})
+            COMMITS=$(git log --pretty=format:"%s" ${PREV_TAG}..${{ github.ref_name }})
           fi
+
+          FEAT=""
+          FIX=""
+          OTHER=""
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            clean=$(echo "$line" | sed 's/^[a-z]*: //' | sed 's/^[a-z]*(//' | sed 's/): /: /')
+            if echo "$line" | grep -qiE "^feat"; then
+              FEAT="$FEAT- ✨ $clean\n"
+            elif echo "$line" | grep -qiE "^fix|^修复"; then
+              FIX="$FIX- 🐛 $clean\n"
+            elif echo "$line" | grep -qiE "^chore|^refactor|^docs"; then
+              OTHER="$OTHER- 📝 $clean\n"
+            else
+              OTHER="$OTHER- $clean\n"
+            fi
+          done <<< "$COMMITS"
+
           echo "body<<ENDOFLOG" >> $GITHUB_OUTPUT
           echo "## 更新内容" >> $GITHUB_OUTPUT
           echo "" >> $GITHUB_OUTPUT
-          echo "$LOG" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
+          [ -n "$FEAT" ] && echo -e "### 新功能\n$FEAT" >> $GITHUB_OUTPUT
+          [ -n "$FIX" ] && echo -e "### 修复\n$FIX" >> $GITHUB_OUTPUT
+          [ -n "$OTHER" ] && echo -e "### 其他\n$OTHER" >> $GITHUB_OUTPUT
           echo "---" >> $GITHUB_OUTPUT
           echo "下载对应平台的安装包:" >> $GITHUB_OUTPUT
           echo "- **Linux**: .deb / .rpm / .AppImage" >> $GITHUB_OUTPUT
