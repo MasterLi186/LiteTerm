@@ -1040,6 +1040,8 @@ function App() {
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
   const [showLogPanel, setShowLogPanel] = useState(false);
+  const [globalTransfers, setGlobalTransfers] = useState<Record<string, { filename: string; direction: string; bytes: number; total: number }>>({});
+  const [transferPanelVisible, setTransferPanelVisible] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
@@ -1100,6 +1102,28 @@ function App() {
     });
     return () => { unlisten.then(fn => fn()); };
   }, [activeSshSessionId, tabs]);
+
+  // 全局传输进度监听
+  useEffect(() => {
+    const unlisten = listen<{
+      filename: string; bytes_transferred: number; total_bytes: number; direction: string;
+    }>('transfer-progress', (event) => {
+      const { filename, bytes_transferred, total_bytes, direction } = event.payload;
+      const key = `${direction}-${filename}`;
+      setGlobalTransfers(prev => ({
+        ...prev,
+        [key]: { filename, direction, bytes: bytes_transferred, total: total_bytes },
+      }));
+      if (bytes_transferred >= total_bytes && total_bytes > 0) {
+        setTimeout(() => {
+          setGlobalTransfers(prev => { const n = { ...prev }; delete n[key]; return n; });
+        }, 3000);
+      }
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
+  const activeTransfers = Object.values(globalTransfers);
 
   return (
     <div className="h-screen w-screen flex bg-surface text-gray-200 overflow-hidden" style={{ maxHeight: '100vh', maxWidth: '100vw' }}>
@@ -1831,6 +1855,51 @@ function App() {
       {/* Tunnel Manager */}
       {showTunnelManager && (
         <TunnelManager onClose={() => setShowTunnelManager(false)} connections={connections} />
+      )}
+
+      {/* 右上角传输进度浮窗 */}
+      {activeTransfers.length > 0 && (
+        transferPanelVisible ? (
+          <div className="fixed top-12 right-4 w-72 bg-surface-light border border-surface-border rounded-lg shadow-xl z-50 overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface-border bg-surface">
+              <span className="text-xs text-gray-400">文件传输 ({activeTransfers.length})</span>
+              <button onClick={() => setTransferPanelVisible(false)} className="text-gray-500 hover:text-white text-xs">—</button>
+            </div>
+            <div className="max-h-48 overflow-y-auto">
+              {activeTransfers.map((t, i) => {
+                const pct = t.total > 0 ? Math.round((t.bytes / t.total) * 100) : 0;
+                const done = t.bytes >= t.total && t.total > 0;
+                const sizeStr = t.total >= 1048576
+                  ? `${(t.bytes / 1048576).toFixed(1)}/${(t.total / 1048576).toFixed(1)}M`
+                  : `${(t.bytes / 1024).toFixed(0)}/${(t.total / 1024).toFixed(0)}K`;
+                return (
+                  <div key={i} className="px-3 py-1.5 border-b border-surface-border/30 last:border-b-0">
+                    <div className="flex items-center gap-1.5 text-[11px] mb-1">
+                      <span className={t.direction === 'download' ? 'text-accent-cyan' : 'text-accent-green'}>
+                        {t.direction === 'download' ? '↓' : '↑'}
+                      </span>
+                      <span className="text-gray-300 truncate flex-1 min-w-0">{t.filename}</span>
+                      <span className="text-gray-500 text-[10px] flex-shrink-0">{done ? '完成' : sizeStr}</span>
+                    </div>
+                    <div className="h-1.5 bg-surface rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${done ? 'bg-accent-green' : t.direction === 'download' ? 'bg-accent-cyan' : 'bg-accent-green'}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setTransferPanelVisible(true)}
+            className="fixed top-12 right-4 z-50 px-3 py-1.5 bg-surface-light border border-surface-border rounded-lg shadow-lg text-xs text-accent-cyan hover:bg-surface-lighter"
+          >
+            ↑↓ 传输中 ({activeTransfers.length})
+          </button>
+        )
       )}
 
       {/* 日志面板 */}

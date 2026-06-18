@@ -139,11 +139,29 @@ pub async fn ssh_connect(
     let (status_tx, status_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
     std::thread::spawn(move || {
+        use std::io::Write as LogWrite;
+        let log_path = dirs::home_dir().unwrap_or_default().join("guishell_ssh.log");
+        let mut log_file = std::fs::OpenOptions::new()
+            .create(true).append(true)
+            .open(&log_path).ok();
+
+        macro_rules! ssh_log {
+            ($($arg:tt)*) => {
+                if let Some(ref mut f) = log_file {
+                    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                    let _ = writeln!(f, "[{}.{:03}] {}", d.as_secs(), d.subsec_millis(), format!($($arg)*));
+                }
+            };
+        }
+
+        ssh_log!("SSH CONNECT START: {}:{} user={} auth={}", host, port, user, auth_method);
+
         // 1. TCP connect + SSH handshake
         let addr = format!("{}:{}", host, port);
         let sock_addr = match addr.parse::<std::net::SocketAddr>() {
             Ok(a) => a,
             Err(e) => {
+                ssh_log!("ERROR: Invalid address: {}", e);
                 let _ = status_tx.send(Err(format!("Invalid address: {}", e)));
                 return;
             }
@@ -152,8 +170,9 @@ pub async fn ssh_connect(
             &sock_addr,
             std::time::Duration::from_secs(timeout as u64),
         ) {
-            Ok(tcp) => tcp,
+            Ok(tcp) => { ssh_log!("TCP connected to {}", addr); tcp },
             Err(e) => {
+                ssh_log!("ERROR: TCP connect failed: {}", e);
                 let _ = status_tx.send(Err(format!("TCP connect failed: {}", e)));
                 return;
             }
@@ -162,6 +181,7 @@ pub async fn ssh_connect(
         let mut session = match ssh2::Session::new() {
             Ok(s) => s,
             Err(e) => {
+                ssh_log!("ERROR: SSH session create failed: {}", e);
                 let _ = status_tx.send(Err(format!("SSH session failed: {}", e)));
                 return;
             }
@@ -181,20 +201,33 @@ pub async fn ssh_connect(
             alg_info(ssh2::MethodType::CryptCs, "加密(C→S)"),
             alg_info(ssh2::MethodType::CryptSc, "加密(S→C)"),
         );
-        log::info!("SSH连接 {}:{} - {}", host, port, supported);
+        ssh_log!("{}", supported);
 
         session.set_tcp_stream(tcp);
+        ssh_log!("开始 SSH 握手...");
         if let Err(e) = session.handshake() {
-            let err_msg = format!(
-                "SSH handshake failed: {}\n{}\n提示: 如算法协商失败，可能需要在服务端 sshd_config 中启用兼容算法",
-                e, supported
-            );
-            log::error!("{}", err_msg);
+            ssh_log!("ERROR: SSH handshake failed: {}", e);
+            ssh_log!("{}", supported);
             let _ = status_tx.send(Err(format!("SSH handshake failed: {}", e)));
             return;
         }
+        ssh_log!("SSH 握手成功");
+
+        // 记录协商后实际使用的算法
+        let active_algs = |mt: ssh2::MethodType, label: &str| -> String {
+            match session.methods(mt) {
+                Some(m) => format!("{}: {}", label, m),
+                None => format!("{}: (未知)", label),
+            }
+        };
+        ssh_log!("协商结果: {} | {} | {}",
+            active_algs(ssh2::MethodType::Kex, "Kex"),
+            active_algs(ssh2::MethodType::CryptCs, "Cipher"),
+            active_algs(ssh2::MethodType::MacCs, "MAC"),
+        );
 
         // 2. Authenticate
+        ssh_log!("开始认证: method={}", auth_method);
         let auth_result = match auth_method.as_str() {
             "agent" => session
                 .userauth_agent(&user)
@@ -220,9 +253,11 @@ pub async fn ssh_connect(
         };
 
         if let Err(e) = auth_result {
+            ssh_log!("ERROR: 认证失败: {}", e);
             let _ = status_tx.send(Err(e));
             return;
         }
+        ssh_log!("认证成功");
 
         // 3. Open shell channel with PTY
         let mut channel = match session.channel_session() {
