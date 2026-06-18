@@ -166,8 +166,30 @@ pub async fn ssh_connect(
                 return;
             }
         };
+
+        // 记录客户端支持的加密算法（握手前）
+        let alg_info = |mt: ssh2::MethodType, label: &str| -> String {
+            match session.supported_algs(mt) {
+                Ok(algs) => format!("{}: {}", label, algs.join(", ")),
+                Err(_) => format!("{}: (无法获取)", label),
+            }
+        };
+        let supported = format!(
+            "客户端支持的算法:\n  {}\n  {}\n  {}\n  {}",
+            alg_info(ssh2::MethodType::Kex, "密钥交换"),
+            alg_info(ssh2::MethodType::HostKey, "主机密钥"),
+            alg_info(ssh2::MethodType::CryptCs, "加密(C→S)"),
+            alg_info(ssh2::MethodType::CryptSc, "加密(S→C)"),
+        );
+        log::info!("SSH连接 {}:{} - {}", host, port, supported);
+
         session.set_tcp_stream(tcp);
         if let Err(e) = session.handshake() {
+            let err_msg = format!(
+                "SSH handshake failed: {}\n{}\n提示: 如算法协商失败，可能需要在服务端 sshd_config 中启用兼容算法",
+                e, supported
+            );
+            log::error!("{}", err_msg);
             let _ = status_tx.send(Err(format!("SSH handshake failed: {}", e)));
             return;
         }
@@ -295,4 +317,26 @@ pub async fn ssh_connect(
         Ok(Err(e)) => Err(e),
         Err(_) => Err("Connection thread died".to_string()),
     }
+}
+
+/// 返回客户端支持的 SSH 加密算法列表，用于连接失败时诊断
+#[tauri::command]
+pub async fn ssh_supported_algs() -> Result<String, String> {
+    let session = ssh2::Session::new().map_err(|e| format!("{}", e))?;
+    let mut info = String::new();
+    let types = [
+        (ssh2::MethodType::Kex, "密钥交换(Kex)"),
+        (ssh2::MethodType::HostKey, "主机密钥(HostKey)"),
+        (ssh2::MethodType::CryptCs, "加密(Client→Server)"),
+        (ssh2::MethodType::CryptSc, "加密(Server→Client)"),
+        (ssh2::MethodType::MacCs, "MAC(Client→Server)"),
+        (ssh2::MethodType::MacSc, "MAC(Server→Client)"),
+    ];
+    for (mt, label) in types {
+        match session.supported_algs(mt) {
+            Ok(algs) => info.push_str(&format!("{}: {}\n", label, algs.join(", "))),
+            Err(_) => info.push_str(&format!("{}: (无法获取)\n", label)),
+        }
+    }
+    Ok(info)
 }

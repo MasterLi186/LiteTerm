@@ -52,6 +52,10 @@ jobs:
             libudev-dev \
             patchelf
 
+      - name: Install Windows dependencies (NASM for OpenSSL)
+        if: matrix.target == 'windows'
+        uses: ilammy/setup-nasm@v1
+
       - name: Generate changelog
         id: changelog
         if: startsWith(github.ref, 'refs/tags/')

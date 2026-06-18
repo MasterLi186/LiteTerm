@@ -43,6 +43,7 @@ pub fn run() {
             commands::serial::list_serial_ports,
             commands::serial::open_serial_terminal,
             commands::ssh::ssh_connect,
+            commands::ssh::ssh_supported_algs,
             commands::connection::load_connections,
             commands::connection::save_connection,
             commands::connection::delete_connection,
