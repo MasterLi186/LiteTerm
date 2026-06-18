@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
 import type { FileEntry } from '../../types';
 import { log } from '../../utils/logger';
 
@@ -559,28 +558,6 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
     return () => clearTimeout(timer);
   }, [transfers]);
 
-  // 拖拽文件上传：监听系统文件拖入事件
-  const [dragOver, setDragOver] = useState(false);
-  useEffect(() => {
-    if (!sessionId) return;
-    const webview = getCurrentWebview();
-    const unlisten = webview.onDragDropEvent((event) => {
-      if (event.payload.type === 'enter' || event.payload.type === 'over') {
-        setDragOver(true);
-      } else if (event.payload.type === 'leave') {
-        setDragOver(false);
-      } else if (event.payload.type === 'drop') {
-        setDragOver(false);
-        const paths = event.payload.paths;
-        log('FileBrowser', `拖拽上传: ${paths.length} 个文件`, paths);
-        for (const p of paths) {
-          uploadByPath(p);
-        }
-      }
-    });
-    return () => { unlisten.then(fn => fn()); };
-  }, [sessionId, remotePath]);
-
   // --- Handlers ---
 
   function handleLocalPathChange(path: string) {
@@ -793,13 +770,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
   }
 
   return (
-    <div className="flex flex-col h-full relative">
-      {/* 拖拽上传提示 */}
-      {dragOver && sessionId && (
-        <div className="absolute inset-0 z-50 bg-accent-cyan/10 border-2 border-dashed border-accent-cyan rounded flex items-center justify-center pointer-events-none">
-          <span className="text-accent-cyan text-sm font-semibold">释放文件上传到远程目录</span>
-        </div>
-      )}
+    <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div className="flex items-center gap-1 px-2 py-1 border-b border-surface-border bg-surface-light flex-shrink-0">
         <button

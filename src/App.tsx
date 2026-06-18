@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save, open } from '@tauri-apps/plugin-dialog';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { TerminalPane } from './components/Terminal/TerminalPane';
 import { SplitContainer } from './components/Terminal/SplitContainer';
 import { ConnectionDialog } from './components/ConnectionDialog';
@@ -967,6 +968,7 @@ function App() {
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
   const [sftpReady, setSftpReady] = useState(0);
+  const [dragOverTerminal, setDragOverTerminal] = useState(false);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
@@ -975,6 +977,43 @@ function App() {
   const sidebarDragging = useRef(false);
   const [fileBrowserHeight, setFileBrowserHeight] = useState(256);
   const fbDragging = useRef(false);
+
+  // 拖拽文件到终端上传：窗口级监听
+  useEffect(() => {
+    const webview = getCurrentWebview();
+    const unlisten = webview.onDragDropEvent((event) => {
+      if (!activeSshSessionId) return;
+      if (event.payload.type === 'enter' || event.payload.type === 'over') {
+        setDragOverTerminal(true);
+      } else if (event.payload.type === 'leave') {
+        setDragOverTerminal(false);
+      } else if (event.payload.type === 'drop') {
+        setDragOverTerminal(false);
+        const paths = event.payload.paths;
+        if (!paths.length) return;
+        const sshTab = tabs.find(t => t.id === activeSshSessionId);
+        if (!sshTab?.sshParams) return;
+        const user = sshTab.sshParams.user;
+        const remoteDir = user === 'root' ? '/root' : `/home/${user}`;
+        log('拖拽上传', `${paths.length} 个文件 → ${remoteDir}`, paths);
+        for (const localAbsPath of paths) {
+          const filename = localAbsPath.replace(/\\/g, '/').split('/').pop() || 'file';
+          const remotePath = `${remoteDir}/${filename}`;
+          invoke('sftp_upload', {
+            sessionId: activeSshSessionId,
+            localPath: localAbsPath,
+            remotePath,
+          }).then(() => {
+            log('拖拽上传', `完成: ${filename}`);
+          }).catch((e) => {
+            log('拖拽上传', `失败: ${filename} - ${e}`);
+            setError(`上传失败: ${filename} - ${e}`);
+          });
+        }
+      }
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, [activeSshSessionId, tabs]);
 
   return (
     <div className="h-screen w-screen flex bg-surface text-gray-200 overflow-hidden" style={{ maxHeight: '100vh', maxWidth: '100vw' }}>
@@ -1434,6 +1473,20 @@ function App() {
                     onFocusTerminal={setFocusedTerminalId}
                     onOpenRecording={openRecordingTab}
                   />
+                  {dragOverTerminal && tab.id === activeTabId && tab.type === 'ssh' && (
+                    <div style={{
+                      position: 'absolute', inset: 0, zIndex: 30,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: 'rgba(0,212,255,0.08)',
+                      border: '2px dashed #00d4ff',
+                      borderRadius: '4px',
+                      pointerEvents: 'none',
+                    }}>
+                      <span style={{ color: '#00d4ff', fontSize: '14px', fontWeight: 600 }}>
+                        释放文件上传到远程服务器
+                      </span>
+                    </div>
+                  )}
                   {reconnecting[tab.id] && (
                     <div style={{
                       position: 'absolute', inset: 0, zIndex: 20,
