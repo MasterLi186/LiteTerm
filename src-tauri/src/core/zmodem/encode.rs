@@ -38,7 +38,14 @@ fn hex_byte(b: u8) -> [u8; 2] {
 }
 
 /// ZDLE-encode a single byte. Returns 1 byte (no escape) or 2 bytes (ZDLE + escaped).
-/// Uses ESCALL mode: escapes all control chars, DEL, high-bit control chars, and ZDLE itself.
+///
+/// Only escapes bytes whose escaped form `c ^ 0x40` is a VALID ZDLE escape, i.e.
+/// the receiver's un-escape `(c & 0x60) == 0x40` must hold. That is true for
+/// 0x00..=0x1f (→0x40..=0x5f) and 0x80..=0x9f (→0xc0..=0xdf), plus ZDLE itself.
+/// 0x7f and 0xff would map to 0x3f/0xbf which are NOT valid escape codes — rz
+/// rejects them and rewinds (ZRPOS storm). lrzsz uses special ZRUB0/ZRUB1 codes
+/// for those; on an 8-bit-clean SSH channel we simply send them RAW, which rz
+/// accepts as literal data.
 fn zdle_encode_byte(b: u8) -> (u8, Option<u8>) {
     match b {
         ZDLE => (ZDLE, Some(0x58)),                // ZDLE itself: 0x18 ^ 0x40 = 0x58
@@ -46,9 +53,7 @@ fn zdle_encode_byte(b: u8) -> (u8, Option<u8>) {
         0x11 | 0x91 => (ZDLE, Some(b ^ 0x40)),    // XON
         0x13 | 0x93 => (ZDLE, Some(b ^ 0x40)),    // XOFF
         0x00..=0x1f => (ZDLE, Some(b ^ 0x40)),    // control chars
-        0x7f => (ZDLE, Some(0x7f ^ 0x40)),         // DEL: 0x3f
         0x80..=0x9f => (ZDLE, Some(b ^ 0x40)),    // high-bit control
-        0xff => (ZDLE, Some(0xff ^ 0x40)),          // 0xff: 0xbf
         _ => (b, None),                             // pass through
     }
 }
