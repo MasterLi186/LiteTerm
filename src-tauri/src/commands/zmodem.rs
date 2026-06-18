@@ -164,17 +164,24 @@ fn run_zmodem_protocol(
         }
 
         // Pump data while in SendData state
+        let mut chunk_count = 0u64;
         while let Some(action) = sender.next_data_chunk() {
             match action {
                 SenderAction::Send(data) => {
-                    let _ = input_tx.send(data);
+                    if input_tx.send(data).is_err() {
+                        return Err("终端写入通道断开".into());
+                    }
                     last_activity = Instant::now();
+                    chunk_count += 1;
                 }
                 SenderAction::Error(e) => {
                     let _ = input_tx.send(crate::core::zmodem::encode::zcancel());
                     return Err(e);
                 }
-                _ => break,
+                _ => {
+                    app_log!("ZMODEM", "next_data_chunk 返回非 Send: chunk_count={}", chunk_count);
+                    break;
+                }
             }
 
             // Emit progress every 200ms
@@ -198,9 +205,12 @@ fn run_zmodem_protocol(
                 }
                 let frames = decoder.feed(&data);
                 for frame in frames {
-                    app_log!("ZMODEM", "数据发送中收到帧: {:?}", frame.frame_type);
+                    app_log!("ZMODEM", "数据发送中收到帧: {:?} offset={}", frame.frame_type, frame.offset());
                     match sender.handle_frame(&frame) {
-                        SenderAction::Send(out) => { let _ = input_tx.send(out); }
+                        SenderAction::Send(out) => {
+                            app_log!("ZMODEM", "handle_frame 产出 Send, len={}", out.len());
+                            let _ = input_tx.send(out);
+                        }
                         SenderAction::Error(e) => {
                             let _ = input_tx.send(crate::core::zmodem::encode::zcancel());
                             return Err(e);
@@ -210,6 +220,7 @@ fn run_zmodem_protocol(
                 }
             }
         }
+        app_log!("ZMODEM", "数据发送循环结束, chunk_count={}, sender.is_done={}", chunk_count, sender.is_done());
     }
 
     // Final progress

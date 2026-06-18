@@ -315,10 +315,12 @@ pub async fn ssh_connect(
                 }
             }
 
-            // Write user input
+            // Write user input — temporarily switch to blocking for reliable write
             while let Ok(data) = input_rx.try_recv() {
+                session.set_blocking(true);
                 let _ = channel.write_all(&data);
                 let _ = channel.flush();
+                session.set_blocking(false);
             }
 
             // Handle resize
