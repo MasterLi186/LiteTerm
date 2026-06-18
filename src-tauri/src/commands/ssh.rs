@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use portable_pty::{CommandBuilder, PtySize};
 use tauri::{AppHandle, Emitter, State};
@@ -139,6 +139,11 @@ pub async fn ssh_connect(
     let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u32, u32)>();
     let (status_tx, status_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
+    let zmodem_active = Arc::new(AtomicBool::new(false));
+    let zmodem_tx: Arc<Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>> = Arc::new(Mutex::new(None));
+    let zmodem_active_clone = zmodem_active.clone();
+    let zmodem_tx_clone = zmodem_tx.clone();
+
     std::thread::spawn(move || {
         app_log!("SSH", "SSH CONNECT START: {}:{} user={} auth={}", host, port, user, auth_method);
 
@@ -273,6 +278,7 @@ pub async fn ssh_connect(
         std::thread::sleep(std::time::Duration::from_millis(500));
         session.set_blocking(false);
         let id_for_read = id_clone.clone();
+        let mut last_keepalive = std::time::Instant::now();
         loop {
             let mut buf = [0u8; 4096];
             match channel.read(&mut buf) {
@@ -284,13 +290,20 @@ pub async fn ssh_connect(
                     break;
                 }
                 Ok(n) => {
-                    let _ = app_clone.emit(
-                        "terminal-output",
-                        serde_json::json!({
-                            "id": id_for_read,
-                            "data": &buf[..n],
-                        }),
-                    );
+                    if zmodem_active_clone.load(std::sync::atomic::Ordering::Acquire) {
+                        let guard = zmodem_tx_clone.lock().unwrap();
+                        if let Some(ref tx) = *guard {
+                            let _ = tx.send(buf[..n].to_vec());
+                        }
+                    } else {
+                        let _ = app_clone.emit(
+                            "terminal-output",
+                            serde_json::json!({
+                                "id": id_for_read,
+                                "data": &buf[..n],
+                            }),
+                        );
+                    }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(_) => {
@@ -313,6 +326,12 @@ pub async fn ssh_connect(
                 let _ = channel.request_pty_size(cols, rows, None, None);
             }
 
+            // 每 15 秒发送 SSH keepalive 防止服务端超时断连
+            if last_keepalive.elapsed() >= std::time::Duration::from_secs(15) {
+                let _ = session.keepalive_send();
+                last_keepalive = std::time::Instant::now();
+            }
+
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     });
@@ -331,6 +350,8 @@ pub async fn ssh_connect(
                     resize_tx,
                     monitor_stop,
                     sftp_request_tx: sftp_tx,
+                    zmodem_active,
+                    zmodem_tx,
                 },
             );
             Ok(id)

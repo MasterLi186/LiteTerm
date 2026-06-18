@@ -33,6 +33,7 @@ pub fn run() {
             sftp_sessions: Mutex::new(HashMap::new()),
             tunnels: Mutex::new(HashMap::new()),
             recordings: Mutex::new(HashMap::new()),
+            transfer_cancel: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::terminal::open_local_terminal,
@@ -62,6 +63,8 @@ pub fn run() {
             commands::sftp::save_file,
             commands::sftp::local_delete,
             commands::sftp::local_rename,
+            commands::sftp::cancel_transfer,
+            commands::sftp::remove_sftp_session,
             commands::sftp::sftp_exec,
             commands::sftp::read_local_file,
             commands::process::get_process_list,
@@ -79,6 +82,7 @@ pub fn run() {
             commands::recording::stop_recording,
             commands::recording::record_event,
             commands::recording::is_recording,
+            commands::zmodem::zmodem_send,
         ])
         .setup(|app| {
             // Inject JS to suppress the native webview right-click menu.

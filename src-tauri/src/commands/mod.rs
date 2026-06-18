@@ -10,3 +10,4 @@ pub mod ssh_keys;
 pub mod recording;
 pub mod terminal;
 pub mod tunnel;
+pub mod zmodem;

@@ -10,6 +10,7 @@ pub struct AppState {
     pub sftp_sessions: Mutex<HashMap<String, crate::commands::sftp::SftpHandle>>,
     pub tunnels: Mutex<HashMap<String, crate::commands::tunnel::TunnelHandle>>,
     pub recordings: Mutex<HashMap<String, crate::commands::recording::Recording>>,
+    pub transfer_cancel: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 pub struct ManagedSession {
@@ -19,6 +20,8 @@ pub struct ManagedSession {
     pub resize_tx: std::sync::mpsc::Sender<(u32, u32)>,
     pub monitor_stop: Arc<AtomicBool>,
     pub sftp_request_tx: std::sync::mpsc::Sender<SftpRequest>,
+    pub zmodem_active: Arc<AtomicBool>,
+    pub zmodem_tx: Arc<Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>>,
 }
 
 pub struct LocalTerminal {
