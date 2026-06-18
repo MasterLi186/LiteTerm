@@ -17,6 +17,7 @@ import { TunnelManager } from './components/TunnelManager';
 import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 import { log, getLogText } from './utils/logger';
+import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay } from './components/Icons';
 
 function getTerminalSize() {
   return {
@@ -61,44 +62,42 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
   const [history, setHistory] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('guishell_cmd_history') || '[]'); } catch { return []; }
   });
+  const [favorites, setFavorites] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('guishell_cmd_favorites') || '[]'); } catch { return []; }
+  });
   const [showHistory, setShowHistory] = useState(false);
-  const [showSpeed, setShowSpeed] = useState(false);
-  const [txSpeed, setTxSpeed] = useState(0);
-  const [rxSpeed, setRxSpeed] = useState(0);
+  const [showFavorites, setShowFavorites] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const txBytesRef = useRef(0);
-  const rxBytesRef = useRef(0);
-
-  // Track terminal data throughput
-  useEffect(() => {
-    const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
-      if (terminalId && event.payload.id === terminalId) {
-        rxBytesRef.current += event.payload.data.length;
-      }
-    });
-    const interval = setInterval(() => {
-      setRxSpeed(rxBytesRef.current);
-      setTxSpeed(txBytesRef.current);
-      rxBytesRef.current = 0;
-      txBytesRef.current = 0;
-    }, 1000);
-    return () => { unlisten.then(fn => fn()); clearInterval(interval); };
-  }, [terminalId]);
 
   function sendCommand(cmd: string) {
     if (!cmd || !terminalId) return;
     invoke('terminal_write', { id: terminalId, data: Array.from(new TextEncoder().encode(cmd + '\n')) });
-    txBytesRef.current += cmd.length + 1;
-    // Add to history (dedupe, max 50)
-    const updated = [cmd, ...history.filter(h => h !== cmd)].slice(0, 50);
+    const updated = [cmd, ...history.filter(h => h !== cmd)].slice(0, 100);
     setHistory(updated);
     localStorage.setItem('guishell_cmd_history', JSON.stringify(updated));
   }
 
-  function formatSpeed(bytes: number): string {
-    if (bytes < 1024) return `${bytes}B/s`;
-    if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)}K/s`;
-    return `${(bytes / 1048576).toFixed(1)}M/s`;
+  function toggleFavorite(cmd: string) {
+    let updated: string[];
+    if (favorites.includes(cmd)) {
+      updated = favorites.filter(f => f !== cmd);
+    } else {
+      updated = [...favorites, cmd];
+    }
+    setFavorites(updated);
+    localStorage.setItem('guishell_cmd_favorites', JSON.stringify(updated));
+  }
+
+  function removeHistory(cmd: string) {
+    const updated = history.filter(h => h !== cmd);
+    setHistory(updated);
+    localStorage.setItem('guishell_cmd_history', JSON.stringify(updated));
+  }
+
+  function removeFavorite(cmd: string) {
+    const updated = favorites.filter(f => f !== cmd);
+    setFavorites(updated);
+    localStorage.setItem('guishell_cmd_favorites', JSON.stringify(updated));
   }
 
   return (
@@ -117,35 +116,44 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
           if (e.key === 'ArrowUp') {
             e.preventDefault();
             setShowHistory(true);
+            setShowFavorites(false);
           }
           if (e.key === 'Escape') {
             setShowHistory(false);
+            setShowFavorites(false);
           }
         }}
       />
       <button
-        onClick={() => { setShowHistory(!showHistory); setShowSpeed(false); }}
-        className={`text-xs px-2 py-0.5 border border-surface-border rounded flex-shrink-0 ${showHistory ? 'text-accent-cyan bg-accent-cyan/10' : 'text-gray-400 hover:text-white'}`}
+        onClick={() => { setShowHistory(!showHistory); setShowFavorites(false); }}
+        className={`px-1.5 py-0.5 border border-surface-border rounded flex-shrink-0 ${showHistory ? 'text-accent-cyan bg-accent-cyan/10' : 'text-gray-400 hover:text-white'}`}
+        title="命令历史"
       >
-        历史
+        <IconHistory size={14} />
       </button>
       <button
-        onClick={() => { setShowSpeed(!showSpeed); setShowHistory(false); }}
-        className={`text-xs px-2 py-0.5 border border-surface-border rounded flex-shrink-0 ${showSpeed ? 'text-accent-cyan bg-accent-cyan/10' : 'text-gray-400 hover:text-white'}`}
+        onClick={() => { setShowFavorites(!showFavorites); setShowHistory(false); }}
+        className={`px-1.5 py-0.5 border border-surface-border rounded flex-shrink-0 ${showFavorites ? 'text-accent-yellow bg-accent-yellow/10' : 'text-gray-400 hover:text-white'}`}
+        title="收藏命令"
       >
-        速度
+        <IconStar size={14} />
       </button>
 
       {/* History popup */}
       {showHistory && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setShowHistory(false)} />
-          <div className="absolute bottom-9 right-16 z-40 bg-surface-light border border-surface-border rounded shadow-lg w-80 max-h-64 overflow-y-auto">
+          <div className="absolute bottom-9 right-16 z-40 bg-surface-light border border-surface-border rounded shadow-lg w-96 max-h-72 overflow-y-auto">
             <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface-border">
               <span className="text-xs text-gray-400">命令历史 ({history.length})</span>
               {history.length > 0 && (
                 <button
-                  onClick={() => { setHistory([]); localStorage.removeItem('guishell_cmd_history'); }}
+                  onClick={() => {
+                    if (window.confirm('确认清空所有命令历史？')) {
+                      setHistory([]);
+                      localStorage.removeItem('guishell_cmd_history');
+                    }
+                  }}
                   className="text-[10px] text-gray-500 hover:text-accent-red"
                 >清空</button>
               )}
@@ -154,37 +162,99 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
               <div className="px-3 py-4 text-xs text-gray-500 text-center">暂无历史记录</div>
             ) : (
               history.map((cmd, i) => (
-                <button
+                <div
                   key={i}
-                  onClick={() => {
-                    sendCommand(cmd);
-                    if (inputRef.current) inputRef.current.value = '';
-                    setShowHistory(false);
-                  }}
-                  className="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-lighter truncate font-mono border-b border-surface-border/30 last:border-b-0"
+                  className="flex items-center hover:bg-surface-lighter border-b border-surface-border/30 last:border-b-0 group"
                 >
-                  {cmd}
-                </button>
+                  <span
+                    className="flex-1 px-3 py-1.5 text-xs text-gray-300 truncate font-mono min-w-0 cursor-pointer"
+                    onClick={() => { if (inputRef.current) inputRef.current.value = cmd; }}
+                    title="点击填入输入框"
+                  >
+                    {cmd}
+                  </span>
+                  <button
+                    onClick={() => { sendCommand(cmd); if (inputRef.current) inputRef.current.value = ''; setShowHistory(false); }}
+                    className="px-1 text-accent-green hover:brightness-125 flex-shrink-0"
+                    title="执行"
+                  >
+                    <IconPlay size={13} />
+                  </button>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(cmd)}
+                    className="px-1 text-accent-cyan hover:brightness-125 flex-shrink-0"
+                    title="复制"
+                  >
+                    <IconCopy size={13} />
+                  </button>
+                  <button
+                    onClick={() => toggleFavorite(cmd)}
+                    className={`px-1 flex-shrink-0 ${favorites.includes(cmd) ? 'text-accent-yellow' : 'text-gray-500 hover:text-accent-yellow'}`}
+                    title={favorites.includes(cmd) ? '取消收藏' : '收藏'}
+                  >
+                    {favorites.includes(cmd) ? <IconStarFilled size={13} /> : <IconStar size={13} />}
+                  </button>
+                  <button
+                    onClick={() => removeHistory(cmd)}
+                    className="px-1 text-accent-red hover:brightness-125 flex-shrink-0 mr-1"
+                    title="删除"
+                  >
+                    <IconClose size={13} />
+                  </button>
+                </div>
               ))
             )}
           </div>
         </>
       )}
 
-      {/* Speed popup */}
-      {showSpeed && (
+      {/* Favorites popup */}
+      {showFavorites && (
         <>
-          <div className="fixed inset-0 z-30" onClick={() => setShowSpeed(false)} />
-          <div className="absolute bottom-9 right-2 z-40 bg-surface-light border border-surface-border rounded shadow-lg w-48 p-3">
-            <div className="text-xs text-gray-400 mb-2">终端传输速率</div>
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-gray-500">↑ 发送</span>
-              <span className="text-accent-green font-mono">{formatSpeed(txSpeed)}</span>
+          <div className="fixed inset-0 z-30" onClick={() => setShowFavorites(false)} />
+          <div className="absolute bottom-9 right-2 z-40 bg-surface-light border border-surface-border rounded shadow-lg w-96 max-h-72 overflow-y-auto">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface-border">
+              <span className="text-xs text-gray-400">收藏命令 ({favorites.length})</span>
             </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-gray-500">↓ 接收</span>
-              <span className="text-accent-cyan font-mono">{formatSpeed(rxSpeed)}</span>
-            </div>
+            {favorites.length === 0 ? (
+              <div className="px-3 py-4 text-xs text-gray-500 text-center">暂无收藏，在历史记录中点击星标收藏</div>
+            ) : (
+              favorites.map((cmd, i) => (
+                <div
+                  key={i}
+                  className="flex items-center hover:bg-surface-lighter border-b border-surface-border/30 last:border-b-0 group"
+                >
+                  <span
+                    className="flex-1 px-3 py-1.5 text-xs text-gray-300 truncate font-mono min-w-0 cursor-pointer"
+                    onClick={() => { if (inputRef.current) inputRef.current.value = cmd; }}
+                    title="点击填入输入框"
+                  >
+                    {cmd}
+                  </span>
+                  <button
+                    onClick={() => { sendCommand(cmd); if (inputRef.current) inputRef.current.value = ''; setShowFavorites(false); }}
+                    className="px-1 text-accent-green hover:brightness-125 flex-shrink-0"
+                    title="执行"
+                  >
+                    <IconPlay size={13} />
+                  </button>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(cmd)}
+                    className="px-1 text-accent-cyan hover:brightness-125 flex-shrink-0"
+                    title="复制"
+                  >
+                    <IconCopy size={13} />
+                  </button>
+                  <button
+                    onClick={() => removeFavorite(cmd)}
+                    className="px-1 text-accent-red hover:brightness-125 flex-shrink-0 mr-1"
+                    title="删除"
+                  >
+                    <IconClose size={13} />
+                  </button>
+                </div>
+              ))
+            )}
           </div>
         </>
       )}
@@ -454,8 +524,8 @@ function App() {
     }).catch((e) => log('监控', `启动失败: ${e}`));
 
     // Delay SFTP start to let SSH session fully stabilize
-    log('SFTP', '等待5秒后启动SFTP session...');
-    await new Promise(r => setTimeout(r, 5000));
+    log('SFTP', '等待2秒后启动SFTP session...');
+    await new Promise(r => setTimeout(r, 2000));
 
     // SFTP 连接重试，最多3次
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1046,31 +1116,31 @@ function App() {
               onClick={() => setSidebarConnectionsOpen(!sidebarConnectionsOpen)}
               className="flex items-center gap-1 hover:text-gray-200"
             >
-              <span className="text-[10px]">{sidebarConnectionsOpen ? '▼' : '▶'}</span>
+              {sidebarConnectionsOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
               <span>连接管理</span>
             </button>
             <div className="flex items-center gap-1">
               <button
                 onClick={handleImportConfig}
-                className="text-gray-500 hover:text-accent-cyan text-[10px] leading-none px-1"
+                className="text-gray-500 hover:text-accent-cyan p-0.5"
                 title="导入配置"
-              >{'↓'}</button>
+              ><IconImport size={13} /></button>
               <button
                 onClick={handleExportConfig}
-                className="text-gray-500 hover:text-accent-cyan text-[10px] leading-none px-1"
+                className="text-gray-500 hover:text-accent-cyan p-0.5"
                 title="导出配置"
-              >{'↑'}</button>
+              ><IconExport size={13} /></button>
               <button
                 onClick={() => setShowSshKeyManager(true)}
-                className="text-gray-500 hover:text-accent-cyan text-[10px] leading-none px-1"
+                className="text-gray-500 hover:text-accent-cyan p-0.5"
                 title="SSH 密钥管理"
-              >{'⚷'}</button>
+              ><IconKey size={13} /></button>
               <button
                 onClick={() => setShowDialog(true)}
-                className="text-accent-cyan hover:text-white text-base leading-none"
+                className="text-accent-cyan hover:text-white p-0.5"
                 title="新建连接"
               >
-                +
+                <IconPlus size={15} />
               </button>
             </div>
           </div>
@@ -1250,36 +1320,36 @@ function App() {
             className="px-2 py-1 text-gray-500 hover:text-white text-sm flex-shrink-0"
             title="新建标签页"
           >
-            +
+            <IconPlus size={14} />
           </button>
           <div className="flex-1" />
           <button
             onClick={() => setShowBatchCommand(true)}
-            className="px-2 py-1 text-gray-500 hover:text-accent-cyan text-xs flex-shrink-0"
+            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
             title="批量命令"
           >
-            {'>>'}
+            <IconBatchCmd size={14} />
           </button>
           <button
             onClick={() => setShowTunnelManager(true)}
-            className="px-2 py-1 text-gray-500 hover:text-accent-cyan text-xs flex-shrink-0"
+            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
             title="SSH 隧道"
           >
-            {'<>'}
+            <IconTunnel size={14} />
           </button>
           <button
             onClick={() => setShowShortcutSettings(true)}
-            className="px-2 py-1 text-gray-500 hover:text-accent-cyan text-xs flex-shrink-0"
+            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
             title="快捷键设置"
           >
-            {'#'}
+            <IconSettings size={14} />
           </button>
           <button
             onClick={() => setShowLogPanel(prev => !prev)}
-            className={`px-2 py-1 text-xs flex-shrink-0 ${showLogPanel ? 'text-accent-cyan' : 'text-gray-500 hover:text-accent-cyan'}`}
+            className={`px-1.5 py-1 flex-shrink-0 ${showLogPanel ? 'text-accent-cyan' : 'text-gray-500 hover:text-accent-cyan'}`}
             title="调试日志"
           >
-            日志
+            <IconLog size={14} />
           </button>
         </div>
 

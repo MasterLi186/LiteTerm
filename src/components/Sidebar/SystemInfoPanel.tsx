@@ -94,12 +94,16 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
     const unlisten = listen<MonitorData>('monitor-data', (event) => {
       if (event.payload.session_id === sessionId) {
         setData(event.payload);
-        netRxHistory.current = [...netRxHistory.current.slice(-59), event.payload.net_rx_rate];
-        netTxHistory.current = [...netTxHistory.current.slice(-59), event.payload.net_tx_rate];
+        const iface = selectedIface || event.payload.net_interface;
+        const ifaceData = event.payload.net_per_iface?.find(n => n.name === iface);
+        const rx = ifaceData ? ifaceData.rx_rate : event.payload.net_rx_rate;
+        const tx = ifaceData ? ifaceData.tx_rate : event.payload.net_tx_rate;
+        netRxHistory.current = [...netRxHistory.current.slice(-59), rx];
+        netTxHistory.current = [...netTxHistory.current.slice(-59), tx];
       }
     });
     return () => { unlisten.then((fn) => fn()); };
-  }, [sessionId]);
+  }, [sessionId, selectedIface]);
 
   if (!data) {
     return (
@@ -216,7 +220,7 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
       <Card title="网络" extra={
         <select
           value={selectedIface || data.net_interface}
-          onChange={(e) => setSelectedIface(e.target.value)}
+          onChange={(e) => { setSelectedIface(e.target.value); netRxHistory.current = []; netTxHistory.current = []; }}
           style={{
             background: '#21262d', border: '1px solid #30363d', borderRadius: '4px',
             color: '#8b949e', fontSize: '10px', padding: '1px 4px', outline: 'none',
@@ -230,8 +234,16 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
       }>
         <div style={{ padding: '8px 12px 4px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-            <span style={{ color: '#3fb950', fontSize: '11px' }}>↑ {formatBytes(data.net_tx_rate)}/s</span>
-            <span style={{ color: '#58a6ff', fontSize: '11px' }}>↓ {formatBytes(data.net_rx_rate)}/s</span>
+            {(() => {
+              const iface = selectedIface || data.net_interface;
+              const ifaceData = data.net_per_iface?.find(n => n.name === iface);
+              const tx = ifaceData ? ifaceData.tx_rate : data.net_tx_rate;
+              const rx = ifaceData ? ifaceData.rx_rate : data.net_rx_rate;
+              return (<>
+                <span style={{ color: '#3fb950', fontSize: '11px' }}>↑ {formatBytes(tx)}/s</span>
+                <span style={{ color: '#58a6ff', fontSize: '11px' }}>↓ {formatBytes(rx)}/s</span>
+              </>);
+            })()}
           </div>
           <div style={{ background: '#0d1117', borderRadius: '4px', overflow: 'hidden', padding: '4px 0' }}>
             <MiniChart data={netTxHistory.current} color="#3fb950" height={28} />

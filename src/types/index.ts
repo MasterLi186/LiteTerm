@@ -73,6 +73,7 @@ export interface MonitorData {
   net_tx_rate: number;
   net_interface: string;
   net_interfaces: string[];
+  net_per_iface: { name: string; rx_rate: number; tx_rate: number }[];
   cpu_info: string;
   processes: ProcessInfo[];
 }

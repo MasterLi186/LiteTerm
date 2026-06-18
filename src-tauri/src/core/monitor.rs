@@ -359,6 +359,24 @@ pub fn collect_command() -> &'static str {
         "echo '===UPTIME==='; cat /proc/uptime; ",
         "echo '===PS==='; ps aux --sort=-%cpu | head -20; ",
         "echo '===CPUINFO==='; grep -c ^processor /proc/cpuinfo; grep 'model name' /proc/cpuinfo | head -1; nproc; ",
+        "echo '===ROUTE==='; ip route show default 2>/dev/null || route -n 2>/dev/null | grep '^0.0.0.0'; ",
         "echo '===END==='"
     )
+}
+
+pub fn parse_default_iface(route_text: &str) -> Option<String> {
+    for line in route_text.lines() {
+        // ip route: "default via 192.168.1.1 dev eth0 ..."
+        if line.starts_with("default") {
+            if let Some(pos) = line.find("dev ") {
+                let after = &line[pos + 4..];
+                return after.split_whitespace().next().map(|s| s.to_string());
+            }
+        }
+        // route -n: "0.0.0.0  192.168.1.1  0.0.0.0  UG  0  0  0  eth0"
+        if line.starts_with("0.0.0.0") {
+            return line.split_whitespace().last().map(|s| s.to_string());
+        }
+    }
+    None
 }

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { FileEntry } from '../../types';
 import { log } from '../../utils/logger';
+import { IconSearch, IconRefresh, IconFolderUp, IconFolder, IconFile } from '../Icons';
 
 // --- Utilities ---
 
@@ -265,7 +266,7 @@ function FilePane({
           onClick={() => { setSearchVisible(prev => !prev); if (searchVisible) setSearchQuery(''); }}
           className={`text-[11px] px-1 rounded ${searchVisible ? 'text-accent-cyan' : 'text-gray-500 hover:text-gray-300'}`}
           title="搜索 (Ctrl+F)"
-        >🔍</button>
+        ><IconSearch size={12} /></button>
       </div>
       {/* Search bar */}
       {searchVisible && (
@@ -297,8 +298,8 @@ function FilePane({
           onKeyDown={(e) => { if (e.key === 'Enter') handlePathSubmit(); }}
           className="flex-1 bg-surface border border-surface-border rounded px-1.5 py-0.5 text-[11px] text-gray-300 outline-none focus:border-accent-cyan min-w-0"
         />
-        <button onClick={onRefresh} className="text-[11px] text-gray-400 hover:text-white px-0.5" title="刷新">↻</button>
-        <button onClick={handleGoUp} className="text-[11px] text-gray-400 hover:text-white px-0.5" title="上级目录">↑</button>
+        <button onClick={onRefresh} className="text-gray-400 hover:text-white px-0.5" title="刷新"><IconRefresh size={12} /></button>
+        <button onClick={handleGoUp} className="text-gray-400 hover:text-white px-0.5" title="上级目录"><IconFolderUp size={12} /></button>
       </div>
       {/* Error */}
       {error && (
@@ -345,7 +346,7 @@ function FilePane({
             }}
           >
             <span className="flex-1 truncate">
-              {f.is_dir ? '📁' : '📄'} {f.name}
+              <span className="inline-flex mr-1 align-text-bottom">{f.is_dir ? <IconFolder size={12} className="text-accent-yellow" /> : <IconFile size={12} className="text-gray-500" />}</span>{f.name}
             </span>
             <span className="w-14 text-right text-gray-500">{f.is_dir ? '' : formatSize(f.size)}</span>
             <span className="w-12 text-gray-500">{f.is_dir ? '文件夹' : getExtType(f.name)}</span>
@@ -413,9 +414,17 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
   const [localLoading, setLocalLoading] = useState(false);
   const [localSelected, setLocalSelected] = useState<string | null>(null);
 
-  // Remote pane state
-  const defaultRemotePath = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
-  const [remotePath, setRemotePath] = useState(defaultRemotePath);
+  // Remote pane state — per-session path cache
+  const sessionPathsRef = useRef<Record<string, string>>({});
+  const getSessionPath = (sid: string | null) => {
+    if (!sid) return '/home';
+    return sessionPathsRef.current[sid] || (sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home');
+  };
+  const [remotePath, setRemotePathRaw] = useState(() => getSessionPath(sessionId));
+  const setRemotePath = (path: string) => {
+    setRemotePathRaw(path);
+    if (sessionId) sessionPathsRef.current[sessionId] = path;
+  };
   const [remoteFiles, setRemoteFiles] = useState<FileEntry[]>([]);
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [remoteLoading, setRemoteLoading] = useState(false);
@@ -453,27 +462,27 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
   }, []);
 
   const remoteFilesRef = useRef<FileEntry[]>([]);
-  const remoteLoadingRef = useRef(false);
+  const loadingSessionRef = useRef<string | null>(null);
   const loadRemoteFiles = useCallback(async (path: string) => {
     if (!sessionId) return;
-    // 防重入：如果已有请求在进行中，跳过
-    if (remoteLoadingRef.current) {
-      log('FileBrowser', `loadRemoteFiles 跳过(重入): session=${sessionId}, path=${path}`);
-      return;
-    }
-    remoteLoadingRef.current = true;
+    // 防重入：仅阻止同一 session 的并发请求，不同 session 互不影响
+    if (loadingSessionRef.current === sessionId) return;
+    loadingSessionRef.current = sessionId;
+    const thisSession = sessionId;
     log('FileBrowser', `loadRemoteFiles: session=${sessionId}, path=${path}`);
     if (remoteFilesRef.current.length === 0) setRemoteLoading(true);
     setRemoteError(null);
 
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (loadingSessionRef.current !== thisSession) return;
       try {
-        const entries = await invoke<FileEntry[]>('sftp_list_dir', { sessionId, path });
+        const entries = await invoke<FileEntry[]>('sftp_list_dir', { sessionId: thisSession, path });
+        if (loadingSessionRef.current !== thisSession) return;
         log('FileBrowser', `loadRemoteFiles OK: ${entries.length} entries (attempt ${attempt})`);
         setRemoteFiles(entries);
         remoteFilesRef.current = entries;
         setRemoteLoading(false);
-        remoteLoadingRef.current = false;
+        loadingSessionRef.current = null;
         return;
       } catch (e) {
         log('FileBrowser', `loadRemoteFiles attempt ${attempt} FAILED: ${e}`);
@@ -483,9 +492,10 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
       }
     }
 
+    if (loadingSessionRef.current !== thisSession) return;
     if (remoteFilesRef.current.length > 0) {
       setRemoteLoading(false);
-      remoteLoadingRef.current = false;
+      loadingSessionRef.current = null;
       return;
     }
 
@@ -493,20 +503,35 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
     setRemoteFiles([]);
     remoteFilesRef.current = [];
     setRemoteLoading(false);
-    remoteLoadingRef.current = false;
+    loadingSessionRef.current = null;
   }, [sessionId]);
 
-  // Reset remote path when switching to a different user
-  const prevSshUserRef = useRef<string | undefined>(undefined);
+  // session 切换时恢复该 session 的路径缓存，首次则查询远端 home
+  const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (sessionId) {
-      if (sshUser !== prevSshUserRef.current) {
-        const home = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
-        setRemotePath(home);
+    loadingSessionRef.current = null;
+    if (sessionId && sessionId !== prevSessionIdRef.current) {
+      prevSessionIdRef.current = sessionId;
+      if (sessionPathsRef.current[sessionId]) {
+        // 已有缓存，直接恢复
+        setRemotePathRaw(sessionPathsRef.current[sessionId]);
+      } else {
+        // 首次：查询真实 home 目录
+        const fallback = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
+        setRemotePathRaw(fallback);
+        sessionPathsRef.current[sessionId] = fallback;
+        invoke<string>('sftp_exec', { sessionId, command: 'echo $HOME' })
+          .then(home => {
+            if (home && home.startsWith('/')) {
+              log('FileBrowser', `远端 home (${sessionId}): ${home}`);
+              setRemotePath(home);
+            }
+          })
+          .catch(() => {});
       }
-      prevSshUserRef.current = sshUser;
-    } else {
-      prevSshUserRef.current = undefined;
+    }
+    if (!sessionId) {
+      prevSessionIdRef.current = null;
     }
   }, [sessionId, sshUser]);
 

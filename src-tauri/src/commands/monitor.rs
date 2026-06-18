@@ -5,8 +5,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::core::monitor::{
-    collect_command, parse_df_output, parse_loadavg, parse_proc_meminfo, parse_proc_net_dev,
-    parse_proc_stat_cpu, parse_proc_uptime, parse_ps_aux, parse_swap_info,
+    collect_command, parse_default_iface, parse_df_output, parse_loadavg, parse_proc_meminfo,
+    parse_proc_net_dev, parse_proc_stat_cpu, parse_proc_uptime, parse_ps_aux, parse_swap_info,
 };
 use crate::state::AppState;
 
@@ -26,6 +26,13 @@ pub struct ProcessInfo {
 }
 
 #[derive(Serialize, Clone)]
+pub struct NetIfaceRate {
+    pub name: String,
+    pub rx_rate: u64,
+    pub tx_rate: u64,
+}
+
+#[derive(Serialize, Clone)]
 pub struct MonitorPayload {
     pub session_id: String,
     pub cpu_percent: f64,
@@ -40,6 +47,7 @@ pub struct MonitorPayload {
     pub net_tx_rate: u64,
     pub net_interface: String,
     pub net_interfaces: Vec<String>,
+    pub net_per_iface: Vec<NetIfaceRate>,
     pub cpu_info: String,
     pub processes: Vec<ProcessInfo>,
 }
@@ -55,7 +63,7 @@ fn format_kb_to_human(kb: u64) -> String {
 }
 
 /// Split the combined output by sentinel lines and parse each section.
-fn parse_sections(output: &str) -> (String, String, String, String, String, String, String, String) {
+fn parse_sections(output: &str) -> (String, String, String, String, String, String, String, String, String) {
     let mut stat = String::new();
     let mut mem = String::new();
     let mut disk = String::new();
@@ -64,6 +72,7 @@ fn parse_sections(output: &str) -> (String, String, String, String, String, Stri
     let mut uptime = String::new();
     let mut ps = String::new();
     let mut cpuinfo = String::new();
+    let mut route = String::new();
 
     let mut current_section = "";
     for line in output.lines() {
@@ -77,6 +86,7 @@ fn parse_sections(output: &str) -> (String, String, String, String, String, Stri
             "===UPTIME===" => { current_section = "uptime"; continue; }
             "===PS===" => { current_section = "ps"; continue; }
             "===CPUINFO===" => { current_section = "cpuinfo"; continue; }
+            "===ROUTE===" => { current_section = "route"; continue; }
             "===END===" => { current_section = ""; continue; }
             _ => {}
         }
@@ -89,11 +99,12 @@ fn parse_sections(output: &str) -> (String, String, String, String, String, Stri
             "uptime" => { uptime.push_str(line); uptime.push('\n'); }
             "ps" => { ps.push_str(line); ps.push('\n'); }
             "cpuinfo" => { cpuinfo.push_str(line); cpuinfo.push('\n'); }
+            "route" => { route.push_str(line); route.push('\n'); }
             _ => {}
         }
     }
 
-    (stat, mem, disk, net, load, uptime, ps, cpuinfo)
+    (stat, mem, disk, net, load, uptime, ps, cpuinfo, route)
 }
 
 fn parse_cpuinfo(cpuinfo_text: &str) -> (String, u32) {
@@ -238,6 +249,7 @@ pub async fn start_monitor(
         let mut prev_cpu = None;
         let mut prev_net_rx: u64 = 0;
         let mut prev_net_tx: u64 = 0;
+        let mut prev_per_iface: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
         let mut first_sample = true;
 
         loop {
@@ -247,7 +259,7 @@ pub async fn start_monitor(
 
             match exec_command(&session, cmd) {
                 Ok(output) => {
-                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text, cpuinfo_text) =
+                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text, cpuinfo_text, route_text) =
                         parse_sections(&output);
 
                     // CPU
@@ -323,19 +335,36 @@ pub async fn start_monitor(
                         })
                         .collect();
 
-                    // Network — collect all interfaces
+                    // Network — collect all interfaces, default to route's iface
                     let net_metrics = parse_proc_net_dev(&net_text);
                     let all_ifaces: Vec<String> = net_metrics.iter().map(|n| n.interface.clone()).collect();
                     let total_rx: u64 = net_metrics.iter().map(|n| n.rx_bytes).sum();
                     let total_tx: u64 = net_metrics.iter().map(|n| n.tx_bytes).sum();
-                    let net_iface = net_metrics.first().map(|n| n.interface.clone()).unwrap_or_default();
+                    let default_iface = parse_default_iface(&route_text);
+                    let net_iface = default_iface
+                        .filter(|d| all_ifaces.contains(d))
+                        .unwrap_or_else(|| net_metrics.first().map(|n| n.interface.clone()).unwrap_or_default());
 
+                    let mut net_per_iface: Vec<NetIfaceRate> = Vec::new();
                     let (net_rx_rate, net_tx_rate) = if first_sample {
                         first_sample = false;
+                        for m in &net_metrics {
+                            prev_per_iface.insert(m.interface.clone(), (m.rx_bytes, m.tx_bytes));
+                            net_per_iface.push(NetIfaceRate { name: m.interface.clone(), rx_rate: 0, tx_rate: 0 });
+                        }
                         (0u64, 0u64)
                     } else {
-                        let rx_rate = total_rx.saturating_sub(prev_net_rx) / 2; // 2 second interval
+                        let rx_rate = total_rx.saturating_sub(prev_net_rx) / 2;
                         let tx_rate = total_tx.saturating_sub(prev_net_tx) / 2;
+                        for m in &net_metrics {
+                            let (prx, ptx) = prev_per_iface.get(&m.interface).copied().unwrap_or((0, 0));
+                            net_per_iface.push(NetIfaceRate {
+                                name: m.interface.clone(),
+                                rx_rate: m.rx_bytes.saturating_sub(prx) / 2,
+                                tx_rate: m.tx_bytes.saturating_sub(ptx) / 2,
+                            });
+                            prev_per_iface.insert(m.interface.clone(), (m.rx_bytes, m.tx_bytes));
+                        }
                         (rx_rate, tx_rate)
                     };
                     prev_net_rx = total_rx;
@@ -381,6 +410,7 @@ pub async fn start_monitor(
                         net_tx_rate,
                         net_interface: net_iface,
                         net_interfaces: all_ifaces,
+                        net_per_iface,
                         cpu_info: {
                             let (model, cores) = parse_cpuinfo(&cpuinfo_text);
                             if model.is_empty() {
@@ -425,13 +455,14 @@ pub async fn start_local_monitor(
         let mut prev_cpu = None;
         let mut prev_net_rx: u64 = 0;
         let mut prev_net_tx: u64 = 0;
+        let mut prev_per_iface: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
         let mut first_sample = true;
         let session_id = "local".to_string();
 
         loop {
             match exec_local_command(cmd) {
                 Ok(output) => {
-                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text, cpuinfo_text) =
+                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text, cpuinfo_text, route_text) =
                         parse_sections(&output);
 
                     let cpu_metrics = parse_proc_stat_cpu(&stat_text);
@@ -468,12 +499,29 @@ pub async fn start_local_monitor(
                     let all_ifaces: Vec<String> = net_metrics.iter().map(|n| n.interface.clone()).collect();
                     let total_rx: u64 = net_metrics.iter().map(|n| n.rx_bytes).sum();
                     let total_tx: u64 = net_metrics.iter().map(|n| n.tx_bytes).sum();
-                    let net_iface = net_metrics.first().map(|n| n.interface.clone()).unwrap_or_default();
+                    let default_iface = parse_default_iface(&route_text);
+                    let net_iface = default_iface
+                        .filter(|d| all_ifaces.contains(d))
+                        .unwrap_or_else(|| net_metrics.first().map(|n| n.interface.clone()).unwrap_or_default());
 
+                    let mut net_per_iface: Vec<NetIfaceRate> = Vec::new();
                     let (net_rx_rate, net_tx_rate) = if first_sample {
                         first_sample = false;
+                        for m in &net_metrics {
+                            prev_per_iface.insert(m.interface.clone(), (m.rx_bytes, m.tx_bytes));
+                            net_per_iface.push(NetIfaceRate { name: m.interface.clone(), rx_rate: 0, tx_rate: 0 });
+                        }
                         (0u64, 0u64)
                     } else {
+                        for m in &net_metrics {
+                            let (prx, ptx) = prev_per_iface.get(&m.interface).copied().unwrap_or((0, 0));
+                            net_per_iface.push(NetIfaceRate {
+                                name: m.interface.clone(),
+                                rx_rate: m.rx_bytes.saturating_sub(prx) / 2,
+                                tx_rate: m.tx_bytes.saturating_sub(ptx) / 2,
+                            });
+                            prev_per_iface.insert(m.interface.clone(), (m.rx_bytes, m.tx_bytes));
+                        }
                         (total_rx.saturating_sub(prev_net_rx) / 2, total_tx.saturating_sub(prev_net_tx) / 2)
                     };
                     prev_net_rx = total_rx;
@@ -493,7 +541,7 @@ pub async fn start_local_monitor(
                         session_id: session_id.clone(), cpu_percent, memory_used_percent,
                         memory_text: memory_display, swap_text: swap_display, swap_percent,
                         uptime_text: uptime_display, load_text: load_display, disk_items,
-                        net_rx_rate, net_tx_rate, net_interface: net_iface, net_interfaces: all_ifaces,
+                        net_rx_rate, net_tx_rate, net_interface: net_iface, net_interfaces: all_ifaces, net_per_iface,
                         cpu_info: {
                             let (model, cores) = parse_cpuinfo(&cpuinfo_text);
                             if model.is_empty() { format!("{}核", cores) } else { format!("{} ({}核)", model, cores) }
