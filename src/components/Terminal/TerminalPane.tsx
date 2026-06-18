@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save, open } from '@tauri-apps/plugin-dialog';
+import { open as shellOpen } from '@tauri-apps/plugin-shell';
 import * as Zmodem from 'zmodem.js';
 import '@xterm/xterm/css/xterm.css';
 import type { ITheme } from '@xterm/xterm';
@@ -292,8 +294,12 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
+    const webLinksAddon = new WebLinksAddon((_event, uri) => {
+      shellOpen(uri).catch(() => {});
+    });
     term.loadAddon(fitAddon);
     term.loadAddon(searchAddon);
+    term.loadAddon(webLinksAddon);
     term.open(containerRef.current);
     termRef.current = term;
     fitRef.current = fitAddon;
