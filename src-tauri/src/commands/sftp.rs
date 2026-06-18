@@ -159,6 +159,33 @@ pub struct SftpHandle {
 unsafe impl Send for SftpHandle {}
 unsafe impl Sync for SftpHandle {}
 
+/// Execute a command on the SFTP session's SSH connection and return output.
+#[tauri::command]
+pub async fn sftp_exec(
+    state: State<'_, AppState>,
+    session_id: String,
+    command: String,
+) -> Result<String, String> {
+    let sftp_sessions = state.sftp_sessions.lock().unwrap();
+    let handle = sftp_sessions
+        .get(&session_id)
+        .ok_or_else(|| "SFTP会话未找到".to_string())?;
+
+    let mut channel = handle._session
+        .channel_session()
+        .map_err(|e| format!("打开通道失败: {}", e))?;
+
+    channel.exec(&command)
+        .map_err(|e| format!("执行命令失败: {}", e))?;
+
+    let mut output = String::new();
+    channel.read_to_string(&mut output)
+        .map_err(|e| format!("读取输出失败: {}", e))?;
+
+    channel.wait_close().ok();
+    Ok(output.trim().to_string())
+}
+
 /// List files in a remote directory via SFTP.
 #[tauri::command]
 pub async fn sftp_list_dir(

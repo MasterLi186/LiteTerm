@@ -10,6 +10,7 @@ import { open as shellOpen } from '@tauri-apps/plugin-shell';
 import * as Zmodem from 'zmodem.js';
 import '@xterm/xterm/css/xterm.css';
 import type { ITheme } from '@xterm/xterm';
+import { log as appLog, getLogText } from '../../utils/logger';
 
 // ---- Terminal Themes ----
 const TERMINAL_THEMES: Record<string, ITheme> = {
@@ -175,7 +176,7 @@ function ContextMenu({ x, y, onClose, items }: {
   );
 }
 
-/** Handle a detected ZMODEM session (receive or send). */
+/** Handle a detected ZMODEM session (receive only; send/upload uses SFTP). */
 async function handleZmodemDetection(
   detection: any,
   terminalId: string,
@@ -185,7 +186,6 @@ async function handleZmodemDetection(
     totalSize: number;
     status: 'receiving' | 'sending' | 'complete';
   } | null>>,
-  pendingUploadFiles?: Array<{ name: string; data: Uint8Array }>,
 ) {
   const session = detection.confirm();
   const role: string = session.type;
@@ -245,29 +245,8 @@ async function handleZmodemDetection(
     setTimeout(() => setZmodemTransfer(null), 30000);
 
     session.start();
-  } else if (role === 'send' && pendingUploadFiles && pendingUploadFiles.length > 0) {
-    // Send session — upload files via ZMODEM (triggered by rz)
-    for (const file of pendingUploadFiles) {
-      setZmodemTransfer({ filename: file.name, bytesReceived: 0, totalSize: file.data.length, status: 'sending' });
-      try {
-        const xfer = await session.send_offer({ name: file.name, size: file.data.length });
-        if (xfer) {
-          const CHUNK = 8192;
-          for (let i = 0; i < file.data.length; i += CHUNK) {
-            const end = Math.min(i + CHUNK, file.data.length);
-            await xfer.send(Array.from(file.data.subarray(i, end)));
-            setZmodemTransfer(prev => prev ? { ...prev, bytesReceived: end } : null);
-          }
-          await xfer.end();
-        }
-      } catch (e) {
-        console.error('ZMODEM 上传失败:', e);
-      }
-    }
-    setZmodemTransfer(prev => prev ? { ...prev, status: 'complete' } : null);
-    setTimeout(() => setZmodemTransfer(null), 5000);
-    session.close();
   } else {
+    // Send session（用户手动 rz）或无 pending files — 直接关闭
     session.close();
   }
 }
@@ -279,10 +258,9 @@ interface Props {
   onClosePane?: () => void;
   onFocus?: () => void;
   onOpenRecording?: (filePath: string) => void;
-  onRegisterUpload?: (upload: (files: Array<{ name: string; data: Uint8Array }>) => void) => void;
 }
 
-export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFocus, onOpenRecording, onRegisterUpload }: Props) {
+export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFocus, onOpenRecording }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -303,7 +281,6 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     totalSize: number;
     status: 'receiving' | 'sending' | 'complete';
   } | null>(null);
-  const pendingUploadRef = useRef<Array<{ name: string; data: Uint8Array }>>([]);
 
   useEffect(() => {
     if (!containerRef.current || !wrapperRef.current || termRef.current) return;
@@ -426,25 +403,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       sender: (octets: number[]) => {
         invoke('terminal_write', { id: terminalId, data: Array.from(octets) });
       },
-      on_retract: () => {
-        // Detection was retracted (not actually ZMODEM)
-      },
+      on_retract: () => {},
       on_detect: (detection: any) => {
-        const files = pendingUploadRef.current.length > 0 ? [...pendingUploadRef.current] : undefined;
-        pendingUploadRef.current = [];
-        handleZmodemDetection(detection, terminalId, setZmodemTransfer, files);
+        handleZmodemDetection(detection, terminalId, setZmodemTransfer);
       },
     });
-
-    // 注册上传函数：外部调用时设置 pending files 并发送 rz 命令
-    if (onRegisterUpload) {
-      onRegisterUpload((files) => {
-        pendingUploadRef.current = files;
-        const rzCmd = 'rz\n';
-        const bytes = Array.from(new TextEncoder().encode(rzCmd));
-        invoke('terminal_write', { id: terminalId, data: bytes });
-      });
-    }
 
     // Listen for output from Tauri — pass through ZMODEM sentry
     const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
@@ -452,14 +415,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         const data = new Uint8Array(event.payload.data);
         try {
           sentry.consume(data);
-        } catch (e) {
-          term.write(data);
-          if (logFileNameRef.current) {
-            logBufferRef.current.push(new TextDecoder().decode(data));
-          }
-          if (isRecordingRef.current) {
-            invoke('record_event', { terminalId, data: new TextDecoder().decode(data) }).catch(() => {});
-          }
+        } catch (e: any) {
+          const msg = typeof e === 'object' && e.message ? e.message : String(e);
+          appLog('ZM', 'sentry.consume error: ' + msg);
+          try { (sentry as any)._zsession = null; } catch (_) {}
+          try { (sentry as any)._parsed_session = null; } catch (_) {}
         }
       }
     });

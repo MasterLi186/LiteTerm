@@ -453,8 +453,15 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
   }, []);
 
   const remoteFilesRef = useRef<FileEntry[]>([]);
+  const remoteLoadingRef = useRef(false);
   const loadRemoteFiles = useCallback(async (path: string) => {
     if (!sessionId) return;
+    // 防重入：如果已有请求在进行中，跳过
+    if (remoteLoadingRef.current) {
+      log('FileBrowser', `loadRemoteFiles 跳过(重入): session=${sessionId}, path=${path}`);
+      return;
+    }
+    remoteLoadingRef.current = true;
     log('FileBrowser', `loadRemoteFiles: session=${sessionId}, path=${path}`);
     if (remoteFilesRef.current.length === 0) setRemoteLoading(true);
     setRemoteError(null);
@@ -466,18 +473,19 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
         setRemoteFiles(entries);
         remoteFilesRef.current = entries;
         setRemoteLoading(false);
+        remoteLoadingRef.current = false;
         return;
       } catch (e) {
         log('FileBrowser', `loadRemoteFiles attempt ${attempt} FAILED: ${e}`);
         if (attempt < 2) {
-          await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+          await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
         }
       }
     }
 
     if (remoteFilesRef.current.length > 0) {
-      log('FileBrowser', 'loadRemoteFiles: keeping existing files after all retries failed');
       setRemoteLoading(false);
+      remoteLoadingRef.current = false;
       return;
     }
 
@@ -485,6 +493,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
     setRemoteFiles([]);
     remoteFilesRef.current = [];
     setRemoteLoading(false);
+    remoteLoadingRef.current = false;
   }, [sessionId]);
 
   // Reset remote path when switching to a different user

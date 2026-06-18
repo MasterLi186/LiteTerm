@@ -10,10 +10,9 @@ interface SplitContainerProps {
   onClose: (terminalId: string) => void;
   onFocusTerminal: (terminalId: string) => void;
   onOpenRecording?: (filePath: string) => void;
-  onRegisterUpload?: (terminalId: string, upload: (files: Array<{ name: string; data: Uint8Array }>) => void) => void;
 }
 
-export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onClose, onFocusTerminal, onOpenRecording, onRegisterUpload }: SplitContainerProps) {
+export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onClose, onFocusTerminal, onOpenRecording }: SplitContainerProps) {
   if (node.type === 'terminal') {
     return (
       <TerminalPane
@@ -23,7 +22,6 @@ export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onCl
         onClosePane={() => onClose(node.terminalId)}
         onFocus={() => onFocusTerminal(node.terminalId)}
         onOpenRecording={onOpenRecording}
-        onRegisterUpload={onRegisterUpload ? (fn) => onRegisterUpload(node.terminalId, fn) : undefined}
       />
     );
   }
@@ -37,13 +35,12 @@ export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onCl
       onClose={onClose}
       onFocusTerminal={onFocusTerminal}
       onOpenRecording={onOpenRecording}
-      onRegisterUpload={onRegisterUpload}
     />
   );
 }
 
 /** Inner component for split nodes so we can use hooks unconditionally. */
-function SplitNodeView({ node, isActive, activeTerminalId, onSplit, onClose, onFocusTerminal, onOpenRecording, onRegisterUpload }: SplitContainerProps & { node: Extract<SplitNode, { type: 'split' }> }) {
+function SplitNodeView({ node, isActive, activeTerminalId, onSplit, onClose, onFocusTerminal, onOpenRecording }: SplitContainerProps & { node: Extract<SplitNode, { type: 'split' }> }) {
   const [ratio, setRatio] = useState(node.ratio);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -106,7 +103,6 @@ function SplitNodeView({ node, isActive, activeTerminalId, onSplit, onClose, onF
           onClose={onClose}
           onFocusTerminal={onFocusTerminal}
           onOpenRecording={onOpenRecording}
-          onRegisterUpload={onRegisterUpload}
         />
       </div>
       {/* Draggable divider */}
@@ -133,7 +129,6 @@ function SplitNodeView({ node, isActive, activeTerminalId, onSplit, onClose, onF
           onClose={onClose}
           onFocusTerminal={onFocusTerminal}
           onOpenRecording={onOpenRecording}
-          onRegisterUpload={onRegisterUpload}
         />
       </div>
     </div>

@@ -16,7 +16,7 @@ import { ShortcutSettings, loadShortcuts, matchShortcut } from './components/Sho
 import { TunnelManager } from './components/TunnelManager';
 import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
-import { log } from './utils/logger';
+import { log, getLogText } from './utils/logger';
 
 function getTerminalSize() {
   return {
@@ -969,7 +969,7 @@ function App() {
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
-  const terminalUploadFns = useRef<Record<string, (files: Array<{ name: string; data: Uint8Array }>) => void>>({});
+  const [showLogPanel, setShowLogPanel] = useState(false);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
@@ -979,7 +979,7 @@ function App() {
   const [fileBrowserHeight, setFileBrowserHeight] = useState(256);
   const fbDragging = useRef(false);
 
-  // 拖拽文件到终端上传：通过 ZMODEM rz 上传到终端当前目录
+  // 拖拽文件到终端上传：通过 SFTP 上传到远端当前工作目录
   useEffect(() => {
     const webview = getCurrentWebview();
     const unlisten = webview.onDragDropEvent((event) => {
@@ -992,34 +992,44 @@ function App() {
         setDragOverTerminal(false);
         const paths = event.payload.paths;
         if (!paths.length) return;
+        const sid = activeSshSessionId;
 
-        const uploadFn = terminalUploadFns.current[activeSshSessionId];
-        if (!uploadFn) {
-          setError('终端未就绪，无法上传');
-          return;
-        }
-
-        log('拖拽上传', `${paths.length} 个文件通过 ZMODEM rz 上传`, paths);
+        log('拖拽上传', `${paths.length} 个文件通过 SFTP 上传`, paths);
         (async () => {
-          const files: Array<{ name: string; data: Uint8Array }> = [];
-          for (const p of paths) {
-            const filename = p.replace(/\\/g, '/').split('/').pop() || 'file';
+          // 1. 通过 SFTP session 的 exec 通道获取远端用户的 home 目录（exec 通道初始 cwd）
+          let remoteDir: string;
+          try {
+            remoteDir = await invoke<string>('sftp_exec', { sessionId: sid, command: 'pwd' });
+            log('拖拽上传', `远端目录: ${remoteDir}`);
+          } catch (e) {
+            log('拖拽上传', `获取远端目录失败: ${e}, 回退到 home`);
+            const sshTab = tabs.find(t => t.id === sid);
+            const user = sshTab?.sshParams?.user || 'root';
+            remoteDir = user === 'root' ? '/root' : `/home/${user}`;
+          }
+
+          // 2. 逐个上传文件
+          let successCount = 0;
+          for (const localAbsPath of paths) {
+            const filename = localAbsPath.replace(/\\/g, '/').split('/').pop() || 'file';
+            const remotePath = `${remoteDir}/${filename}`;
             try {
-              const data = await invoke<number[]>('read_local_file', { path: p });
-              files.push({ name: filename, data: new Uint8Array(data) });
+              await invoke('sftp_upload', { sessionId: sid, localPath: localAbsPath, remotePath });
+              log('拖拽上传', `完成: ${filename} → ${remotePath}`);
+              successCount++;
             } catch (e) {
-              log('拖拽上传', `读取文件失败: ${p} - ${e}`);
-              setError(`读取文件失败: ${filename} - ${e}`);
+              log('拖拽上传', `失败: ${filename} - ${e}`);
+              setError(`上传失败: ${filename} - ${e}`);
             }
           }
-          if (files.length > 0) {
-            uploadFn(files);
+          if (successCount > 0) {
+            log('拖拽上传', `${successCount}/${paths.length} 个文件上传成功到 ${remoteDir}`);
           }
         })();
       }
     });
     return () => { unlisten.then(fn => fn()); };
-  }, [activeSshSessionId]);
+  }, [activeSshSessionId, tabs]);
 
   return (
     <div className="h-screen w-screen flex bg-surface text-gray-200 overflow-hidden" style={{ maxHeight: '100vh', maxWidth: '100vw' }}>
@@ -1264,6 +1274,13 @@ function App() {
           >
             {'#'}
           </button>
+          <button
+            onClick={() => setShowLogPanel(prev => !prev)}
+            className={`px-2 py-1 text-xs flex-shrink-0 ${showLogPanel ? 'text-accent-cyan' : 'text-gray-500 hover:text-accent-cyan'}`}
+            title="调试日志"
+          >
+            日志
+          </button>
         </div>
 
         {/* Tab context menu */}
@@ -1478,7 +1495,6 @@ function App() {
                     onClose={(termId) => handleClosePane(tab.id, termId)}
                     onFocusTerminal={setFocusedTerminalId}
                     onOpenRecording={openRecordingTab}
-                    onRegisterUpload={(termId, fn) => { terminalUploadFns.current[termId] = fn; }}
                   />
                   {dragOverTerminal && tab.id === activeTabId && tab.type === 'ssh' && (
                     <div style={{
@@ -1490,7 +1506,7 @@ function App() {
                       pointerEvents: 'none',
                     }}>
                       <span style={{ color: '#00d4ff', fontSize: '14px', fontWeight: 600 }}>
-                        释放文件通过 ZMODEM 上传到当前目录
+                        释放文件上传到远程服务器
                       </span>
                     </div>
                   )}
@@ -1743,6 +1759,20 @@ function App() {
       {/* Tunnel Manager */}
       {showTunnelManager && (
         <TunnelManager onClose={() => setShowTunnelManager(false)} connections={connections} />
+      )}
+
+      {/* 日志面板 */}
+      {showLogPanel && (
+        <div className="fixed bottom-0 right-0 w-[600px] h-[300px] bg-surface-light border border-surface-border rounded-tl-lg shadow-xl z-50 flex flex-col">
+          <div className="flex items-center justify-between px-3 py-1 border-b border-surface-border">
+            <span className="text-xs text-gray-400">调试日志</span>
+            <div className="flex gap-2">
+              <button onClick={() => navigator.clipboard.writeText(getLogText())} className="text-[10px] text-gray-500 hover:text-white">复制</button>
+              <button onClick={() => setShowLogPanel(false)} className="text-gray-500 hover:text-white text-sm">×</button>
+            </div>
+          </div>
+          <pre className="flex-1 overflow-auto p-2 text-[10px] text-gray-400 font-mono whitespace-pre-wrap">{getLogText()}</pre>
+        </div>
       )}
     </div>
   );
