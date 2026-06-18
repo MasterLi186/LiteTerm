@@ -16,18 +16,18 @@ fn hex_pair(h: u8, l: u8) -> Option<u8> {
     Some((from_hex(h)? << 4) | from_hex(l)?)
 }
 
-/// ZDLE-decode: reverse the escaping applied by the sender.
-/// Encoder rule: ZDLE(0x18) → ZDLE 0x58; everything else → ZDLE (b ^ 0x40).
-/// Decoder (inverse): 0x58 → ZDLE(0x18); anything else → escaped ^ 0x40.
+/// ZDLE 解码：还原发送方施加的转义。
+/// 编码规则：ZDLE(0x18) → ZDLE 0x58；其余字节 → ZDLE (b ^ 0x40)。
+/// 解码（逆过程）：0x58 → ZDLE(0x18)；其余转义字节 → escaped ^ 0x40。
 fn zdle_decode_byte(escaped: u8) -> u8 {
     if escaped == 0x58 {
-        ZDLE // ZDLE itself was encoded as 0x58
+        ZDLE // ZDLE 自身被编码为 0x58
     } else {
         escaped ^ 0x40
     }
 }
 
-/// Incremental ZMODEM frame decoder. Handles fragmented input across calls.
+/// 增量式 ZMODEM 帧解码器，支持跨调用的分片输入。
 pub struct ZmodemDecoder {
     buf: Vec<u8>,
 }
@@ -37,13 +37,13 @@ impl ZmodemDecoder {
         Self { buf: Vec::with_capacity(256) }
     }
 
-    /// Feed raw bytes from the remote. Returns all complete frames parsed.
+    /// 输入来自远端的原始字节，返回所有已解析完整的帧。
     pub fn feed(&mut self, data: &[u8]) -> Vec<DecodedFrame> {
         self.buf.extend_from_slice(data);
         let mut frames = Vec::new();
 
         loop {
-            // Find the next ZPAD (start of a potential header)
+            // 查找下一个 ZPAD（潜在帧头的起始位置）
             let start = self.buf.iter().position(|&b| b == ZPAD);
             if start.is_none() {
                 self.buf.clear();
@@ -51,47 +51,47 @@ impl ZmodemDecoder {
             }
             let start = start.unwrap();
 
-            // Discard bytes before the ZPAD
+            // 丢弃 ZPAD 之前的字节
             if start > 0 {
                 self.buf.drain(..start);
             }
 
             let len_before = self.buf.len();
 
-            // Try to parse ZHEX header: ZPAD ZPAD ZDLE ZHEX + 14 hex chars
+            // 尝试解析 ZHEX 帧头：ZPAD ZPAD ZDLE ZHEX + 14 个十六进制字符
             if let Some(frame) = self.try_parse_zhex() {
                 frames.push(frame);
                 continue;
             }
 
-            // Try to parse ZBIN32 header: ZPAD ZDLE ZBIN32 + ZDLE-encoded 9 bytes
+            // 尝试解析 ZBIN32 帧头：ZPAD ZDLE ZBIN32 + ZDLE 编码的 9 字节
             if let Some(frame) = self.try_parse_zbin32() {
                 frames.push(frame);
                 continue;
             }
 
-            // If neither parser consumed any bytes, we need more data or the ZPAD is stale.
-            // If the buffer grew since we entered this iteration, more data might help — wait.
-            // If buffer size is unchanged, this ZPAD cannot start a known frame (e.g. ZBIN/garbage);
-            // skip it to prevent an infinite stall.
+            // 若两个解析器都未消耗任何字节，说明需要更多数据或该 ZPAD 已过期。
+            // 若自本轮开始后缓冲区有增长，等待更多数据可能有效。
+            // 若缓冲区大小不变，该 ZPAD 无法开始一个已知帧（如 ZBIN 或乱码），
+            // 跳过以防止无限停滞。
             if self.buf.len() == len_before {
-                // Too short to even classify: a lone ZPAD (or ZPAD ZPAD) — wait for more data
-                // rather than discarding it (it could be the start of a valid frame).
+                // 数据太短无法分类：单独的 ZPAD（或 ZPAD ZPAD）——等待更多数据，
+                // 而不是直接丢弃（它可能是合法帧的开头）。
                 if self.buf.len() < 3 {
                     break;
                 }
 
-                // Check if we might just need more data (minimum frame sizes not met)
+                // 检查是否只是需要更多数据（未达到最小帧大小）
                 let could_be_zhex = self.buf[0] == ZPAD && self.buf[1] == ZPAD
                     && self.buf[2] == ZDLE
                     && (self.buf.len() < 4 || self.buf[3] == ZHEX);
                 let could_be_zbin32 = self.buf[0] == ZPAD && self.buf[1] == ZDLE
                     && self.buf[2] == ZBIN32;
                 if could_be_zhex || could_be_zbin32 {
-                    // Might be a valid frame, just not enough data yet
+                    // 可能是合法帧，只是数据尚不完整
                     break;
                 }
-                // Unrecognized or stale ZPAD — skip it
+                // 无法识别或已过期的 ZPAD——跳过
                 self.buf.drain(..1);
             }
         }
@@ -100,7 +100,7 @@ impl ZmodemDecoder {
     }
 
     fn try_parse_zhex(&mut self) -> Option<DecodedFrame> {
-        // Need at least: ZPAD ZPAD ZDLE ZHEX + 14 hex chars = 18 bytes
+        // 至少需要：ZPAD ZPAD ZDLE ZHEX + 14 个十六进制字符 = 18 字节
         if self.buf.len() < 18 {
             return None;
         }
@@ -108,7 +108,7 @@ impl ZmodemDecoder {
             return None;
         }
 
-        // Copy hex bytes out before borrowing self mutably for drain
+        // 在可变借用 self 执行 drain 之前，先复制十六进制字节
         let hex: [u8; 14] = self.buf[4..18].try_into().unwrap();
 
         macro_rules! hex_pair_or_skip {
@@ -133,13 +133,13 @@ impl ZmodemDecoder {
         let computed_crc = crc16(&payload);
 
         if received_crc != computed_crc {
-            // CRC mismatch — skip this ZPAD and try next
+            // CRC 不匹配——跳过此 ZPAD，尝试下一个
             self.buf.drain(..1);
             return None;
         }
 
-        // Consume the header + trailing CR LF (and optional XON) before checking frame type,
-        // so buffer always advances even if frame type is unknown.
+        // 在检查帧类型之前，先消费帧头及末尾的 CR LF（以及可选的 XON），
+        // 确保即使帧类型未知，缓冲区也始终向前推进。
         let mut consumed = 18;
         while consumed < self.buf.len() && (self.buf[consumed] == b'\r' || self.buf[consumed] == b'\n' || self.buf[consumed] == 0x11) {
             consumed += 1;
@@ -152,7 +152,7 @@ impl ZmodemDecoder {
     }
 
     fn try_parse_zbin32(&mut self) -> Option<DecodedFrame> {
-        // ZPAD ZDLE ZBIN32 + ZDLE-encoded(type[1] + flags[4] + crc32[4]) = min 12, max ~21 bytes
+        // ZPAD ZDLE ZBIN32 + ZDLE编码(type[1] + flags[4] + crc32[4]) = 最少 12 字节，最多约 21 字节
         if self.buf.len() < 12 {
             return None;
         }
@@ -160,13 +160,13 @@ impl ZmodemDecoder {
             return None;
         }
 
-        // ZDLE-decode 9 bytes (type + 4 flags + 4 crc) starting at offset 3
+        // 从偏移量 3 开始，ZDLE 解码 9 字节（type + 4 flags + 4 crc）
         let mut decoded = Vec::with_capacity(9);
         let mut i = 3;
         while decoded.len() < 9 && i < self.buf.len() {
             if self.buf[i] == ZDLE {
                 if i + 1 >= self.buf.len() {
-                    return None; // need more data
+                    return None; // 需要更多数据
                 }
                 decoded.push(zdle_decode_byte(self.buf[i + 1]));
                 i += 2;
@@ -177,7 +177,7 @@ impl ZmodemDecoder {
         }
 
         if decoded.len() < 9 {
-            return None; // need more data
+            return None; // 需要更多数据
         }
 
         let frame_type_val = decoded[0];
@@ -192,7 +192,7 @@ impl ZmodemDecoder {
             return None;
         }
 
-        // Drain buffer before checking frame type so buffer always advances even if unknown.
+        // 在检查帧类型之前先清空缓冲区，确保即使帧类型未知也始终向前推进。
         self.buf.drain(..i);
 
         let frame_type = FrameType::from_u8(frame_type_val)?;
@@ -200,7 +200,7 @@ impl ZmodemDecoder {
         Some(DecodedFrame { frame_type, flags })
     }
 
-    /// Detect 5+ consecutive CAN bytes (abort from remote)
+    /// 检测 5 个或更多连续的 CAN 字节（远端发起的中止信号）
     pub fn detect_cancel(data: &[u8]) -> bool {
         let mut count = 0;
         for &b in data {

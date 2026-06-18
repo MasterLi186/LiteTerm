@@ -67,18 +67,18 @@ impl ZmodemSender {
         self.state == State::Done
     }
 
-    /// Whether the sender is actively streaming file data (caller should pump chunks).
+    /// 发送方是否正在主动流式传输文件数据（调用方应持续泵入数据块）。
     pub fn in_send_data(&self) -> bool {
         self.state == State::SendData
     }
 
-    /// Generate the initial ZRQINIT to kick off the session
+    /// 生成初始的 ZRQINIT 以启动会话
     pub fn start(&mut self) -> SenderAction {
         self.state = State::WaitZrinit;
         SenderAction::Send(encode_zhex_header(FrameType::ZRQINIT as u8, [0; 4]))
     }
 
-    /// Process an incoming frame from rz
+    /// 处理来自 rz 的传入帧
     pub fn handle_frame(&mut self, frame: &DecodedFrame) -> SenderAction {
         match self.state {
             State::WaitZrinit => {
@@ -98,7 +98,7 @@ impl ZmodemSender {
                         return self.advance_to_next_file();
                     }
                     FrameType::ZNAK => {
-                        // Resend ZFILE
+                        // 重发 ZFILE
                         return self.send_zfile();
                     }
                     _ => {}
@@ -111,7 +111,7 @@ impl ZmodemSender {
                         return self.seek_and_send_data(offset);
                     }
                     FrameType::ZACK => {
-                        // Flow control ACK — continue sending
+                        // 流控 ACK——继续发送
                         return SenderAction::None;
                     }
                     FrameType::ZSKIP => {
@@ -127,10 +127,9 @@ impl ZmodemSender {
             State::SentEof => {
                 match frame.frame_type {
                     FrameType::ZRINIT => {
-                        // Current file fully received. Advance — this returns the
-                        // NEXT action to send (ZFILE for the next file, or ZFIN to
-                        // end the session). It MUST be returned so the frame is
-                        // actually written to the wire.
+                        // 当前文件已全部接收。推进到下一个——返回下一个要发送的动作
+                        // （下一个文件的 ZFILE，或结束会话的 ZFIN）。
+                        // 必须返回该值，以确保帧实际写入线路。
                         return self.advance_to_next_file();
                     }
                     FrameType::ZRPOS => {
@@ -151,8 +150,8 @@ impl ZmodemSender {
         SenderAction::None
     }
 
-    /// Generate the next chunk of data to send. Call repeatedly while in SendData state.
-    /// Returns None when EOF reached (and sends ZEOF).
+    /// 生成下一块待发送数据。在 SendData 状态下反复调用。
+    /// 到达 EOF 时返回 None（并发送 ZEOF）。
     pub fn next_data_chunk(&mut self) -> Option<SenderAction> {
         if self.state != State::SendData {
             return None;
@@ -166,7 +165,7 @@ impl ZmodemSender {
         };
 
         if n == 0 {
-            // EOF — send ZEOF
+            // EOF——发送 ZEOF
             self.state = State::SentEof;
             let offset = self.file_offset as u32;
             let mut out = encode_data_subpacket(&[], ZCRCE);
@@ -185,7 +184,7 @@ impl ZmodemSender {
         Some(SenderAction::Send(encoded))
     }
 
-    /// Get current progress
+    /// 获取当前传输进度
     pub fn progress(&self) -> Option<SenderAction> {
         if self.current_idx < self.files.len() {
             Some(SenderAction::Progress {
@@ -198,7 +197,7 @@ impl ZmodemSender {
         }
     }
 
-    // --- internal ---
+    // --- 内部方法 ---
 
     fn send_zfile(&mut self) -> SenderAction {
         if self.current_idx >= self.files.len() {
@@ -213,8 +212,8 @@ impl ZmodemSender {
                 self.file_offset = 0;
                 self.subpacket_count = 0;
 
-                // ZFILE header (ZBIN32) + file info subpacket
-                let zfile_flags: [u8; 4] = [0, 0, 0, 0]; // no special conversion
+                // ZFILE 帧头（ZBIN32）+ 文件信息子包
+                let zfile_flags: [u8; 4] = [0, 0, 0, 0]; // 无特殊转换标志
                 let mut out = encode_zbin32_header(FrameType::ZFILE as u8, zfile_flags);
                 let subpkt = encode_zfile_subpacket(&info.name, info.size, info.mtime);
                 out.extend(encode_data_subpacket(&subpkt, ZCRCW));
@@ -235,7 +234,7 @@ impl ZmodemSender {
             self.subpacket_count = 0;
             self.state = State::SendData;
 
-            // Send ZDATA header with the offset
+            // 发送携带偏移量的 ZDATA 帧头
             let offset_bytes = (offset as u32).to_le_bytes();
             SenderAction::Send(encode_zbin32_header(FrameType::ZDATA as u8, offset_bytes))
         } else {

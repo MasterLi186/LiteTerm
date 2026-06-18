@@ -12,8 +12,8 @@ use crate::core::zmodem::sender::{FileInfo, SenderAction, ZmodemSender};
 use crate::core::zmodem::DecodedFrame;
 use crate::state::{AppState, ZmodemSendRequest};
 
-/// Frontend-invoked ZMODEM upload. Hands a request to the session's reader
-/// thread (which owns the SSH channel) and blocks for the result.
+/// 前端调用的 ZMODEM 上传入口。把请求交给该会话的 reader 线程
+/// （它独占 SSH channel），然后阻塞等待结果。
 #[tauri::command]
 pub async fn zmodem_send(
     state: State<'_, AppState>,
@@ -24,7 +24,7 @@ pub async fn zmodem_send(
     let _ = app;
     app_log!("ZMODEM", "SEND START: session={}, files={}", session_id, files.len());
 
-    // Collect file info
+    // 收集文件信息
     let mut file_infos = Vec::new();
     for path_str in &files {
         let expanded = shellexpand::tilde(path_str).to_string();
@@ -44,7 +44,7 @@ pub async fn zmodem_send(
         file_infos.push(FileInfo { path, name, size: meta.len(), mtime });
     }
 
-    // Acquire session resources
+    // 获取会话资源
     let (request_slot, zmodem_active) = {
         let sessions = state.sessions.lock().unwrap();
         let session = sessions
@@ -56,9 +56,8 @@ pub async fn zmodem_send(
         (session.zmodem_request.clone(), session.zmodem_active.clone())
     };
 
-    // Cancel flag — registered in transfer_cancel under the same key the
-    // frontend progress panel uses (`zmodem-upload-<filename>`), so the
-    // existing cancel_transfer command flips it.
+    // 取消标志 —— 以前端进度面板使用的同一个 key（`zmodem-upload-<文件名>`）
+    // 注册进 transfer_cancel，这样 cancel_transfer 命令能直接翻转它。
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut cancels = state.transfer_cancel.lock().unwrap();
@@ -71,7 +70,7 @@ pub async fn zmodem_send(
         .map(|f| format!("zmodem-upload-{}", f.name))
         .collect();
 
-    // Submit the request and signal the reader thread.
+    // 提交请求并通知 reader 线程
     let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     *request_slot.lock().unwrap() = Some(ZmodemSendRequest {
         files: file_infos,
@@ -80,7 +79,7 @@ pub async fn zmodem_send(
     });
     zmodem_active.store(true, Ordering::Release);
 
-    // Block (on a blocking thread) for the reader thread's result.
+    // 在阻塞线程上等待 reader 线程返回结果
     let result = tokio::task::spawn_blocking(move || {
         result_rx
             .recv()
@@ -89,7 +88,7 @@ pub async fn zmodem_send(
     .await
     .map_err(|e| format!("ZMODEM 线程异常: {}", e))?;
 
-    // Clean up cancel keys
+    // 清理取消标志
     {
         let mut cancels = state.transfer_cancel.lock().unwrap();
         for k in &cancel_keys {
@@ -101,9 +100,9 @@ pub async fn zmodem_send(
     result
 }
 
-/// Write a full buffer to the SSH channel, interleaving reads on WouldBlock so
-/// the single-threaded read/write loop never deadlocks. Inbound bytes are fed
-/// to the SAME decoder (no cross-thread reordering) and decoded frames queued.
+/// 把整个缓冲区写入 SSH channel；遇到 WouldBlock 时穿插读取，避免单线程
+/// 读写循环死锁。读到的字节喂给同一个解码器（不存在跨线程乱序），解析出
+/// 的帧入队待处理。
 fn zm_write(
     channel: &mut ssh2::Channel,
     decoder: &mut ZmodemDecoder,
@@ -125,7 +124,7 @@ fn zm_write(
                 last = Instant::now();
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Drain remote to free the SSH window; feed the single decoder.
+                // 读取远端数据腾出 SSH 窗口，并喂给同一个解码器
                 let mut rb = [0u8; 8192];
                 match channel.read(&mut rb) {
                     Ok(n) if n > 0 => {
@@ -154,14 +153,15 @@ fn zm_write(
     Ok(())
 }
 
-/// Run the full ZMODEM send protocol on the SSH reader thread, owning the
-/// channel for both read and write. One thread, one decoder, network-paced.
+/// 在 SSH reader 线程上运行完整的 ZMODEM 发送协议，独占 channel 的读和写。
+/// 单线程、单解码器、按网络速度推进。
 pub fn run_zmodem_send(
     channel: &mut ssh2::Channel,
     session: &ssh2::Session,
     files: Vec<FileInfo>,
     app: &AppHandle,
     cancel: &AtomicBool,
+    keyboard_rx: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Result<(), String> {
     use std::io::Read;
 
@@ -173,7 +173,7 @@ pub fn run_zmodem_send(
 
     app_log!("ZMODEM", "run_zmodem_send 启动");
 
-    // Kick rz on the remote, then announce ourselves.
+    // 在远端启动 rz，再发送 ZRQINIT 宣告发送方就绪
     zm_write(channel, &mut decoder, &mut pending, b"rz\r")?;
     if let SenderAction::Send(d) = sender.start() {
         zm_write(channel, &mut decoder, &mut pending, &d)?;
@@ -212,7 +212,11 @@ pub fn run_zmodem_send(
             return Err("ZMODEM 超时(60 秒无网络活动)".into());
         }
 
-        // 1. Read inbound bytes → decoder → queue frames.
+        // Discard any keyboard input that piled up while rz owns the terminal —
+        // otherwise it replays in a burst when the transfer ends.
+        while keyboard_rx.try_recv().is_ok() {}
+
+        // 1. 读取远端字节 → 解码器 → 帧入队
         let mut rb = [0u8; 8192];
         match channel.read(&mut rb) {
             Ok(0) => return Err("连接已关闭".into()),
@@ -229,7 +233,7 @@ pub fn run_zmodem_send(
             Err(e) => return Err(format!("读取错误: {}", e)),
         }
 
-        // 2. Process queued frames.
+        // 2. 处理队列中的帧
         let frames: Vec<DecodedFrame> = pending.drain(..).collect();
         for frame in frames {
             app_log!("ZMODEM", "帧 {:?} off={}", frame.frame_type, frame.offset());
@@ -253,8 +257,8 @@ pub fn run_zmodem_send(
             }
         }
 
-        // 3. Pump ONE data chunk if streaming (network-paced — zm_write blocks
-        //    until the chunk is actually on the wire). Real progress, bounded RAM.
+        // 3. 流式发送阶段每轮只推一个数据块（zm_write 会阻塞到真正写上线路，
+        //    天然按网络速度推进 → 真实进度、内存有界）
         if sender.in_send_data() {
             match sender.next_data_chunk() {
                 Some(SenderAction::Send(chunk)) => {
@@ -272,11 +276,11 @@ pub fn run_zmodem_send(
                 _ => {}
             }
         } else if pending.is_empty() {
-            // Waiting on the remote — yield briefly to avoid a busy spin.
+            // 在等待远端，短暂让出避免空转
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        // SSH keepalive (transfers are activity, but keep the timer honest).
+        // SSH keepalive（传输本身就是活动，但保持心跳计时正常）
         if last_keepalive.elapsed() >= Duration::from_secs(15) {
             let _ = session.keepalive_send();
             last_keepalive = Instant::now();

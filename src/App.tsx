@@ -1040,7 +1040,8 @@ function App() {
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
   const [showLogPanel, setShowLogPanel] = useState(false);
-  const [globalTransfers, setGlobalTransfers] = useState<Record<string, { filename: string; direction: string; bytes: number; total: number }>>({});
+  const [globalTransfers, setGlobalTransfers] = useState<Record<string, { filename: string; direction: string; bytes: number; total: number; speed: number }>>({});
+  const transferStatsRef = useRef<Record<string, { lastBytes: number; lastTime: number; ema: number }>>({});
   const [transferPanelVisible, setTransferPanelVisible] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
@@ -1076,20 +1077,30 @@ function App() {
     return () => { unlisten.then(fn => fn()); };
   }, [activeSshSessionId]);
 
-  // 全局传输进度监听
+  // 全局传输进度监听（含实时速率计算）
   useEffect(() => {
     const unlisten = listen<{
       filename: string; bytes_transferred: number; total_bytes: number; direction: string;
     }>('transfer-progress', (event) => {
       const { filename, bytes_transferred, total_bytes, direction } = event.payload;
       const key = `${direction}-${filename}`;
+      const now = Date.now();
+      // 根据相邻两次进度事件的字节增量与时间差计算瞬时速率，并做指数平滑
+      const prev = transferStatsRef.current[key];
+      let speed = 0;
+      if (prev && now > prev.lastTime) {
+        const inst = (bytes_transferred - prev.lastBytes) * 1000 / (now - prev.lastTime);
+        speed = prev.ema > 0 ? prev.ema * 0.6 + inst * 0.4 : inst;
+      }
+      transferStatsRef.current[key] = { lastBytes: bytes_transferred, lastTime: now, ema: speed };
       setGlobalTransfers(prev => ({
         ...prev,
-        [key]: { filename, direction, bytes: bytes_transferred, total: total_bytes },
+        [key]: { filename, direction, bytes: bytes_transferred, total: total_bytes, speed },
       }));
       if (bytes_transferred >= total_bytes && total_bytes > 0) {
         setTimeout(() => {
           setGlobalTransfers(prev => { const n = { ...prev }; delete n[key]; return n; });
+          delete transferStatsRef.current[key];
         }, 3000);
       }
     });
@@ -1849,6 +1860,12 @@ function App() {
                 const sizeStr = t.total >= 1048576
                   ? `${(t.bytes / 1048576).toFixed(1)}/${(t.total / 1048576).toFixed(1)}M`
                   : `${(t.bytes / 1024).toFixed(0)}/${(t.total / 1024).toFixed(0)}K`;
+                // 速率格式化
+                const spd = t.speed >= 1048576
+                  ? `${(t.speed / 1048576).toFixed(1)} MB/s`
+                  : t.speed >= 1024
+                    ? `${(t.speed / 1024).toFixed(0)} KB/s`
+                    : `${Math.max(0, Math.round(t.speed))} B/s`;
                 return (
                   <div key={i} className="px-3 py-1.5 border-b border-surface-border/30 last:border-b-0">
                     <div className="flex items-center gap-1.5 text-[11px] mb-1">
@@ -1856,7 +1873,6 @@ function App() {
                         {t.direction === 'download' ? '↓' : '↑'}
                       </span>
                       <span className="text-gray-300 truncate flex-1 min-w-0">{t.filename}</span>
-                      <span className="text-gray-500 text-[10px] flex-shrink-0">{done ? '完成' : sizeStr}</span>
                       {!done && (
                         <button
                           onClick={() => {
@@ -1874,6 +1890,11 @@ function App() {
                         className={`h-full rounded-full transition-all duration-300 ${done ? 'bg-accent-green' : t.direction === 'download' ? 'bg-accent-cyan' : 'bg-accent-green'}`}
                         style={{ width: `${pct}%` }}
                       />
+                    </div>
+                    {/* 大小 / 速率 / 百分比 */}
+                    <div className="flex items-center justify-between text-[10px] text-gray-500 mt-0.5">
+                      <span>{done ? '完成' : sizeStr}</span>
+                      <span>{done ? '' : `${spd} · ${pct}%`}</span>
                     </div>
                   </div>
                 );

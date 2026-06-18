@@ -358,43 +358,7 @@ function FilePane({
   );
 }
 
-// --- Transfer Queue ---
-
-function TransferQueue({ transfers }: { transfers: TransferItem[] }) {
-  if (transfers.length === 0) return null;
-
-  return (
-    <div className="border-t border-surface-border bg-surface flex-shrink-0 max-h-[80px] overflow-y-auto">
-      <div className="px-2 py-0.5 text-[10px] text-gray-500 border-b border-surface-border bg-surface-light">
-        传输队列 ({transfers.length})
-      </div>
-      {transfers.map((t) => {
-        const pct = t.totalBytes > 0 ? Math.round((t.bytesTransferred / t.totalBytes) * 100) : 0;
-        return (
-          <div key={t.id} className="flex items-center gap-2 px-2 py-0.5 text-[10px]">
-            <span className={t.direction === 'download' ? 'text-accent-cyan' : 'text-accent-green'}>
-              {t.direction === 'download' ? '↓' : '↑'}
-            </span>
-            <span className="text-gray-300 truncate flex-1 min-w-0">{t.filename}</span>
-            <span className="text-gray-500 w-12 text-right flex-shrink-0">{formatSize(t.totalBytes)}</span>
-            {/* Progress bar */}
-            <div className="w-20 h-2 bg-surface-lighter rounded overflow-hidden flex-shrink-0">
-              <div
-                className={`h-full rounded ${t.status === 'error' ? 'bg-accent-red' : t.direction === 'download' ? 'bg-accent-cyan' : 'bg-accent-green'}`}
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <span className="text-gray-500 w-8 text-right flex-shrink-0">
-              {t.status === 'error' ? '错误' : t.status === 'done' ? '完成' : `${pct}%`}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// --- Main Component ---
+// --- 主组件 ---
 
 interface Props {
   sessionId: string | null;
@@ -883,8 +847,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
               </div>
             )}
           </div>
-          {/* Transfer queue */}
-          <TransferQueue transfers={transfers} />
+          {/* 传输进度统一显示在右上角浮窗，此处不再渲染底部进度条 */}
         </div>
       ) : (
         <CommandSnippets activeTerminalId={activeTerminalId || null} />

@@ -20,14 +20,13 @@ pub struct ManagedSession {
     pub resize_tx: std::sync::mpsc::Sender<(u32, u32)>,
     pub monitor_stop: Arc<AtomicBool>,
     pub sftp_request_tx: std::sync::mpsc::Sender<SftpRequest>,
-    /// Set true by zmodem_send to tell the reader thread to run a ZMODEM transfer.
+    /// zmodem_send 置为 true，通知 reader 线程执行一次 ZMODEM 传输。
     pub zmodem_active: Arc<AtomicBool>,
-    /// The pending ZMODEM send request, consumed by the reader thread.
+    /// 待处理的 ZMODEM 发送请求，由 reader 线程取走执行。
     pub zmodem_request: Arc<Mutex<Option<ZmodemSendRequest>>>,
 }
 
-/// A ZMODEM upload request handed from the `zmodem_send` command to the SSH
-/// reader thread (which owns the channel).
+/// 由 zmodem_send 命令交给 SSH reader 线程（独占 channel）的 ZMODEM 上传请求。
 pub struct ZmodemSendRequest {
     pub files: Vec<crate::core::zmodem::sender::FileInfo>,
     pub result_tx: std::sync::mpsc::Sender<Result<(), String>>,

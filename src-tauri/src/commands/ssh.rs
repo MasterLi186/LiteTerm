@@ -280,14 +280,14 @@ pub async fn ssh_connect(
         let id_for_read = id_clone.clone();
         let mut last_keepalive = std::time::Instant::now();
         loop {
-            // ZMODEM upload: when signaled, run the whole protocol inline on this
-            // thread (we own the channel). One thread, one decoder, network-paced.
+            // ZMODEM 上传：收到信号时在本线程内联运行整个协议（本线程独占
+            // channel）。单线程、单解码器、按网络速度推进。
             if zmodem_active_clone.load(std::sync::atomic::Ordering::Acquire) {
                 let req = zmodem_request_clone.lock().unwrap().take();
                 if let Some(req) = req {
-                    // Panic-isolate the protocol so a bug can't silently kill the
-                    // reader thread (which would freeze the terminal and hang the
-                    // waiting command). On panic, still answer the command.
+                    // 用 catch_unwind 隔离 panic，避免某个 bug 静默杀死 reader
+                    // 线程（那会冻结终端并让等待中的命令永久挂起）。即使 panic
+                    // 也要回应命令。
                     let result_tx = req.result_tx;
                     let files = req.files;
                     let cancel = req.cancel;
@@ -298,6 +298,7 @@ pub async fn ssh_connect(
                             files,
                             &app_clone,
                             &cancel,
+                            &input_rx,
                         )
                     }))
                     .unwrap_or_else(|_| {
@@ -306,7 +307,9 @@ pub async fn ssh_connect(
                     });
                     zmodem_active_clone.store(false, std::sync::atomic::Ordering::Release);
                     let _ = result_tx.send(r);
-                    // Refresh the shell prompt after the transfer.
+                    // 丢弃传输期间堆积的键盘输入，避免结束后一次性回放到 shell
+                    while input_rx.try_recv().is_ok() {}
+                    // 传输结束后刷新 shell 提示符
                     session.set_blocking(false);
                     let _ = channel.write(b"\r");
                     let _ = channel.flush();
@@ -315,8 +318,7 @@ pub async fn ssh_connect(
                 }
             }
 
-            // Answer any orphaned ZMODEM request before exiting so the command
-            // never blocks forever on a dropped connection.
+            // 线程退出前回应可能遗留的 ZMODEM 请求，避免命令在连接断开时永久阻塞
             let answer_orphan = || {
                 if let Some(req) = zmodem_request_clone.lock().unwrap().take() {
                     zmodem_active_clone.store(false, std::sync::atomic::Ordering::Release);
@@ -354,13 +356,13 @@ pub async fn ssh_connect(
                 }
             }
 
-            // Write user input (keyboard) — non-blocking
+            // 写入键盘输入（非阻塞）
             while let Ok(data) = input_rx.try_recv() {
                 let _ = channel.write_all(&data);
                 let _ = channel.flush();
             }
 
-            // Handle resize
+            // 处理窗口大小变化
             while let Ok((cols, rows)) = resize_rx.try_recv() {
                 let _ = channel.request_pty_size(cols, rows, None, None);
             }
