@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::app_log;
 use crate::core::monitor::{
     collect_command, parse_default_iface, parse_df_output, parse_loadavg, parse_proc_meminfo,
     parse_proc_net_dev, parse_proc_stat_cpu, parse_proc_uptime, parse_ps_aux, parse_swap_info,
@@ -184,7 +185,7 @@ pub async fn start_monitor(
         let sock_addr = match addr.parse::<std::net::SocketAddr>() {
             Ok(a) => a,
             Err(e) => {
-                log::error!("Monitor: invalid address: {}", e);
+                app_log!("MON", "Monitor: invalid address: {}", e);
                 return;
             }
         };
@@ -195,7 +196,7 @@ pub async fn start_monitor(
         ) {
             Ok(t) => t,
             Err(e) => {
-                log::error!("Monitor: TCP connect failed: {}", e);
+                app_log!("MON", "Monitor: TCP connect failed: {}", e);
                 return;
             }
         };
@@ -203,13 +204,13 @@ pub async fn start_monitor(
         let mut session = match ssh2::Session::new() {
             Ok(s) => s,
             Err(e) => {
-                log::error!("Monitor: SSH session failed: {}", e);
+                app_log!("MON", "Monitor: SSH session failed: {}", e);
                 return;
             }
         };
         session.set_tcp_stream(tcp);
         if let Err(e) = session.handshake() {
-            log::error!("Monitor: SSH handshake failed: {}", e);
+            app_log!("MON", "Monitor: SSH handshake failed: {}", e);
             return;
         }
 
@@ -239,7 +240,7 @@ pub async fn start_monitor(
         };
 
         if let Err(e) = auth_result {
-            log::error!("Monitor: auth failed: {}", e);
+            app_log!("MON", "Monitor: auth failed: {}", e);
             return;
         }
 
@@ -425,7 +426,7 @@ pub async fn start_monitor(
                     let _ = app_clone.emit("monitor-data", payload);
                 }
                 Err(e) => {
-                    log::error!("Monitor exec failed: {}", e);
+                    app_log!("MON", "Monitor exec failed: {}", e);
                     break;
                 }
             }
@@ -550,7 +551,7 @@ pub async fn start_local_monitor(
                     };
                     let _ = app_clone.emit("monitor-data", payload);
                 }
-                Err(e) => { log::error!("Local monitor failed: {}", e); break; }
+                Err(e) => { app_log!("MON", "Local monitor failed: {}", e); break; }
             }
             std::thread::sleep(std::time::Duration::from_secs(2));
         }

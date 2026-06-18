@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod config;
 pub mod core;
+pub mod log_util;
 pub mod plugin;
 pub mod state;
 

@@ -6,6 +6,7 @@ use std::path::Path;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::app_log;
 use crate::state::AppState;
 
 #[derive(Serialize, Clone)]
@@ -92,27 +93,44 @@ pub async fn start_sftp_session(
     auth_method: String,
     key_path: Option<String>,
 ) -> Result<(), String> {
+    app_log!("SFTP", "SFTP SESSION START: {}:{} user={} auth={} session_id={}", host, port, user, auth_method, session_id);
+
     // Open a separate SSH connection for SFTP
     let addr = format!("{}:{}", host, port);
-    let sock_addr: std::net::SocketAddr = addr.parse().map_err(|e: std::net::AddrParseError| format!("无效地址: {}", e))?;
+    let sock_addr: std::net::SocketAddr = addr.parse().map_err(|e: std::net::AddrParseError| {
+        app_log!("SFTP", "ERROR: 无效地址: {}", e);
+        format!("无效地址: {}", e)
+    })?;
 
     let tcp = std::net::TcpStream::connect_timeout(
         &sock_addr,
         std::time::Duration::from_secs(10),
     )
-    .map_err(|e| format!("SFTP连接失败: {}", e))?;
+    .map_err(|e| {
+        app_log!("SFTP", "ERROR: SFTP连接失败: {} ({}:{})", e, host, port);
+        format!("SFTP连接失败: {}", e)
+    })?;
 
     tcp.set_nodelay(true).ok();
 
-    let mut session = ssh2::Session::new().map_err(|e| format!("SSH会话创建失败: {}", e))?;
+    let mut session = ssh2::Session::new().map_err(|e| {
+        app_log!("SFTP", "ERROR: SSH会话创建失败: {}", e);
+        format!("SSH会话创建失败: {}", e)
+    })?;
     session.set_tcp_stream(tcp);
-    session.handshake().map_err(|e| format!("SSH握手失败: {}", e))?;
+    session.handshake().map_err(|e| {
+        app_log!("SFTP", "ERROR: SSH握手失败: {}", e);
+        format!("SSH握手失败: {}", e)
+    })?;
     session.set_keepalive(true, 30);
 
     // Authenticate
     match auth_method.as_str() {
         "agent" => {
-            session.userauth_agent(&user).map_err(|e| format!("认证失败: {}", e))?;
+            session.userauth_agent(&user).map_err(|e| {
+                app_log!("SFTP", "ERROR: Agent认证失败: {}", e);
+                format!("认证失败: {}", e)
+            })?;
         }
         "key" => {
             let key = key_path.unwrap_or_default();
@@ -124,17 +142,29 @@ pub async fn start_sftp_session(
                     Path::new(expanded.as_ref()),
                     password.as_deref(),
                 )
-                .map_err(|e| format!("密钥认证失败: {}", e))?;
+                .map_err(|e| {
+                    app_log!("SFTP", "ERROR: 密钥认证失败: {}", e);
+                    format!("密钥认证失败: {}", e)
+                })?;
         }
         _ => {
             let pw = password.unwrap_or_default();
             session
                 .userauth_password(&user, &pw)
-                .map_err(|e| format!("密码认证失败: {}", e))?;
+                .map_err(|e| {
+                    app_log!("SFTP", "ERROR: 密码认证失败: {}", e);
+                    format!("密码认证失败: {}", e)
+                })?;
         }
     }
+    app_log!("SFTP", "SFTP认证成功: {}:{}", host, port);
 
-    let sftp = session.sftp().map_err(|e| format!("SFTP会话启动失败: {}", e))?;
+    let sftp = session.sftp().map_err(|e| {
+        app_log!("SFTP", "ERROR: SFTP会话启动失败: {}", e);
+        format!("SFTP会话启动失败: {}", e)
+    })?;
+
+    app_log!("SFTP", "SFTP会话已建立: session_id={}", session_id);
 
     // Store the SFTP session (session must live as long as sftp)
     state
@@ -233,60 +263,41 @@ pub async fn sftp_download(
     remote_path: String,
     local_path: String,
 ) -> Result<(), String> {
-    use std::io::Write as LogWrite;
-
-    let log_path = dirs::home_dir().unwrap_or_default().join("guishell_transfer.log");
-    let mut log = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open(&log_path).ok();
-
-    macro_rules! log {
-        ($($arg:tt)*) => {
-            if let Some(ref mut f) = log {
-                let _ = writeln!(f, "[{}] {}", chrono_now(), format!($($arg)*));
-            }
-        };
-    }
-    fn chrono_now() -> String {
-        let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        format!("{}.{:03}", d.as_secs(), d.subsec_millis())
-    }
-
-    log!("DOWNLOAD START: session={}, remote={}, local={}", session_id, remote_path, local_path);
+    app_log!("SFTP", "DOWNLOAD START: session={}, remote={}, local={}", session_id, remote_path, local_path);
 
     let sftp_sessions = state.sftp_sessions.lock().unwrap();
     let handle = match sftp_sessions.get(&session_id) {
         Some(h) => h,
         None => {
             let msg = format!("SFTP会话未找到, session_id={}", session_id);
-            log!("ERROR: {}", msg);
+            app_log!("SFTP", "ERROR: {}", msg);
             return Err(msg);
         }
     };
 
-    log!("SFTP session found, stat remote file...");
+    app_log!("SFTP", "SFTP session found, stat remote file...");
     let stat = handle
         .sftp
         .stat(Path::new(&remote_path))
         .map_err(|e| {
             let msg = format!("无法获取远程文件信息: {} (path={})", e, remote_path);
-            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            app_log!("SFTP", "ERROR: {}", msg);
             msg
         })?;
     let total = stat.size.unwrap_or(0);
-    log!("Remote file size: {} bytes", total);
+    app_log!("SFTP", "Remote file size: {} bytes", total);
 
-    log!("Opening remote file...");
+    app_log!("SFTP", "Opening remote file...");
     let mut remote_file = handle
         .sftp
         .open(Path::new(&remote_path))
         .map_err(|e| {
             let msg = format!("无法打开远程文件: {} (path={})", e, remote_path);
-            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            app_log!("SFTP", "ERROR: {}", msg);
             msg
         })?;
 
-    log!("Creating local file: {}", local_path);
+    app_log!("SFTP", "Creating local file: {}", local_path);
     let expanded_local = shellexpand::tilde(&local_path).to_string();
     if let Some(parent) = Path::new(&expanded_local).parent() {
         std::fs::create_dir_all(parent).ok();
@@ -294,7 +305,7 @@ pub async fn sftp_download(
     let mut local_file = std::fs::File::create(&expanded_local)
         .map_err(|e| {
             let msg = format!("无法创建本地文件: {} (path={})", e, expanded_local);
-            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            app_log!("SFTP", "ERROR: {}", msg);
             msg
         })?;
 
@@ -303,7 +314,7 @@ pub async fn sftp_download(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    log!("Starting transfer: {}", filename);
+    app_log!("SFTP", "Starting transfer: {}", filename);
     let mut buf = [0u8; 32768];
     let mut bytes_so_far: u64 = 0;
     loop {
@@ -311,7 +322,7 @@ pub async fn sftp_download(
             .read(&mut buf)
             .map_err(|e| {
                 let msg = format!("读取远程文件失败: {} (bytes_so_far={})", e, bytes_so_far);
-                if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+                app_log!("SFTP", "ERROR: {}", msg);
                 msg
             })?;
         if n == 0 {
@@ -321,7 +332,7 @@ pub async fn sftp_download(
             .write_all(&buf[..n])
             .map_err(|e| {
                 let msg = format!("写入本地文件失败: {} (bytes_so_far={})", e, bytes_so_far);
-                if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+                app_log!("SFTP", "ERROR: {}", msg);
                 msg
             })?;
         bytes_so_far += n as u64;
@@ -336,7 +347,7 @@ pub async fn sftp_download(
         );
     }
 
-    log!("DOWNLOAD COMPLETE: {} bytes transferred", bytes_so_far);
+    app_log!("SFTP", "DOWNLOAD COMPLETE: {} bytes transferred", bytes_so_far);
     Ok(())
 }
 
@@ -349,57 +360,41 @@ pub async fn sftp_upload(
     local_path: String,
     remote_path: String,
 ) -> Result<(), String> {
-    use std::io::Write as LogWrite;
-
-    let log_path = dirs::home_dir().unwrap_or_default().join("guishell_transfer.log");
-    let mut log = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open(&log_path).ok();
-
-    macro_rules! log {
-        ($($arg:tt)*) => {
-            if let Some(ref mut f) = log {
-                let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                let _ = writeln!(f, "[{}.{:03}] {}", d.as_secs(), d.subsec_millis(), format!($($arg)*));
-            }
-        };
-    }
-
-    log!("UPLOAD START: session={}, local={}, remote={}", session_id, local_path, remote_path);
+    app_log!("SFTP", "UPLOAD START: session={}, local={}, remote={}", session_id, local_path, remote_path);
 
     let expanded_local = shellexpand::tilde(&local_path).to_string();
     let meta =
         std::fs::metadata(&expanded_local).map_err(|e| {
             let msg = format!("无法读取本地文件信息: {} (path={})", e, expanded_local);
-            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            app_log!("SFTP", "ERROR: {}", msg);
             msg
         })?;
     let total = meta.len();
-    log!("Local file size: {} bytes", total);
+    app_log!("SFTP", "Local file size: {} bytes", total);
 
     let sftp_sessions = state.sftp_sessions.lock().unwrap();
     let handle = sftp_sessions
         .get(&session_id)
         .ok_or_else(|| {
             let msg = format!("SFTP会话未找到, session_id={}", session_id);
-            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            app_log!("SFTP", "ERROR: {}", msg);
             msg
         })?;
 
-    log!("Creating remote file: {}", remote_path);
+    app_log!("SFTP", "Creating remote file: {}", remote_path);
     let mut remote_file = handle
         .sftp
         .create(Path::new(&remote_path))
         .map_err(|e| {
             let msg = format!("无法创建远程文件: {} (path={})", e, remote_path);
-            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            app_log!("SFTP", "ERROR: {}", msg);
             msg
         })?;
 
     let mut local_file =
         std::fs::File::open(&expanded_local).map_err(|e| {
             let msg = format!("无法打开本地文件: {} (path={})", e, expanded_local);
-            if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+            app_log!("SFTP", "ERROR: {}", msg);
             msg
         })?;
 
@@ -408,7 +403,7 @@ pub async fn sftp_upload(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    log!("Starting transfer: {}", filename);
+    app_log!("SFTP", "Starting transfer: {}", filename);
     let mut buf = [0u8; 32768];
     let mut bytes_so_far: u64 = 0;
     let mut last_log_mb: u64 = 0;
@@ -417,7 +412,7 @@ pub async fn sftp_upload(
             .read(&mut buf)
             .map_err(|e| {
                 let msg = format!("读取本地文件失败: {} (bytes_so_far={})", e, bytes_so_far);
-                if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+                app_log!("SFTP", "ERROR: {}", msg);
                 msg
             })?;
         if n == 0 {
@@ -427,7 +422,7 @@ pub async fn sftp_upload(
             .write_all(&buf[..n])
             .map_err(|e| {
                 let msg = format!("写入远程文件失败: {} (bytes_so_far={})", e, bytes_so_far);
-                if let Some(ref mut f) = log { let _ = writeln!(f, "ERROR: {}", msg); }
+                app_log!("SFTP", "ERROR: {}", msg);
                 msg
             })?;
         bytes_so_far += n as u64;
@@ -435,7 +430,7 @@ pub async fn sftp_upload(
         let current_mb = bytes_so_far / (10 * 1024 * 1024);
         if current_mb > last_log_mb {
             last_log_mb = current_mb;
-            log!("PROGRESS: {}MB / {}MB", bytes_so_far / (1024 * 1024), total / (1024 * 1024));
+            app_log!("SFTP", "PROGRESS: {}MB / {}MB", bytes_so_far / (1024 * 1024), total / (1024 * 1024));
         }
         let _ = app.emit(
             "transfer-progress",
@@ -448,7 +443,7 @@ pub async fn sftp_upload(
         );
     }
 
-    log!("UPLOAD COMPLETE: {} bytes transferred", bytes_so_far);
+    app_log!("SFTP", "UPLOAD COMPLETE: {} bytes transferred", bytes_so_far);
     Ok(())
 }
 

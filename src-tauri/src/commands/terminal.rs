@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use portable_pty::{CommandBuilder, PtySize};
 use tauri::{AppHandle, Emitter, State};
 
+use crate::app_log;
 use crate::state::{AppState, LocalTerminal};
 
 fn default_shell() -> String {
@@ -51,18 +52,30 @@ pub async fn open_local_terminal(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            app_log!("TERM", "ERROR: PTY open failed: {}", e);
+            e.to_string()
+        })?;
 
     let shell = default_shell();
-    let cmd = CommandBuilder::new(shell);
-    let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let cmd = CommandBuilder::new(shell.clone());
+    let _child = pair.slave.spawn_command(cmd).map_err(|e| {
+        app_log!("TERM", "ERROR: spawn shell failed: {} (shell={})", e, shell);
+        e.to_string()
+    })?;
     drop(pair.slave);
 
     let reader = pair
         .master
         .try_clone_reader()
-        .map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            app_log!("TERM", "ERROR: clone reader failed: {}", e);
+            e.to_string()
+        })?;
+    let writer = pair.master.take_writer().map_err(|e| {
+        app_log!("TERM", "ERROR: take writer failed: {}", e);
+        e.to_string()
+    })?;
 
     // Input channel: frontend -> writer thread
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
@@ -213,10 +226,16 @@ pub async fn open_shell_terminal(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            app_log!("TERM", "ERROR: PTY open failed: {}", e);
+            e.to_string()
+        })?;
 
     let cmd = CommandBuilder::new(&shell_path);
-    let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let _child = pair.slave.spawn_command(cmd).map_err(|e| {
+        app_log!("TERM", "ERROR: spawn shell failed: {} (shell={})", e, shell_path);
+        e.to_string()
+    })?;
     drop(pair.slave);
 
     let reader = pair

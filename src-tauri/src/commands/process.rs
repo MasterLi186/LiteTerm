@@ -2,6 +2,8 @@ use std::io::Read;
 
 use serde::Serialize;
 
+use crate::app_log;
+
 #[derive(Serialize, Clone)]
 pub struct ProcessDetail {
     pub pid: u32,
@@ -43,19 +45,34 @@ fn open_ssh_and_exec(
     command: &str,
 ) -> Result<String, String> {
     let addr = format!("{}:{}", host, port);
-    let sock_addr: std::net::SocketAddr = addr.parse().map_err(|e| format!("Invalid address: {}", e))?;
+    let sock_addr: std::net::SocketAddr = addr.parse().map_err(|e| {
+        app_log!("PROC", "ERROR: Invalid address: {} ({})", e, addr);
+        format!("Invalid address: {}", e)
+    })?;
 
     let tcp = std::net::TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_secs(10))
-        .map_err(|e| format!("TCP connect failed: {}", e))?;
+        .map_err(|e| {
+            app_log!("PROC", "ERROR: TCP connect failed: {} ({})", e, addr);
+            format!("TCP connect failed: {}", e)
+        })?;
 
-    let mut session = ssh2::Session::new().map_err(|e| format!("SSH session failed: {}", e))?;
+    let mut session = ssh2::Session::new().map_err(|e| {
+        app_log!("PROC", "ERROR: SSH session failed: {}", e);
+        format!("SSH session failed: {}", e)
+    })?;
     session.set_tcp_stream(tcp);
-    session.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
+    session.handshake().map_err(|e| {
+        app_log!("PROC", "ERROR: SSH handshake failed: {} ({})", e, addr);
+        format!("SSH handshake failed: {}", e)
+    })?;
 
     match auth_method {
         "agent" => session
             .userauth_agent(user)
-            .map_err(|e| format!("Agent auth failed: {}", e))?,
+            .map_err(|e| {
+                app_log!("PROC", "ERROR: Agent auth failed: {}", e);
+                format!("Agent auth failed: {}", e)
+            })?,
         "key" => {
             let key = key_path.unwrap_or_default();
             let expanded = shellexpand::tilde(key);
@@ -66,23 +83,38 @@ fn open_ssh_and_exec(
                     std::path::Path::new(expanded.as_ref()),
                     password,
                 )
-                .map_err(|e| format!("Key auth failed: {}", e))?;
+                .map_err(|e| {
+                    app_log!("PROC", "ERROR: Key auth failed: {}", e);
+                    format!("Key auth failed: {}", e)
+                })?;
         }
         _ => {
             let pw = password.unwrap_or_default();
             session
                 .userauth_password(user, pw)
-                .map_err(|e| format!("Password auth failed: {}", e))?;
+                .map_err(|e| {
+                    app_log!("PROC", "ERROR: Password auth failed: {}", e);
+                    format!("Password auth failed: {}", e)
+                })?;
         }
     }
 
     session.set_blocking(true);
 
-    let mut channel = session.channel_session().map_err(|e| format!("Channel failed: {}", e))?;
-    channel.exec(command).map_err(|e| format!("Exec failed: {}", e))?;
+    let mut channel = session.channel_session().map_err(|e| {
+        app_log!("PROC", "ERROR: Channel failed: {}", e);
+        format!("Channel failed: {}", e)
+    })?;
+    channel.exec(command).map_err(|e| {
+        app_log!("PROC", "ERROR: Exec failed: {}", e);
+        format!("Exec failed: {}", e)
+    })?;
 
     let mut output = String::new();
-    channel.read_to_string(&mut output).map_err(|e| format!("Read failed: {}", e))?;
+    channel.read_to_string(&mut output).map_err(|e| {
+        app_log!("PROC", "ERROR: Read failed: {}", e);
+        format!("Read failed: {}", e)
+    })?;
     channel.wait_close().ok();
     Ok(output)
 }

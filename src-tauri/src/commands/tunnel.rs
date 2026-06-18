@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::app_log;
 use crate::state::AppState;
 
 #[derive(Serialize, Clone)]
@@ -49,11 +50,14 @@ pub async fn create_tunnel(
     let (status_tx, status_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
     std::thread::spawn(move || {
+        app_log!("TUNNEL", "TUNNEL START: {}:{} -> {}:{} type={} local_port={}", host, port, remote_host_clone, remote_port, tunnel_type_clone, local_port);
+
         // 1. TCP connect + SSH handshake
         let addr = format!("{}:{}", host, port);
         let sock_addr = match addr.parse::<std::net::SocketAddr>() {
             Ok(a) => a,
             Err(e) => {
+                app_log!("TUNNEL", "ERROR: Invalid address: {}", e);
                 let _ = status_tx.send(Err(format!("Invalid address: {}", e)));
                 return;
             }
@@ -64,6 +68,7 @@ pub async fn create_tunnel(
         ) {
             Ok(tcp) => tcp,
             Err(e) => {
+                app_log!("TUNNEL", "ERROR: TCP connect failed: {} ({})", e, addr);
                 let _ = status_tx.send(Err(format!("TCP connect failed: {}", e)));
                 return;
             }
@@ -72,12 +77,14 @@ pub async fn create_tunnel(
         let mut session = match ssh2::Session::new() {
             Ok(s) => s,
             Err(e) => {
+                app_log!("TUNNEL", "ERROR: SSH session failed: {}", e);
                 let _ = status_tx.send(Err(format!("SSH session failed: {}", e)));
                 return;
             }
         };
         session.set_tcp_stream(tcp);
         if let Err(e) = session.handshake() {
+            app_log!("TUNNEL", "ERROR: SSH handshake failed: {}", e);
             let _ = status_tx.send(Err(format!("SSH handshake failed: {}", e)));
             return;
         }
@@ -108,6 +115,7 @@ pub async fn create_tunnel(
         };
 
         if let Err(e) = auth_result {
+            app_log!("TUNNEL", "ERROR: 认证失败: {}", e);
             let _ = status_tx.send(Err(e));
             return;
         }
@@ -118,6 +126,7 @@ pub async fn create_tunnel(
         let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{}", local_port)) {
             Ok(l) => l,
             Err(e) => {
+                app_log!("TUNNEL", "ERROR: Bind port {} failed: {}", local_port, e);
                 let _ = status_tx.send(Err(format!("Bind port {} failed: {}", local_port, e)));
                 return;
             }
@@ -125,6 +134,8 @@ pub async fn create_tunnel(
         // SO_REUSEADDR is set by default on TcpListener::bind on Linux,
         // but set nonblocking so we can check the stop flag.
         let _ = listener.set_nonblocking(true);
+
+        app_log!("TUNNEL", "Tunnel listening on 0.0.0.0:{}", local_port);
 
         // Signal success
         let _ = status_tx.send(Ok(()));
@@ -137,7 +148,8 @@ pub async fn create_tunnel(
             }
 
             match listener.accept() {
-                Ok((local_stream, _)) => {
+                Ok((local_stream, peer_addr)) => {
+                    app_log!("TUNNEL", "Accepted connection from {}", peer_addr);
                     // ssh2::Session is !Send, so channel_direct_tcpip must happen
                     // on this thread. We open the channel here, then hand both
                     // the local stream and the channel to a new thread for copying.
@@ -147,7 +159,10 @@ pub async fn create_tunnel(
                         None,
                     ) {
                         Ok(ch) => ch,
-                        Err(_) => continue,
+                        Err(e) => {
+                            app_log!("TUNNEL", "ERROR: channel_direct_tcpip failed: {}", e);
+                            continue;
+                        }
                     };
 
                     let stop_for_copy = stop_clone.clone();
@@ -169,12 +184,16 @@ pub async fn create_tunnel(
                                 Ok(0) => break,
                                 Ok(n) => {
                                     if chan.write_all(&buf[..n]).is_err() {
+                                        app_log!("TUNNEL", "ERROR: write to channel failed");
                                         break;
                                     }
                                     let _ = chan.flush();
                                 }
                                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                                Err(_) => break,
+                                Err(e) => {
+                                    app_log!("TUNNEL", "ERROR: read from local failed: {}", e);
+                                    break;
+                                }
                             }
 
                             // channel -> local
@@ -182,12 +201,16 @@ pub async fn create_tunnel(
                                 Ok(0) => break,
                                 Ok(n) => {
                                     if local.write_all(&buf[..n]).is_err() {
+                                        app_log!("TUNNEL", "ERROR: write to local failed");
                                         break;
                                     }
                                     let _ = local.flush();
                                 }
                                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                                Err(_) => break,
+                                Err(e) => {
+                                    app_log!("TUNNEL", "ERROR: read from channel failed: {}", e);
+                                    break;
+                                }
                             }
 
                             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -197,9 +220,14 @@ pub async fn create_tunnel(
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
-                Err(_) => break,
+                Err(e) => {
+                    app_log!("TUNNEL", "ERROR: accept failed: {}", e);
+                    break;
+                }
             }
         }
+
+        app_log!("TUNNEL", "Tunnel stopped: id={}", id_for_event);
 
         // Tunnel stopped — notify frontend
         let _ = app_clone.emit(

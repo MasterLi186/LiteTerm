@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::app_log;
 use crate::state::{AppState, LocalTerminal};
 
 #[derive(Serialize)]
@@ -50,10 +51,14 @@ pub async fn open_serial_terminal(
     let id = uuid::Uuid::new_v4().to_string();
     let stop = Arc::new(AtomicBool::new(false));
 
+    app_log!("SERIAL", "打开串口: device={} baud_rate={}", device, baud_rate);
     let port = serialport::new(&device, baud_rate)
         .timeout(std::time::Duration::from_millis(100))
         .open()
-        .map_err(|e| format!("打开串口失败: {}", e))?;
+        .map_err(|e| {
+            app_log!("SERIAL", "ERROR: 打开串口失败: {} (device={})", e, device);
+            format!("打开串口失败: {}", e)
+        })?;
 
     let mut reader = port.try_clone().map_err(|e| e.to_string())?;
     let writer = port;
@@ -82,7 +87,10 @@ pub async fn open_serial_terminal(
                     );
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-                Err(_) => break,
+                Err(e) => {
+                    app_log!("SERIAL", "ERROR: 读取串口失败: {}", e);
+                    break;
+                }
             }
         }
         // reader drops here, releasing the fd clone
@@ -100,7 +108,9 @@ pub async fn open_serial_terminal(
             match input_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(data) => {
                     use std::io::Write;
-                    let _ = writer.write_all(&data);
+                    if let Err(e) = writer.write_all(&data) {
+                        app_log!("SERIAL", "ERROR: 写入串口失败: {}", e);
+                    }
                     let _ = writer.flush();
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
