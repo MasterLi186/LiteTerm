@@ -315,12 +315,35 @@ pub async fn ssh_connect(
                 }
             }
 
-            // Write user input — temporarily switch to blocking for reliable write
+            // Write user input — non-blocking, drain reads on WouldBlock to avoid deadlock
             while let Ok(data) = input_rx.try_recv() {
-                session.set_blocking(true);
-                let _ = channel.write_all(&data);
+                let mut offset = 0;
+                let mut retries = 0;
+                while offset < data.len() {
+                    match channel.write(&data[offset..]) {
+                        Ok(n) => { offset += n; retries = 0; }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // Drain pending read data to free SSH window
+                            let mut drain_buf = [0u8; 8192];
+                            if let Ok(n) = channel.read(&mut drain_buf) {
+                                if n > 0 {
+                                    if zmodem_active_clone.load(std::sync::atomic::Ordering::Acquire) {
+                                        if let Some(ref tx) = *zmodem_tx_clone.lock().unwrap() {
+                                            let _ = tx.send(drain_buf[..n].to_vec());
+                                        }
+                                    } else {
+                                        let _ = app_clone.emit("terminal-output", serde_json::json!({"id": id_for_read, "data": &drain_buf[..n]}));
+                                    }
+                                }
+                            }
+                            retries += 1;
+                            if retries > 5000 { break; }
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        Err(_) => break,
+                    }
+                }
                 let _ = channel.flush();
-                session.set_blocking(false);
             }
 
             // Handle resize
