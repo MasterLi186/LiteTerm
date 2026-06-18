@@ -193,10 +193,37 @@ function FilePane({
   const [pathInput, setPathInput] = useState(path);
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setPathInput(path);
   }, [path]);
+
+  useEffect(() => {
+    if (searchVisible && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [searchVisible]);
+
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'f') {
+        e.preventDefault();
+        setSearchVisible(prev => !prev);
+      }
+      if (e.key === 'Escape' && searchVisible) {
+        setSearchVisible(false);
+        setSearchQuery('');
+      }
+    };
+    el.addEventListener('keydown', handleKeyDown);
+    return () => el.removeEventListener('keydown', handleKeyDown);
+  }, [searchVisible]);
 
   function handleSort(key: SortKey) {
     if (sortKey === key) {
@@ -215,7 +242,10 @@ function FilePane({
     onPathChange(pathInput);
   }
 
-  const visibleFiles = showHidden ? files : files.filter(f => !f.name.startsWith('.'));
+  const hiddenFiltered = showHidden ? files : files.filter(f => !f.name.startsWith('.'));
+  const visibleFiles = searchQuery
+    ? hiddenFiltered.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    : hiddenFiltered;
   const sorted = sortFiles(visibleFiles, sortKey, sortDir);
 
   const sortIndicator = (key: SortKey) => {
@@ -224,14 +254,40 @@ function FilePane({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 min-h-0">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0" ref={paneRef} tabIndex={-1}>
       {/* Pane header */}
       <div className="flex items-center gap-1 px-2 py-1 border-b border-surface-border bg-surface-light flex-shrink-0">
         <span className={`text-[10px] font-semibold ${side === 'local' ? 'text-gray-400' : 'text-accent-green'}`}>
           {title}
         </span>
         <div className="flex-1" />
+        <button
+          onClick={() => { setSearchVisible(prev => !prev); if (searchVisible) setSearchQuery(''); }}
+          className={`text-[11px] px-1 rounded ${searchVisible ? 'text-accent-cyan' : 'text-gray-500 hover:text-gray-300'}`}
+          title="搜索 (Ctrl+F)"
+        >🔍</button>
       </div>
+      {/* Search bar */}
+      {searchVisible && (
+        <div className="flex items-center gap-1 px-1 py-0.5 border-b border-surface-border bg-surface flex-shrink-0">
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') { setSearchVisible(false); setSearchQuery(''); } }}
+            placeholder="搜索文件名..."
+            className="flex-1 bg-surface-light border border-surface-border rounded px-1.5 py-0.5 text-[11px] text-gray-300 outline-none focus:border-accent-cyan min-w-0"
+          />
+          {searchQuery && (
+            <span className="text-[10px] text-gray-500">{visibleFiles.length} 项</span>
+          )}
+          <button
+            onClick={() => { setSearchVisible(false); setSearchQuery(''); }}
+            className="text-[11px] text-gray-500 hover:text-white px-0.5"
+          >×</button>
+        </div>
+      )}
       {/* Path bar */}
       <div className="flex items-center gap-1 px-1 py-0.5 border-b border-surface-border flex-shrink-0">
         <input
@@ -626,17 +682,11 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
         setRemoteError(`重命名失败: ${e}`);
       }
     } else {
-      // Local rename via shell
       const oldPath = joinPath(localPath, entry.name);
       const newPath = joinPath(localPath, newName);
       try {
-        // Use std::fs::rename via a command — but we don't have one.
-        // For now just use local_delete + re-list isn't rename.
-        // We'll just show unsupported for local rename for now.
-        // Actually, we can use the Rust fs::rename — but we need a command for it.
-        // Since we don't have local_rename command, we can't do this from frontend.
-        // Skip for now — the context menu won't offer rename for local files.
-        setLocalError('本地重命名暂不支持');
+        await invoke('local_rename', { oldPath, newPath });
+        loadLocalFiles(localPath);
       } catch (e) {
         setLocalError(`重命名失败: ${e}`);
       }
@@ -677,6 +727,10 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
           disabled: !sessionId || entry.is_dir,
         },
         { label: '', onClick: () => {}, separator: true },
+        {
+          label: '重命名',
+          onClick: () => setRenameDialog({ side: 'local', entry }),
+        },
         {
           label: '删除',
           onClick: () => handleDelete('local', entry),

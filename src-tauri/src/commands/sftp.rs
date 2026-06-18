@@ -493,3 +493,13 @@ pub async fn local_delete(path: String) -> Result<(), String> {
 
     Ok(())
 }
+
+/// Rename a local file or directory.
+#[tauri::command]
+pub async fn local_rename(old_path: String, new_path: String) -> Result<(), String> {
+    let old_expanded = shellexpand::tilde(&old_path).to_string();
+    let new_expanded = shellexpand::tilde(&new_path).to_string();
+    std::fs::rename(&old_expanded, &new_expanded)
+        .map_err(|e| format!("重命名失败: {}", e))?;
+    Ok(())
+}
