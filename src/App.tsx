@@ -1344,13 +1344,15 @@ function App() {
           >
             <IconSettings size={14} />
           </button>
-          <button
-            onClick={() => setShowLogPanel(prev => !prev)}
-            className={`px-1.5 py-1 flex-shrink-0 ${showLogPanel ? 'text-accent-cyan' : 'text-gray-500 hover:text-accent-cyan'}`}
-            title="调试日志"
-          >
-            <IconLog size={14} />
-          </button>
+          {import.meta.env.DEV && (
+            <button
+              onClick={() => setShowLogPanel(prev => !prev)}
+              className={`px-1.5 py-1 flex-shrink-0 ${showLogPanel ? 'text-accent-cyan' : 'text-gray-500 hover:text-accent-cyan'}`}
+              title="调试日志"
+            >
+              <IconLog size={14} />
+            </button>
+          )}
         </div>
 
         {/* Tab context menu */}
