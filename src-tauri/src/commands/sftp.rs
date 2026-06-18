@@ -112,6 +112,8 @@ pub async fn start_sftp_session(
     })?;
 
     tcp.set_nodelay(true).ok();
+    tcp.set_write_timeout(None).ok();
+    tcp.set_read_timeout(None).ok();
 
     let mut session = ssh2::Session::new().map_err(|e| {
         app_log!("SFTP", "ERROR: SSH会话创建失败: {}", e);
@@ -123,6 +125,7 @@ pub async fn start_sftp_session(
         format!("SSH握手失败: {}", e)
     })?;
     session.set_keepalive(true, 30);
+    session.set_timeout(0);
 
     // Authenticate
     match auth_method.as_str() {
