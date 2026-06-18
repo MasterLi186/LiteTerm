@@ -5,6 +5,31 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::state::{AppState, LocalTerminal};
 
+fn default_shell() -> String {
+    #[cfg(unix)]
+    {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    }
+    #[cfg(windows)]
+    {
+        // 优先 Git Bash → MSYS2 Bash → PowerShell 7 → Windows PowerShell → CMD
+        let candidates = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            r"C:\msys64\usr\bin\bash.exe",
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\Windows\System32\cmd.exe",
+        ];
+        for p in &candidates {
+            if std::path::Path::new(p).exists() {
+                return p.to_string();
+            }
+        }
+        "cmd.exe".to_string()
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct ShellInfo {
     pub name: String,
@@ -28,7 +53,7 @@ pub async fn open_local_terminal(
         })
         .map_err(|e| e.to_string())?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let shell = default_shell();
     let cmd = CommandBuilder::new(shell);
     let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
@@ -105,18 +130,69 @@ pub async fn open_local_terminal(
 #[tauri::command]
 pub async fn list_shells() -> Result<Vec<ShellInfo>, String> {
     let mut shells = Vec::new();
-    if let Ok(content) = std::fs::read_to_string("/etc/shells") {
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with('/') && std::path::Path::new(line).exists() {
-                let name = std::path::Path::new(line)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                shells.push(ShellInfo { name, path: line.to_string() });
+
+    #[cfg(unix)]
+    {
+        if let Ok(content) = std::fs::read_to_string("/etc/shells") {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('/') && std::path::Path::new(line).exists() {
+                    let name = std::path::Path::new(line)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    shells.push(ShellInfo { name, path: line.to_string() });
+                }
             }
         }
     }
+
+    #[cfg(windows)]
+    {
+        // Git Bash（优先）
+        let git_bash_paths = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+        ];
+        for p in &git_bash_paths {
+            if std::path::Path::new(p).exists() {
+                shells.push(ShellInfo { name: "Git Bash".to_string(), path: p.to_string() });
+                break;
+            }
+        }
+        // MSYS2 Bash
+        let msys2_path = r"C:\msys64\usr\bin\bash.exe";
+        if std::path::Path::new(msys2_path).exists() {
+            shells.push(ShellInfo { name: "MSYS2 Bash".to_string(), path: msys2_path.to_string() });
+        }
+        // WSL
+        let wsl_path = r"C:\Windows\System32\wsl.exe";
+        if std::path::Path::new(wsl_path).exists() {
+            shells.push(ShellInfo { name: "WSL".to_string(), path: wsl_path.to_string() });
+        }
+        // PowerShell 7+
+        let pwsh_paths = [
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            r"C:\Program Files (x86)\PowerShell\7\pwsh.exe",
+        ];
+        for p in &pwsh_paths {
+            if std::path::Path::new(p).exists() {
+                shells.push(ShellInfo { name: "PowerShell 7".to_string(), path: p.to_string() });
+                break;
+            }
+        }
+        // Windows PowerShell（兜底）
+        let win_ps = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+        if std::path::Path::new(win_ps).exists() {
+            shells.push(ShellInfo { name: "PowerShell".to_string(), path: win_ps.to_string() });
+        }
+        // CMD（最后兜底）
+        let cmd_path = r"C:\Windows\System32\cmd.exe";
+        if std::path::Path::new(cmd_path).exists() {
+            shells.push(ShellInfo { name: "CMD".to_string(), path: cmd_path.to_string() });
+        }
+    }
+
     shells.dedup_by(|a, b| a.name == b.name);
     Ok(shells)
 }
