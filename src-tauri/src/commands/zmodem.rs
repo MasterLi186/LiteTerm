@@ -64,7 +64,11 @@ pub async fn zmodem_send(
     zmodem_active.store(true, Ordering::Release);
 
     // Send "rz\r" to start rz on the remote
-    let _ = input_tx.send(b"rz\r".to_vec());
+    if input_tx.send(b"rz\r".to_vec()).is_err() {
+        zmodem_active.store(false, Ordering::Release);
+        *zmodem_tx_holder.lock().unwrap() = None;
+        return Err("终端连接已断开，请重新连接后再试".into());
+    }
 
     // Run the protocol on a blocking thread
     let app_clone = app.clone();
