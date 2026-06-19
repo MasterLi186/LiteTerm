@@ -139,9 +139,13 @@ pub async fn ssh_connect(
     let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u32, u32)>();
     let (status_tx, status_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
+    #[cfg(feature = "zmodem")]
     let zmodem_active = Arc::new(AtomicBool::new(false));
+    #[cfg(feature = "zmodem")]
     let zmodem_request: Arc<Mutex<Option<crate::state::ZmodemSendRequest>>> = Arc::new(Mutex::new(None));
+    #[cfg(feature = "zmodem")]
     let zmodem_active_clone = zmodem_active.clone();
+    #[cfg(feature = "zmodem")]
     let zmodem_request_clone = zmodem_request.clone();
 
     std::thread::spawn(move || {
@@ -282,6 +286,8 @@ pub async fn ssh_connect(
         loop {
             // ZMODEM 上传：收到信号时在本线程内联运行整个协议（本线程独占
             // channel）。单线程、单解码器、按网络速度推进。
+            // ZMODEM 上传（feature 门控，默认不编译）
+            #[cfg(feature = "zmodem")]
             if zmodem_active_clone.load(std::sync::atomic::Ordering::Acquire) {
                 let req = zmodem_request_clone.lock().unwrap().take();
                 if let Some(req) = req {
@@ -319,6 +325,7 @@ pub async fn ssh_connect(
             }
 
             // 线程退出前回应可能遗留的 ZMODEM 请求，避免命令在连接断开时永久阻塞
+            #[cfg(feature = "zmodem")]
             let answer_orphan = || {
                 if let Some(req) = zmodem_request_clone.lock().unwrap().take() {
                     zmodem_active_clone.store(false, std::sync::atomic::Ordering::Release);
@@ -329,6 +336,7 @@ pub async fn ssh_connect(
             let mut buf = [0u8; 4096];
             match channel.read(&mut buf) {
                 Ok(0) => {
+                    #[cfg(feature = "zmodem")]
                     answer_orphan();
                     let _ = app_clone.emit(
                         "terminal-closed",
@@ -347,6 +355,7 @@ pub async fn ssh_connect(
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(_) => {
+                    #[cfg(feature = "zmodem")]
                     answer_orphan();
                     let _ = app_clone.emit(
                         "terminal-closed",
@@ -391,7 +400,9 @@ pub async fn ssh_connect(
                     resize_tx,
                     monitor_stop,
                     sftp_request_tx: sftp_tx,
+                    #[cfg(feature = "zmodem")]
                     zmodem_active,
+                    #[cfg(feature = "zmodem")]
                     zmodem_request,
                 },
             );

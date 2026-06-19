@@ -81,7 +81,6 @@ pub fn run() {
             commands::recording::stop_recording,
             commands::recording::record_event,
             commands::recording::is_recording,
-            commands::zmodem::zmodem_send,
         ])
         .setup(|app| {
             // Inject JS to suppress the native webview right-click menu.
