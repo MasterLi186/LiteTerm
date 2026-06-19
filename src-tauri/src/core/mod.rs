@@ -1,4 +1,5 @@
 pub mod monitor;
+pub mod osc7;
 pub mod session;
 pub mod sftp;
 pub mod ssh;
