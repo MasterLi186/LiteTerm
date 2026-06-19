@@ -1044,6 +1044,8 @@ function App() {
   const transferStatsRef = useRef<Record<string, { lastBytes: number; lastTime: number; ema: number }>>({});
   // 记录文件管理器当前远程路径，作为拖拽上传时的 fallback 目标目录
   const currentRemotePathRef = useRef<string>('');
+  // 切换 SSH 会话时清空 fallback，避免把上一个会话的远程路径误用为新会话的上传目标
+  useEffect(() => { currentRemotePathRef.current = ''; }, [activeSshSessionId]);
   const [transferPanelVisible, setTransferPanelVisible] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
