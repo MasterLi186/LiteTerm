@@ -189,22 +189,19 @@ pub async fn start_sftp_session(
 
     app_log!("SFTP", "SFTP会话已建立: session_id={}", session_id);
 
-    // 默认自动安装 cwd 上报（幂等）：让 shell 经 rc 主动发 OSC7，拖拽上传跟随终端
-    // 目录，无需用户手动启用。已配置过的服务器命中 marker 直接跳过、不重复写。
+    // 默认自动给 fish 安装 cwd 上报（幂等）：fish 是子 shell、不继承 bash 的
+    // PROMPT_COMMAND 注入，必须经 config.fish 自行发 OSC7。bash/zsh 由 reader 线程的
+    // 运行时注入处理（覆盖当前会话、每次连接都注入），故无需改写它们的 rc，避免重复
+    // 上报与擅自改动用户 ~/.bashrc。命中 marker 的会跳过、不重复写。
     {
-        let summary = [
-            install_rc_snippet(&sftp, ".bashrc", BASH_SNIPPET, false, &[]),
-            install_rc_snippet(&sftp, ".zshrc", ZSH_SNIPPET, true, &[]),
-            install_rc_snippet(
-                &sftp,
-                ".config/fish/config.fish",
-                FISH_SNIPPET,
-                false,
-                &[".config", ".config/fish"],
-            ),
-        ]
-        .join("; ");
-        app_log!("SFTP", "AUTO CWD REPORTING: {}", summary);
+        let r = install_rc_snippet(
+            &sftp,
+            ".config/fish/config.fish",
+            FISH_SNIPPET,
+            false,
+            &[".config", ".config/fish"],
+        );
+        app_log!("SFTP", "AUTO CWD REPORTING (fish): {}", r);
     }
 
     // Store the SFTP session (session must live as long as sftp)
@@ -757,11 +754,7 @@ fn upload_one(
 
 /// rc 中标记 LiteTerm cwd 上报片段的起始注释，用于幂等判断。
 const CWD_MARKER: &str = "# >>> LiteTerm cwd reporting >>>";
-/// bash 片段：定义函数并把它前置到 PROMPT_COMMAND（已存在则跳过，避免重复）。
-const BASH_SNIPPET: &str = "\n# >>> LiteTerm cwd reporting >>>\n__liteterm_osc7() { printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-h}\" \"$PWD\"; }\ncase \"$PROMPT_COMMAND\" in *__liteterm_osc7*) ;; *) PROMPT_COMMAND=\"__liteterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\" ;; esac\n# <<< LiteTerm cwd reporting <<<\n";
-/// zsh 片段：定义函数并加入 precmd_functions（已在则不重复）。
-const ZSH_SNIPPET: &str = "\n# >>> LiteTerm cwd reporting >>>\n__liteterm_osc7() { printf '\\033]7;file://%s%s\\007' \"${HOST:-h}\" \"$PWD\"; }\ntypeset -ga precmd_functions\n(( ${precmd_functions[(I)__liteterm_osc7]} )) || precmd_functions+=(__liteterm_osc7)\n# <<< LiteTerm cwd reporting <<<\n";
-/// fish 片段：PWD 变化时发 OSC7。
+/// fish 片段：PWD 变化时发 OSC7（bash/zsh 由 reader 线程运行时注入处理，不写它们的 rc）。
 const FISH_SNIPPET: &str = "\n# >>> LiteTerm cwd reporting >>>\nfunction __liteterm_osc7 --on-variable PWD\n    printf '\\e]7;file://%s%s\\a' (hostname) \"$PWD\"\nend\n# <<< LiteTerm cwd reporting <<<\n";
 
 /// 幂等地把 cwd 上报片段追加到某个 rc 文件。返回该文件的处理结果描述。
@@ -803,37 +796,3 @@ fn install_rc_snippet(
     }
 }
 
-/// 一键为当前会话安装 cwd 上报：把 OSC7 上报片段幂等写入 bash/zsh/fish 的 rc 文件，
-/// 让 shell 每次提示符主动发 OSC7，从而拖拽上传能跟随终端当前目录（无需向终端注入命令）。
-#[tauri::command]
-pub async fn install_shell_cwd_reporting(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<String, String> {
-    let sftp_sessions = state.sftp_sessions.lock().unwrap();
-    let handle = sftp_sessions
-        .get(&session_id)
-        .ok_or_else(|| "SFTP会话未找到，请确认已连接".to_string())?;
-    let sftp = &handle.sftp;
-
-    let mut results = Vec::new();
-    // bash：~/.bashrc（不存在则创建）
-    results.push(install_rc_snippet(sftp, ".bashrc", BASH_SNIPPET, false, &[]));
-    // zsh：~/.zshrc（仅当已存在，避免给非 zsh 用户留下空文件）
-    results.push(install_rc_snippet(sftp, ".zshrc", ZSH_SNIPPET, true, &[]));
-    // fish：~/.config/fish/config.fish（确保目录存在）
-    results.push(install_rc_snippet(
-        sftp,
-        ".config/fish/config.fish",
-        FISH_SNIPPET,
-        false,
-        &[".config", ".config/fish"],
-    ));
-
-    let summary = results.join("\n");
-    app_log!("SFTP", "INSTALL CWD REPORTING: session={}\n{}", session_id, summary);
-    Ok(format!(
-        "已为当前会话配置 shell 目录上报：\n{}\n\n重新打开 shell（或新开标签）后，拖拽上传会跟随终端当前目录。",
-        summary
-    ))
-}
