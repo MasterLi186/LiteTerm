@@ -185,11 +185,12 @@ interface FilePaneProps {
   onSelectFile: (name: string | null) => void;
   onDoubleClick: (entry: FileEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
+  onInstallCwd?: () => void;
 }
 
 function FilePane({
   side, title, path, files, error, loading, showHidden,
-  selectedFile, onPathChange, onRefresh, onSelectFile, onDoubleClick, onContextMenu,
+  selectedFile, onPathChange, onRefresh, onSelectFile, onDoubleClick, onContextMenu, onInstallCwd,
 }: FilePaneProps) {
   const [pathInput, setPathInput] = useState(path);
   const [sortKey, setSortKey] = useState<SortKey>('name');
@@ -267,6 +268,13 @@ function FilePane({
           className={`text-[11px] px-1 rounded ${searchVisible ? 'text-accent-cyan' : 'text-gray-500 hover:text-gray-300'}`}
           title="搜索 (Ctrl+F)"
         ><IconSearch size={12} /></button>
+        {onInstallCwd && (
+          <button
+            onClick={onInstallCwd}
+            className="text-[10px] px-1 rounded text-gray-500 hover:text-accent-green whitespace-nowrap"
+            title="让拖拽上传跟随终端当前目录：向 shell 配置(bash/zsh/fish)写入目录上报，一次性"
+          >跟随终端</button>
+        )}
       </div>
       {/* Search bar */}
       {searchVisible && (
@@ -571,6 +579,16 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
     setLocalSelected(null);
   }
 
+  async function handleInstallCwd() {
+    if (!sessionId) return;
+    try {
+      const msg = await invoke<string>('install_shell_cwd_reporting', { sessionId });
+      alert(msg);
+    } catch (e) {
+      alert(`配置目录跟随失败: ${e}`);
+    }
+  }
+
   function handleRemotePathChange(path: string) {
     setRemotePath(path);
     setRemoteSelected(null);
@@ -848,6 +866,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
                 onSelectFile={setRemoteSelected}
                 onDoubleClick={handleRemoteDoubleClick}
                 onContextMenu={(e, entry) => handleContextMenuOpen(e, entry, 'remote')}
+                onInstallCwd={handleInstallCwd}
               />
             ) : (
               <div className="flex-1 flex items-center justify-center text-xs text-gray-500">

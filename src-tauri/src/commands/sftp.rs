@@ -736,3 +736,86 @@ fn upload_one(
     app_log!("SFTP", "DRAG UPLOAD 完成: {} ({} bytes) -> {}", filename, bytes_so_far, remote_path);
     Ok(())
 }
+
+/// rc 中标记 LiteTerm cwd 上报片段的起始注释，用于幂等判断。
+const CWD_MARKER: &str = "# >>> LiteTerm cwd reporting >>>";
+/// bash 片段：定义函数并把它前置到 PROMPT_COMMAND（已存在则跳过，避免重复）。
+const BASH_SNIPPET: &str = "\n# >>> LiteTerm cwd reporting >>>\n__liteterm_osc7() { printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-h}\" \"$PWD\"; }\ncase \"$PROMPT_COMMAND\" in *__liteterm_osc7*) ;; *) PROMPT_COMMAND=\"__liteterm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\" ;; esac\n# <<< LiteTerm cwd reporting <<<\n";
+/// zsh 片段：定义函数并加入 precmd_functions（已在则不重复）。
+const ZSH_SNIPPET: &str = "\n# >>> LiteTerm cwd reporting >>>\n__liteterm_osc7() { printf '\\033]7;file://%s%s\\007' \"${HOST:-h}\" \"$PWD\"; }\ntypeset -ga precmd_functions\n(( ${precmd_functions[(I)__liteterm_osc7]} )) || precmd_functions+=(__liteterm_osc7)\n# <<< LiteTerm cwd reporting <<<\n";
+/// fish 片段：PWD 变化时发 OSC7。
+const FISH_SNIPPET: &str = "\n# >>> LiteTerm cwd reporting >>>\nfunction __liteterm_osc7 --on-variable PWD\n    printf '\\e]7;file://%s%s\\a' (hostname) \"$PWD\"\nend\n# <<< LiteTerm cwd reporting <<<\n";
+
+/// 幂等地把 cwd 上报片段追加到某个 rc 文件。返回该文件的处理结果描述。
+/// only_if_exists=true 时文件不存在则跳过（如 zsh）；mkdirs 为追加前需确保存在的目录（如 fish）。
+fn install_rc_snippet(
+    sftp: &ssh2::Sftp,
+    rc: &str,
+    snippet: &str,
+    only_if_exists: bool,
+    mkdirs: &[&str],
+) -> String {
+    let existing = match sftp.open(Path::new(rc)) {
+        Ok(mut f) => {
+            let mut s = String::new();
+            let _ = f.read_to_string(&mut s);
+            Some(s)
+        }
+        Err(_) => None,
+    };
+    match &existing {
+        Some(s) if s.contains(CWD_MARKER) => return format!("{}：已配置（跳过）", rc),
+        None if only_if_exists => return format!("{}：不存在（跳过）", rc),
+        _ => {}
+    }
+    for d in mkdirs {
+        let _ = sftp.mkdir(Path::new(d), 0o755); // 已存在会报错，忽略
+    }
+    match sftp.open_mode(
+        Path::new(rc),
+        ssh2::OpenFlags::WRITE | ssh2::OpenFlags::APPEND | ssh2::OpenFlags::CREATE,
+        0o644,
+        ssh2::OpenType::File,
+    ) {
+        Ok(mut f) => match f.write_all(snippet.as_bytes()) {
+            Ok(_) => format!("{}：已配置", rc),
+            Err(e) => format!("{}：写入失败 {}", rc, e),
+        },
+        Err(e) => format!("{}：打开失败 {}", rc, e),
+    }
+}
+
+/// 一键为当前会话安装 cwd 上报：把 OSC7 上报片段幂等写入 bash/zsh/fish 的 rc 文件，
+/// 让 shell 每次提示符主动发 OSC7，从而拖拽上传能跟随终端当前目录（无需向终端注入命令）。
+#[tauri::command]
+pub async fn install_shell_cwd_reporting(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let sftp_sessions = state.sftp_sessions.lock().unwrap();
+    let handle = sftp_sessions
+        .get(&session_id)
+        .ok_or_else(|| "SFTP会话未找到，请确认已连接".to_string())?;
+    let sftp = &handle.sftp;
+
+    let mut results = Vec::new();
+    // bash：~/.bashrc（不存在则创建）
+    results.push(install_rc_snippet(sftp, ".bashrc", BASH_SNIPPET, false, &[]));
+    // zsh：~/.zshrc（仅当已存在，避免给非 zsh 用户留下空文件）
+    results.push(install_rc_snippet(sftp, ".zshrc", ZSH_SNIPPET, true, &[]));
+    // fish：~/.config/fish/config.fish（确保目录存在）
+    results.push(install_rc_snippet(
+        sftp,
+        ".config/fish/config.fish",
+        FISH_SNIPPET,
+        false,
+        &[".config", ".config/fish"],
+    ));
+
+    let summary = results.join("\n");
+    app_log!("SFTP", "INSTALL CWD REPORTING: session={}\n{}", session_id, summary);
+    Ok(format!(
+        "已为当前会话配置 shell 目录上报：\n{}\n\n重新打开 shell（或新开标签）后，拖拽上传会跟随终端当前目录。",
+        summary
+    ))
+}

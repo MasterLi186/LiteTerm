@@ -65,6 +65,7 @@ pub fn run() {
             commands::sftp::local_rename,
             commands::sftp::cancel_transfer,
             commands::sftp::drag_upload,
+            commands::sftp::install_shell_cwd_reporting,
             commands::sftp::sftp_exec,
             commands::sftp::read_local_file,
             commands::process::get_process_list,
