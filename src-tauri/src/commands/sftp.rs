@@ -557,7 +557,8 @@ pub async fn local_rename(old_path: String, new_path: String) -> Result<(), Stri
 ///
 /// 目标目录解析顺序：会话的 osc7_cwd（终端 cwd）→ fallback_dir（文件管理器
 /// 当前远程目录）→ 相对路径（落到 SFTP 默认目录，即 home）。
-/// 阻塞 I/O 跑在本命令自己的异步任务里；终端 reader 是独立 OS 线程，不受影响。
+/// 与 sftp_upload 一样在命令的异步上下文内执行阻塞 SFTP I/O；终端 reader 在
+/// 独立 OS 线程上，故上传不会阻塞终端键盘。
 #[tauri::command]
 pub async fn drag_upload(
     state: State<'_, AppState>,
@@ -619,6 +620,11 @@ pub async fn drag_upload(
         for k in &cancel_keys {
             cancels.remove(k);
         }
+    }
+
+    // 用户主动取消不算失败，避免前端弹出“上传失败: 已取消”
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(());
     }
 
     match last_err {
