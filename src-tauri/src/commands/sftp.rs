@@ -9,6 +9,26 @@ use tauri::{AppHandle, Emitter, State};
 use crate::app_log;
 use crate::state::AppState;
 
+/// SFTP 上传缓冲大小：30000(libssh2 单个 SFTP 写包上限)的整数倍。
+/// 一次 write_all 喂入这么大一块，libssh2 才能把约 32 个写包一起排队进流水线
+/// （32KB 时只有 1 个包在途，被每包 ACK 的往返延迟锁死），上传可提速数倍。
+const UPLOAD_CHUNK_SIZE: usize = 30000 * 32; // 960000 (~960KB)
+
+/// 尽量把 buf 读满再返回（普通文件单次 read 可能短返回），保证整块大缓冲喂给
+/// write_all 以填深 SFTP 写流水线。返回实际读到的字节数（0 表示 EOF）。
+fn read_full(file: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match file.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
+}
+
 #[derive(Serialize, Clone)]
 pub struct FileEntry {
     pub name: String,
@@ -418,12 +438,11 @@ pub async fn sftp_upload(
         .unwrap_or_default();
 
     app_log!("SFTP", "Starting transfer: {}", filename);
-    let mut buf = [0u8; 32768];
+    let mut buf = vec![0u8; UPLOAD_CHUNK_SIZE];
     let mut bytes_so_far: u64 = 0;
     let mut last_log_mb: u64 = 0;
     loop {
-        let n = local_file
-            .read(&mut buf)
+        let n = read_full(&mut local_file, &mut buf)
             .map_err(|e| {
                 let msg = format!("读取本地文件失败: {} (bytes_so_far={})", e, bytes_so_far);
                 app_log!("SFTP", "ERROR: {}", msg);
@@ -685,7 +704,7 @@ fn upload_one(
     let mut local_file =
         std::fs::File::open(expanded_local).map_err(|e| format!("无法打开本地文件: {}", e))?;
 
-    let mut buf = [0u8; 32768];
+    let mut buf = vec![0u8; UPLOAD_CHUNK_SIZE];
     let mut bytes_so_far: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -693,8 +712,7 @@ fn upload_one(
             let _ = handle.sftp.unlink(Path::new(remote_path));
             return Err("已取消".to_string());
         }
-        let n = local_file
-            .read(&mut buf)
+        let n = read_full(&mut local_file, &mut buf)
             .map_err(|e| format!("读取本地文件失败: {}", e))?;
         if n == 0 {
             break;
