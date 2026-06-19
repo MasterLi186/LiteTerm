@@ -616,9 +616,10 @@ pub async fn drag_upload(
             .get(&session_id)
             .and_then(|s| s.osc7_cwd.lock().unwrap().clone())
     };
+    app_log!("SFTP", "DRAG UPLOAD: session={}, files={}, osc7_cwd={:?}, fallback={:?}", session_id, files.len(), cwd, fallback_dir);
     let target_dir = cwd.or(fallback_dir); // None 时用相对路径（落到 home）
     let target_display = target_dir.clone().unwrap_or_else(|| "~".to_string());
-    app_log!("SFTP", "DRAG UPLOAD: session={}, files={}, target={}", session_id, files.len(), target_display);
+    app_log!("SFTP", "DRAG UPLOAD: 实际目标 target={}", target_display);
 
     // 2. 逐个上传：同批次内文件名去重，避免不同目录的同名文件相互覆盖（数据丢失）；
     //    取消标志按去重后文件名注册（与进度事件、前端取消键 upload-<文件名> 一致）。

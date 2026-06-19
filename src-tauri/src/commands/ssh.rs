@@ -373,9 +373,27 @@ pub async fn ssh_connect(
                     break;
                 }
                 Ok(n) => {
+                    // 诊断：记录流中出现的原始 OSC7 序列（排查 shell 实际上报格式，如 fish）
+                    if let Some(pos) = buf[..n].windows(4).position(|w| w == b"\x1b]7;") {
+                        let end = (pos + 96).min(n);
+                        let snippet: String = buf[pos..end]
+                            .iter()
+                            .map(|&b| match b {
+                                0x1b => "\\e".to_string(),
+                                0x07 => "\\a".to_string(),
+                                0x20..=0x7e => (b as char).to_string(),
+                                _ => format!("\\x{:02x}", b),
+                            })
+                            .collect();
+                        app_log!("OSC7", "原始序列: {}", snippet);
+                    }
                     // 被动解析 OSC7 更新 cwd（只读，不影响终端）
                     if let Some(cwd) = osc7_parser.feed(&buf[..n]) {
-                        *osc7_cwd_clone.lock().unwrap() = Some(cwd);
+                        let mut guard = osc7_cwd_clone.lock().unwrap();
+                        if guard.as_deref() != Some(cwd.as_str()) {
+                            app_log!("OSC7", "cwd 更新 -> {}", cwd);
+                            *guard = Some(cwd);
+                        }
                     }
                     let _ = app_clone.emit(
                         "terminal-output",
