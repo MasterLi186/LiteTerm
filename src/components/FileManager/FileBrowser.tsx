@@ -365,9 +365,11 @@ interface Props {
   activeTerminalId?: string | null;
   sshUser?: string;
   sftpReady?: number;
+  // 当前远程路径变化时回调通知父组件（用于拖拽上传的 fallback 目录）
+  onRemotePathChange?: (path: string) => void;
 }
 
-export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }: Props) {
+export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, onRemotePathChange }: Props) {
   const [activeTab, setActiveTab] = useState<'file' | 'cmd'>('file');
   const [showHidden, setShowHidden] = useState(false);
 
@@ -388,6 +390,8 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
   const setRemotePath = (path: string) => {
     setRemotePathRaw(path);
     if (sessionId) sessionPathsRef.current[sessionId] = path;
+    // 通知父组件当前远程路径变化
+    if (onRemotePathChange) onRemotePathChange(path);
   };
   const [remoteFiles, setRemoteFiles] = useState<FileEntry[]>([]);
   const [remoteError, setRemoteError] = useState<string | null>(null);
@@ -477,13 +481,17 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady }:
     if (sessionId && sessionId !== prevSessionIdRef.current) {
       prevSessionIdRef.current = sessionId;
       if (sessionPathsRef.current[sessionId]) {
-        // 已有缓存，直接恢复
-        setRemotePathRaw(sessionPathsRef.current[sessionId]);
+        // 已有缓存，直接恢复；同步通知父组件，避免拖拽上传的 fallback 目录仍停留在上一个会话的路径
+        const cached = sessionPathsRef.current[sessionId];
+        setRemotePathRaw(cached);
+        if (onRemotePathChange) onRemotePathChange(cached);
       } else {
         // 首次：查询真实 home 目录
         const fallback = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
         setRemotePathRaw(fallback);
         sessionPathsRef.current[sessionId] = fallback;
+        // 同步通知父组件（即使后续 echo $HOME 失败，fallback 目录也已正确传出）
+        if (onRemotePathChange) onRemotePathChange(fallback);
         invoke<string>('sftp_exec', { sessionId, command: 'echo $HOME' })
           .then(home => {
             if (home && home.startsWith('/')) {

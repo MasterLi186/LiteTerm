@@ -1040,8 +1040,10 @@ function App() {
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
   const [showLogPanel, setShowLogPanel] = useState(false);
-  const [globalTransfers, setGlobalTransfers] = useState<Record<string, { filename: string; direction: string; bytes: number; total: number; speed: number }>>({});
+  const [globalTransfers, setGlobalTransfers] = useState<Record<string, { filename: string; direction: string; bytes: number; total: number; speed: number; target?: string }>>({});
   const transferStatsRef = useRef<Record<string, { lastBytes: number; lastTime: number; ema: number }>>({});
+  // 记录文件管理器当前远程路径，作为拖拽上传时的 fallback 目标目录
+  const currentRemotePathRef = useRef<string>('');
   const [transferPanelVisible, setTransferPanelVisible] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
@@ -1052,7 +1054,7 @@ function App() {
   const [fileBrowserHeight, setFileBrowserHeight] = useState(256);
   const fbDragging = useRef(false);
 
-  // 拖拽文件到终端上传：通过 ZMODEM 上传（Rust 后端处理）
+  // 拖拽文件到终端上传：通过 SFTP 独立通道上传（drag_upload，Rust 后端处理）
   useEffect(() => {
     const webview = getCurrentWebview();
     const unlisten = webview.onDragDropEvent((event) => {
@@ -1065,8 +1067,11 @@ function App() {
         setDragOverTerminal(false);
         const paths = event.payload.paths;
         if (!paths.length) return;
-        log('拖拽上传', `${paths.length} 个文件通过 ZMODEM 上传`, paths);
-        invoke('zmodem_send', { sessionId: activeSshSessionId, files: paths })
+        const sid = activeSshSessionId;
+        // 优先使用文件管理器当前远程路径作为目标目录，否则交由后端兜底
+        const fallbackDir = currentRemotePathRef.current || null;
+        log('拖拽上传', `${paths.length} 个文件通过 SFTP 上传`, paths);
+        invoke('drag_upload', { sessionId: sid, files: paths, fallbackDir })
           .then(() => log('拖拽上传', '完成'))
           .catch((e) => {
             log('拖拽上传', `失败: ${e}`);
@@ -1080,9 +1085,11 @@ function App() {
   // 全局传输进度监听（含实时速率计算）
   useEffect(() => {
     const unlisten = listen<{
-      filename: string; bytes_transferred: number; total_bytes: number; direction: string;
+      filename: string; bytes_transferred: number; total_bytes: number; direction: string; target?: string;
     }>('transfer-progress', (event) => {
       const { filename, bytes_transferred, total_bytes, direction } = event.payload;
+      // 目标目录（拖拽上传时后端附带），用于浮窗展示
+      const target = event.payload.target;
       const key = `${direction}-${filename}`;
       const now = Date.now();
       // 根据相邻两次进度事件的字节增量与时间差计算瞬时速率，并做指数平滑
@@ -1095,7 +1102,7 @@ function App() {
       transferStatsRef.current[key] = { lastBytes: bytes_transferred, lastTime: now, ema: speed };
       setGlobalTransfers(prev => ({
         ...prev,
-        [key]: { filename, direction, bytes: bytes_transferred, total: total_bytes, speed },
+        [key]: { filename, direction, bytes: bytes_transferred, total: total_bytes, speed, target },
       }));
       if (bytes_transferred >= total_bytes && total_bytes > 0) {
         setTimeout(() => {
@@ -1744,7 +1751,7 @@ function App() {
             className="border-t border-surface-border bg-surface-light flex flex-col file-browser-panel flex-shrink-0"
             style={{ height: `${fileBrowserHeight}px` }}
           >
-            <FileBrowser sessionId={activeSshSessionId} activeTerminalId={activeTabId} sshUser={activeTab?.sshParams?.user} sftpReady={sftpReady} />
+            <FileBrowser sessionId={activeSshSessionId} activeTerminalId={activeTabId} sshUser={activeTab?.sshParams?.user} sftpReady={sftpReady} onRemotePathChange={(p) => { currentRemotePathRef.current = p; }} />
           </div>
         )}
       </main>
@@ -1885,6 +1892,10 @@ function App() {
                         ><IconClose size={11} /></button>
                       )}
                     </div>
+                    {/* 目标目录（拖拽上传时显示） */}
+                    {t.target && (
+                      <div className="text-[10px] text-gray-500 truncate mb-0.5" title={t.target}>→ {t.target}</div>
+                    )}
                     <div className="h-1.5 bg-surface rounded-full overflow-hidden">
                       <div
                         className={`h-full rounded-full transition-all duration-300 ${done ? 'bg-accent-green' : t.direction === 'download' ? 'bg-accent-cyan' : 'bg-accent-green'}`}
