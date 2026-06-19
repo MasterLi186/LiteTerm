@@ -139,6 +139,10 @@ pub async fn ssh_connect(
     let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u32, u32)>();
     let (status_tx, status_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
+    // OSC7 cwd 跟踪（不门控）：原件存进 ManagedSession，克隆交给 reader 线程更新。
+    let osc7_cwd: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let osc7_cwd_clone = osc7_cwd.clone();
+
     #[cfg(feature = "zmodem")]
     let zmodem_active = Arc::new(AtomicBool::new(false));
     #[cfg(feature = "zmodem")]
@@ -282,6 +286,18 @@ pub async fn ssh_connect(
         std::thread::sleep(std::time::Duration::from_millis(500));
         session.set_blocking(false);
         let id_for_read = id_clone.clone();
+        // OSC7 cwd 解析器
+        let mut osc7_parser = crate::core::osc7::Osc7Parser::new();
+        // 注入一次性 OSC7 上报钩子（bash/zsh）。前导空格避免进 history；
+        // 不支持的 shell 不生效，自动走上传时的回退逻辑。
+        {
+            let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi\r";
+            let _ = channel.write_all(hook.as_bytes());
+            let _ = channel.flush();
+            // 擦除刚回显的注入命令行，尽量不留痕迹
+            let _ = channel.write_all(b"\x1b[2K\r");
+            let _ = channel.flush();
+        }
         let mut last_keepalive = std::time::Instant::now();
         loop {
             // ZMODEM 上传：收到信号时在本线程内联运行整个协议（本线程独占
@@ -345,6 +361,10 @@ pub async fn ssh_connect(
                     break;
                 }
                 Ok(n) => {
+                    // 被动解析 OSC7 更新 cwd（只读，不影响终端）
+                    if let Some(cwd) = osc7_parser.feed(&buf[..n]) {
+                        *osc7_cwd_clone.lock().unwrap() = Some(cwd);
+                    }
                     let _ = app_clone.emit(
                         "terminal-output",
                         serde_json::json!({
@@ -400,6 +420,7 @@ pub async fn ssh_connect(
                     resize_tx,
                     monitor_stop,
                     sftp_request_tx: sftp_tx,
+                    osc7_cwd,
                     #[cfg(feature = "zmodem")]
                     zmodem_active,
                     #[cfg(feature = "zmodem")]

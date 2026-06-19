@@ -20,6 +20,8 @@ pub struct ManagedSession {
     pub resize_tx: std::sync::mpsc::Sender<(u32, u32)>,
     pub monitor_stop: Arc<AtomicBool>,
     pub sftp_request_tx: std::sync::mpsc::Sender<SftpRequest>,
+    /// 终端 shell 当前工作目录，由 reader 线程解析 OSC7 更新（每会话独立）。
+    pub osc7_cwd: Arc<Mutex<Option<String>>>,
     /// zmodem_send 置为 true，通知 reader 线程执行一次 ZMODEM 传输。
     #[cfg(feature = "zmodem")]
     pub zmodem_active: Arc<AtomicBool>,
