@@ -268,7 +268,11 @@ pub async fn ssh_connect(
         };
         let pty_cols = cols.unwrap_or(120);
         let pty_rows = rows.unwrap_or(36);
-        if let Err(e) = channel.request_pty("xterm-256color", None, Some((pty_cols, pty_rows, 0, 0))) {
+        // 申请 PTY 时关闭输入回显（ECHO=0），使随后注入的 OSC7 钩子命令不在终端
+        // 回显；注入完成后再由钩子行尾的 stty echo 把回显恢复给用户（见下方注入）。
+        let mut pty_modes = ssh2::PtyModes::new();
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHO, false);
+        if let Err(e) = channel.request_pty("xterm-256color", Some(pty_modes), Some((pty_cols, pty_rows, 0, 0))) {
             let _ = status_tx.send(Err(format!("PTY request failed: {}", e)));
             return;
         }
@@ -287,9 +291,13 @@ pub async fn ssh_connect(
         // 注入一次性 OSC7 上报钩子（bash/zsh）：让 shell 每次显示提示符时上报
         // 当前目录。host 用会话私有令牌，远端静态内容无法预知，解析器只认带该
         // 令牌的 OSC7，防止远端伪造 cwd 把拖拽上传重定向到攻击者指定目录。
-        // 此时通道仍是阻塞模式，write_all 会完整写出整条钩子命令，避免半截写入
-        // 导致命令残缺、终端出现乱码。前导空格避免进 history；不支持的 shell
-        // （fish 等）不生效，拖拽上传会自动回退到文件管理器目录。
+        // 隐藏注入痕迹（kitty 思路）：PTY 申请时已设 ECHO=0，注入命令不回显到终端；
+        // 之后单独发一条 command stty echo 恢复回显（command 防别名劫持，< /dev/tty
+        // 作用于控制终端，2>/dev/null 抑制报错）。stty echo 与钩子行解耦单独发送：
+        // 即使钩子在某些 shell（如 fish，其 if/fi 语法不同会整行解析失败）下未执行，
+        // 回显也一定恢复、不会把用户留在盲打状态。此时通道仍是阻塞模式，write_all
+        // 完整写出整行。前导空格尽量不进 history；不支持的 shell 钩子不生效，拖拽
+        // 上传回退到文件管理器目录。
         let osc7_token = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -305,6 +313,10 @@ pub async fn ssh_connect(
             let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://{TOKEN}%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://{TOKEN}%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi\r"
                 .replace("{TOKEN}", &osc7_token);
             let _ = channel.write_all(hook.as_bytes());
+            let _ = channel.flush();
+            // 单独发送回显恢复命令（与钩子解耦）：保证任何 shell 下回显都能恢复，
+            // 不会因钩子行在 fish 等 shell 下整行解析失败而把用户留在盲打状态。
+            let _ = channel.write_all(b" command stty echo < /dev/tty 2>/dev/null\r");
             let _ = channel.flush();
         }
         session.set_blocking(false);
