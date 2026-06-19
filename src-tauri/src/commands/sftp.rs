@@ -552,3 +552,139 @@ pub async fn local_rename(old_path: String, new_path: String) -> Result<(), Stri
         .map_err(|e| format!("重命名失败: {}", e))?;
     Ok(())
 }
+
+/// 拖拽上传：把若干本地文件通过独立 SFTP 连接上传到终端当前目录。
+///
+/// 目标目录解析顺序：会话的 osc7_cwd（终端 cwd）→ fallback_dir（文件管理器
+/// 当前远程目录）→ 相对路径（落到 SFTP 默认目录，即 home）。
+/// 阻塞 I/O 跑在本命令自己的异步任务里；终端 reader 是独立 OS 线程，不受影响。
+#[tauri::command]
+pub async fn drag_upload(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    session_id: String,
+    files: Vec<String>,
+    fallback_dir: Option<String>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    // 1. 解析目标目录
+    let cwd = {
+        let sessions = state.sessions.lock().unwrap();
+        sessions
+            .get(&session_id)
+            .and_then(|s| s.osc7_cwd.lock().unwrap().clone())
+    };
+    let target_dir = cwd.or(fallback_dir); // None 时用相对路径（落到 home）
+    let target_display = target_dir.clone().unwrap_or_else(|| "~".to_string());
+    app_log!("SFTP", "DRAG UPLOAD: session={}, files={}, target={}", session_id, files.len(), target_display);
+
+    // 2. 注册取消标志（key 与前端浮窗取消按钮一致：upload-<文件名>）
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut cancel_keys: Vec<String> = Vec::new();
+    {
+        let mut cancels = state.transfer_cancel.lock().unwrap();
+        for f in &files {
+            let name = Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let key = format!("upload-{}", name);
+            cancels.insert(key.clone(), cancel.clone());
+            cancel_keys.push(key);
+        }
+    }
+
+    // 3. 逐个上传
+    let mut last_err: Option<String> = None;
+    for local in &files {
+        let expanded = shellexpand::tilde(local).to_string();
+        let name = Path::new(&expanded)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let remote_path = match &target_dir {
+            Some(d) => format!("{}/{}", d.trim_end_matches('/'), name),
+            None => name.clone(), // 相对路径 → SFTP home
+        };
+        if let Err(e) = upload_one(&state, &app, &session_id, &expanded, &remote_path, &name, &target_display, &cancel) {
+            app_log!("SFTP", "DRAG UPLOAD 失败: {} - {}", name, e);
+            last_err = Some(format!("{}: {}", name, e));
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+    }
+
+    // 4. 清理取消标志
+    {
+        let mut cancels = state.transfer_cancel.lock().unwrap();
+        for k in &cancel_keys {
+            cancels.remove(k);
+        }
+    }
+
+    match last_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// 单文件 SFTP 上传，支持取消，进度事件附带目标目录。
+fn upload_one(
+    state: &State<'_, AppState>,
+    app: &AppHandle,
+    session_id: &str,
+    expanded_local: &str,
+    remote_path: &str,
+    filename: &str,
+    target_display: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    let meta = std::fs::metadata(expanded_local)
+        .map_err(|e| format!("无法读取本地文件: {}", e))?;
+    let total = meta.len();
+
+    let sftp_sessions = state.sftp_sessions.lock().unwrap();
+    let handle = sftp_sessions
+        .get(session_id)
+        .ok_or_else(|| "SFTP会话未找到".to_string())?;
+
+    let mut remote_file = handle
+        .sftp
+        .create(Path::new(remote_path))
+        .map_err(|e| format!("无法创建远程文件: {} (path={})", e, remote_path))?;
+    let mut local_file =
+        std::fs::File::open(expanded_local).map_err(|e| format!("无法打开本地文件: {}", e))?;
+
+    let mut buf = [0u8; 32768];
+    let mut bytes_so_far: u64 = 0;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            drop(remote_file);
+            let _ = handle.sftp.unlink(Path::new(remote_path));
+            return Err("已取消".to_string());
+        }
+        let n = local_file
+            .read(&mut buf)
+            .map_err(|e| format!("读取本地文件失败: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        remote_file
+            .write_all(&buf[..n])
+            .map_err(|e| format!("写入远程文件失败: {} (bytes_so_far={})", e, bytes_so_far))?;
+        bytes_so_far += n as u64;
+        let _ = app.emit(
+            "transfer-progress",
+            serde_json::json!({
+                "filename": filename,
+                "bytes_transferred": bytes_so_far,
+                "total_bytes": total,
+                "direction": "upload",
+                "target": target_display
+            }),
+        );
+    }
+    app_log!("SFTP", "DRAG UPLOAD 完成: {} ({} bytes) -> {}", filename, bytes_so_far, remote_path);
+    Ok(())
+}
