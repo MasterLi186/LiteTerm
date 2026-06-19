@@ -9,19 +9,11 @@ const MAX_PENDING: usize = 8192;
 /// 增量 OSC7 解析器：跨多次 feed 处理可能被切分的序列。
 pub struct Osc7Parser {
     pending: Vec<u8>,
-    /// 期望的 OSC7 host（会话私有令牌）。为 Some 时只接受 host 匹配的序列，
-    /// 防止远端把任意 OSC7 注入流里伪造 cwd；为 None 时接受任意 host（仅测试用）。
-    expected_host: Option<String>,
 }
 
 impl Osc7Parser {
     pub fn new() -> Self {
-        Self { pending: Vec::new(), expected_host: None }
-    }
-
-    /// 只接受 host 等于指定令牌的 OSC7 序列（其余一律忽略）。
-    pub fn with_host(host: impl Into<String>) -> Self {
-        Self { pending: Vec::new(), expected_host: Some(host.into()) }
+        Self { pending: Vec::new() }
     }
 
     /// 喂入一段终端输出字节。返回本次累积流中最新一条完整 OSC7 解析出的路径
@@ -69,7 +61,7 @@ impl Osc7Parser {
             };
             let payload = self.pending[payload_start..t].to_vec();
             self.pending.drain(..t + tlen);
-            if let Some(path) = parse_file_url(&payload, self.expected_host.as_deref()) {
+            if let Some(path) = parse_file_url(&payload) {
                 result = Some(path);
             }
         }
@@ -88,8 +80,9 @@ fn find_subseq(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// 从 OSC7 payload 解析出路径。payload 形如 `file://host/path`，也兼容直接是路径。
-/// 对 `%XX` 做 URL 解码。expected_host 为 Some 时校验 host 必须等于该令牌。
-fn parse_file_url(payload: &[u8], expected_host: Option<&str>) -> Option<String> {
+/// 对 `%XX` 做 URL 解码。接受任意 host（含 shell 原生 OSC7，如 fish），与主流终端
+/// 一致；拖拽上传的目标目录会在前端浮窗显示，作为可见的安全提示。
+fn parse_file_url(payload: &[u8]) -> Option<String> {
     let s = String::from_utf8_lossy(payload);
     let s = s.trim();
     if s.is_empty() {
@@ -97,19 +90,11 @@ fn parse_file_url(payload: &[u8], expected_host: Option<&str>) -> Option<String>
     }
     let path_part = if let Some(rest) = s.strip_prefix("file://") {
         // rest = host/path —— 从 host 之后的第一个 '/' 开始才是路径
-        let idx = rest.find('/')?;
-        // 启用令牌校验时，host 必须等于本会话令牌，否则视为伪造/无关序列，忽略
-        if let Some(exp) = expected_host {
-            if &rest[..idx] != exp {
-                return None;
-            }
+        match rest.find('/') {
+            Some(idx) => &rest[idx..],
+            None => return None,
         }
-        &rest[idx..]
     } else if s.starts_with('/') {
-        // 裸路径不带令牌；启用校验时一律拒绝（无法证明来自可信钩子）
-        if expected_host.is_some() {
-            return None;
-        }
         s
     } else {
         return None;
@@ -212,27 +197,5 @@ mod tests {
         assert_eq!(p.feed(&big), None);
         // pending 不应超过上限
         assert!(p.pending.len() <= MAX_PENDING);
-    }
-
-    #[test]
-    fn test_with_host_accepts_matching_token() {
-        let mut p = Osc7Parser::with_host("lt1234");
-        let seq = b"\x1b]7;file://lt1234/home/bmc\x07";
-        assert_eq!(p.feed(seq), Some("/home/bmc".to_string()));
-    }
-
-    #[test]
-    fn test_with_host_rejects_forged_token() {
-        let mut p = Osc7Parser::with_host("lt1234");
-        // 远端伪造的 OSC7（host 非本会话令牌）应被忽略
-        assert_eq!(p.feed(b"\x1b]7;file://evil/root/.ssh\x07"), None);
-        // 紧接着真令牌的序列仍能正确解析
-        assert_eq!(p.feed(b"\x1b]7;file://lt1234/srv/data\x07"), Some("/srv/data".to_string()));
-    }
-
-    #[test]
-    fn test_with_host_rejects_bare_path() {
-        let mut p = Osc7Parser::with_host("lt1234");
-        assert_eq!(p.feed(b"\x1b]7;/etc/passwd\x07"), None);
     }
 }

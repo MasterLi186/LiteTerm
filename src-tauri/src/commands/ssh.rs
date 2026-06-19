@@ -288,9 +288,8 @@ pub async fn ssh_connect(
         // 4. Read loop: SSH channel -> terminal-output event (ZMODEM handled on frontend)
         // Delay to let frontend register event listener
         std::thread::sleep(std::time::Duration::from_millis(500));
-        // 注入一次性 OSC7 上报钩子（bash/zsh）：让 shell 每次显示提示符时上报
-        // 当前目录。host 用会话私有令牌，远端静态内容无法预知，解析器只认带该
-        // 令牌的 OSC7，防止远端伪造 cwd 把拖拽上传重定向到攻击者指定目录。
+        // 注入一次性 OSC7 上报钩子（bash/zsh）：让 shell 每次显示提示符时用 OSC7
+        // 上报当前目录，供拖拽上传定位目标。fish 等会原生发 OSC7，无需注入也能跟踪。
         // 隐藏注入痕迹（kitty 思路）：PTY 申请时已设 ECHO=0，注入命令不回显到终端；
         // 之后单独发一条 command stty echo 恢复回显（command 防别名劫持，< /dev/tty
         // 作用于控制终端，2>/dev/null 抑制报错）。stty echo 与钩子行解耦单独发送：
@@ -298,20 +297,8 @@ pub async fn ssh_connect(
         // 回显也一定恢复、不会把用户留在盲打状态。此时通道仍是阻塞模式，write_all
         // 完整写出整行。前导空格尽量不进 history；不支持的 shell 钩子不生效，拖拽
         // 上传回退到文件管理器目录。
-        let osc7_token = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-                .hash(&mut h);
-            id_clone.hash(&mut h);
-            format!("lt{:x}", h.finish())
-        };
         {
-            let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://{TOKEN}%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://{TOKEN}%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi\r"
-                .replace("{TOKEN}", &osc7_token);
+            let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi\r";
             let _ = channel.write_all(hook.as_bytes());
             let _ = channel.flush();
             // 单独发送回显恢复命令（与钩子解耦）：保证任何 shell 下回显都能恢复，
@@ -321,8 +308,8 @@ pub async fn ssh_connect(
         }
         session.set_blocking(false);
         let id_for_read = id_clone.clone();
-        // OSC7 cwd 解析器（只接受带本会话令牌的序列）
-        let mut osc7_parser = crate::core::osc7::Osc7Parser::with_host(osc7_token);
+        // OSC7 cwd 解析器（接受任意 host，含 shell 原生 OSC7，如 fish）
+        let mut osc7_parser = crate::core::osc7::Osc7Parser::new();
         let mut last_keepalive = std::time::Instant::now();
         loop {
             // ZMODEM 上传：收到信号时在本线程内联运行整个协议（本线程独占
