@@ -100,7 +100,8 @@ fn parse_file_url(payload: &[u8]) -> Option<String> {
         return None;
     };
     let decoded = url_decode(path_part);
-    if decoded.starts_with('/') {
+    // 必须是绝对路径，且不含控制字节（防止远端在 OSC7 里塞控制字符污染目标路径与 UI 显示）
+    if decoded.starts_with('/') && !decoded.chars().any(|c| c.is_control()) {
         Some(decoded)
     } else {
         None
@@ -197,5 +198,14 @@ mod tests {
         assert_eq!(p.feed(&big), None);
         // pending 不应超过上限
         assert!(p.pending.len() <= MAX_PENDING);
+    }
+
+    #[test]
+    fn test_rejects_control_bytes_in_path() {
+        let mut p = Osc7Parser::new();
+        // 路径中混入控制字节（\x01）应被拒绝，避免污染目标路径与 UI
+        assert_eq!(p.feed(b"\x1b]7;file://h/home/ev\x01il\x07"), None);
+        // 正常路径仍可解析
+        assert_eq!(p.feed(b"\x1b]7;file://h/home/ok\x07"), Some("/home/ok".to_string()));
     }
 }

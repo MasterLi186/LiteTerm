@@ -291,14 +291,17 @@ pub async fn ssh_connect(
         // 给 bash/zsh 登录 shell 注入一次性 OSC7 cwd 上报钩子，让“当前这个会话”立刻
         // 能跟随目录——rc 配置只对之后新开的 shell 生效，覆盖不到已启动的本会话。
         // 隐藏处理：PTY 已 ECHO=0 → 注入命令不回显；每条命令以 printf '\r\033[2K' 自清
-        // 当前提示符行，避免 ECHO=0 下回车不换行导致提示符叠行。fish 等子 shell 不走
-        // 这里（由 rc/config.fish 上报）。host 用占位 h，解析器接受任意 host。
+        // 当前提示符行，避免 ECHO=0 下回车不换行导致单行提示符叠行（多行/powerline
+        // 提示符上半部分仍可能残留）。fish 等子 shell 不走这里（由 rc/config.fish 上报）。
+        // host 用占位 h，解析器接受任意 host。
         {
             let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi; printf '\\r\\033[2K'\r";
             let _ = channel.write_all(hook.as_bytes());
             let _ = channel.flush();
-            // 独立恢复回显并自清行（即使钩子行在某些 shell 解析失败，回显也能恢复）
-            let _ = channel.write_all(b" command stty echo < /dev/tty 2>/dev/null; printf '\\r\\033[2K'\r");
+            // 独立恢复回显并自清行（即使钩子行在某些 shell 解析失败，回显也能恢复）。
+            // 先对 stdin(fd0，交互 shell 即 PTY) 再回退 /dev/tty，提高恢复成功率，
+            // 避免 /dev/tty 不可用时把用户留在盲打状态。
+            let _ = channel.write_all(b" stty echo 2>/dev/null; command stty echo < /dev/tty 2>/dev/null; printf '\\r\\033[2K'\r");
             let _ = channel.flush();
         }
         session.set_blocking(false);
