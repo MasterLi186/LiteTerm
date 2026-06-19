@@ -1077,6 +1077,18 @@ function App() {
           .catch((e) => {
             log('拖拽上传', `失败: ${e}`);
             setError(`上传失败: ${e}`);
+            // 清理失败/中断后遗留在浮窗里的未完成上传条目（仅完成项会自动消失）
+            setGlobalTransfers(prev => {
+              const n: typeof prev = {};
+              for (const [k, v] of Object.entries(prev)) {
+                if (v.direction === 'upload' && v.bytes < v.total) {
+                  delete transferStatsRef.current[k];
+                } else {
+                  n[k] = v;
+                }
+              }
+              return n;
+            });
           });
       }
     });
