@@ -189,6 +189,24 @@ pub async fn start_sftp_session(
 
     app_log!("SFTP", "SFTP会话已建立: session_id={}", session_id);
 
+    // 默认自动安装 cwd 上报（幂等）：让 shell 经 rc 主动发 OSC7，拖拽上传跟随终端
+    // 目录，无需用户手动启用。已配置过的服务器命中 marker 直接跳过、不重复写。
+    {
+        let summary = [
+            install_rc_snippet(&sftp, ".bashrc", BASH_SNIPPET, false, &[]),
+            install_rc_snippet(&sftp, ".zshrc", ZSH_SNIPPET, true, &[]),
+            install_rc_snippet(
+                &sftp,
+                ".config/fish/config.fish",
+                FISH_SNIPPET,
+                false,
+                &[".config", ".config/fish"],
+            ),
+        ]
+        .join("; ");
+        app_log!("SFTP", "AUTO CWD REPORTING: {}", summary);
+    }
+
     // Store the SFTP session (session must live as long as sftp)
     state
         .sftp_sessions
