@@ -268,7 +268,11 @@ pub async fn ssh_connect(
         };
         let pty_cols = cols.unwrap_or(120);
         let pty_rows = rows.unwrap_or(36);
-        if let Err(e) = channel.request_pty("xterm-256color", None, Some((pty_cols, pty_rows, 0, 0))) {
+        // PTY 申请时关闭输入回显（ECHO=0），使随后注入的 bash/zsh OSC7 钩子命令不
+        // 回显到终端；注入完成后由独立的 stty echo 恢复回显。
+        let mut pty_modes = ssh2::PtyModes::new();
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHO, false);
+        if let Err(e) = channel.request_pty("xterm-256color", Some(pty_modes), Some((pty_cols, pty_rows, 0, 0))) {
             let _ = status_tx.send(Err(format!("PTY request failed: {}", e)));
             return;
         }
@@ -284,9 +288,19 @@ pub async fn ssh_connect(
         // 4. Read loop: SSH channel -> terminal-output event (ZMODEM handled on frontend)
         // Delay to let frontend register event listener
         std::thread::sleep(std::time::Duration::from_millis(500));
-        // 不再向终端注入任何命令（避免回显/双提示符）。cwd 由 shell 自身经 rc
-        // 配置主动发 OSC7 上报（见 install_shell_cwd_reporting 一键安装）；未配置
-        // 的 shell 不上报，拖拽上传回退到文件管理器目录。
+        // 给 bash/zsh 登录 shell 注入一次性 OSC7 cwd 上报钩子，让“当前这个会话”立刻
+        // 能跟随目录——rc 配置只对之后新开的 shell 生效，覆盖不到已启动的本会话。
+        // 隐藏处理：PTY 已 ECHO=0 → 注入命令不回显；每条命令以 printf '\r\033[2K' 自清
+        // 当前提示符行，避免 ECHO=0 下回车不换行导致提示符叠行。fish 等子 shell 不走
+        // 这里（由 rc/config.fish 上报）。host 用占位 h，解析器接受任意 host。
+        {
+            let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi; printf '\\r\\033[2K'\r";
+            let _ = channel.write_all(hook.as_bytes());
+            let _ = channel.flush();
+            // 独立恢复回显并自清行（即使钩子行在某些 shell 解析失败，回显也能恢复）
+            let _ = channel.write_all(b" command stty echo < /dev/tty 2>/dev/null; printf '\\r\\033[2K'\r");
+            let _ = channel.flush();
+        }
         session.set_blocking(false);
         let id_for_read = id_clone.clone();
         // OSC7 cwd 解析器（接受任意 host，含 shell 原生 OSC7，如 fish）
