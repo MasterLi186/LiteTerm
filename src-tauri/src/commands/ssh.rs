@@ -285,18 +285,32 @@ pub async fn ssh_connect(
         // Delay to let frontend register event listener
         std::thread::sleep(std::time::Duration::from_millis(500));
         // 注入一次性 OSC7 上报钩子（bash/zsh）：让 shell 每次显示提示符时上报
-        // 当前目录。此时通道仍是阻塞模式，write_all 会完整写出整条钩子命令，
-        // 避免半截写入导致命令残缺、终端出现乱码。前导空格避免进 history；
-        // 不支持的 shell（fish 等）不生效，拖拽上传会自动回退到文件管理器目录。
+        // 当前目录。host 用会话私有令牌，远端静态内容无法预知，解析器只认带该
+        // 令牌的 OSC7，防止远端伪造 cwd 把拖拽上传重定向到攻击者指定目录。
+        // 此时通道仍是阻塞模式，write_all 会完整写出整条钩子命令，避免半截写入
+        // 导致命令残缺、终端出现乱码。前导空格避免进 history；不支持的 shell
+        // （fish 等）不生效，拖拽上传会自动回退到文件管理器目录。
+        let osc7_token = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+                .hash(&mut h);
+            id_clone.hash(&mut h);
+            format!("lt{:x}", h.finish())
+        };
         {
-            let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi\r";
+            let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://{TOKEN}%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://{TOKEN}%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi\r"
+                .replace("{TOKEN}", &osc7_token);
             let _ = channel.write_all(hook.as_bytes());
             let _ = channel.flush();
         }
         session.set_blocking(false);
         let id_for_read = id_clone.clone();
-        // OSC7 cwd 解析器
-        let mut osc7_parser = crate::core::osc7::Osc7Parser::new();
+        // OSC7 cwd 解析器（只接受带本会话令牌的序列）
+        let mut osc7_parser = crate::core::osc7::Osc7Parser::with_host(osc7_token);
         let mut last_keepalive = std::time::Instant::now();
         loop {
             // ZMODEM 上传：收到信号时在本线程内联运行整个协议（本线程独占
