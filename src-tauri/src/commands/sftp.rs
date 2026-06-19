@@ -553,6 +553,27 @@ pub async fn local_rename(old_path: String, new_path: String) -> Result<(), Stri
     Ok(())
 }
 
+/// 同批次内文件名去重：base 已用过则返回 base(1)、base(2)…（保留扩展名）。
+/// 避免一次拖入多个不同目录的同名文件时相互覆盖远程文件。
+fn dedup_name(base: &str, used: &mut std::collections::HashSet<String>) -> String {
+    if used.insert(base.to_string()) {
+        return base.to_string();
+    }
+    // 拆分主名与扩展名（扩展名含点）；隐藏文件如 .bashrc 视为无扩展名
+    let (stem, ext) = match base.rfind('.') {
+        Some(i) if i > 0 => (&base[..i], &base[i..]),
+        _ => (base, ""),
+    };
+    let mut n = 1;
+    loop {
+        let candidate = format!("{}({}){}", stem, n, ext);
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// 拖拽上传：把若干本地文件通过独立 SFTP 连接上传到终端当前目录。
 ///
 /// 目标目录解析顺序：会话的 osc7_cwd（终端 cwd）→ fallback_dir（文件管理器
@@ -580,27 +601,25 @@ pub async fn drag_upload(
     let target_display = target_dir.clone().unwrap_or_else(|| "~".to_string());
     app_log!("SFTP", "DRAG UPLOAD: session={}, files={}, target={}", session_id, files.len(), target_display);
 
-    // 2. 注册取消标志（key 与前端浮窗取消按钮一致：upload-<文件名>）
+    // 2. 逐个上传：同批次内文件名去重，避免不同目录的同名文件相互覆盖（数据丢失）；
+    //    取消标志按去重后文件名注册（与进度事件、前端取消键 upload-<文件名> 一致）。
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut cancel_keys: Vec<String> = Vec::new();
-    {
-        let mut cancels = state.transfer_cancel.lock().unwrap();
-        for f in &files {
-            let name = Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let key = format!("upload-{}", name);
-            cancels.insert(key.clone(), cancel.clone());
-            cancel_keys.push(key);
-        }
-    }
-
-    // 3. 逐个上传
+    let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut last_err: Option<String> = None;
     for local in &files {
         let expanded = shellexpand::tilde(local).to_string();
-        let name = Path::new(&expanded)
+        let base = Path::new(&expanded)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let name = dedup_name(&base, &mut used_names);
+        let key = format!("upload-{}", name);
+        {
+            let mut cancels = state.transfer_cancel.lock().unwrap();
+            cancels.insert(key.clone(), cancel.clone());
+        }
+        cancel_keys.push(key);
         let remote_path = match &target_dir {
             Some(d) => format!("{}/{}", d.trim_end_matches('/'), name),
             None => name.clone(), // 相对路径 → SFTP home
@@ -614,11 +633,15 @@ pub async fn drag_upload(
         }
     }
 
-    // 4. 清理取消标志
+    // 3. 清理取消标志：仅移除仍指向本批次 cancel 的条目，避免误删并发同名批次注册的句柄
     {
         let mut cancels = state.transfer_cancel.lock().unwrap();
         for k in &cancel_keys {
-            cancels.remove(k);
+            if let Some(existing) = cancels.get(k) {
+                if std::sync::Arc::ptr_eq(existing, &cancel) {
+                    cancels.remove(k);
+                }
+            }
         }
     }
 

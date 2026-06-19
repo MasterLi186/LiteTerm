@@ -1042,10 +1042,8 @@ function App() {
   const [showLogPanel, setShowLogPanel] = useState(false);
   const [globalTransfers, setGlobalTransfers] = useState<Record<string, { filename: string; direction: string; bytes: number; total: number; speed: number; target?: string }>>({});
   const transferStatsRef = useRef<Record<string, { lastBytes: number; lastTime: number; ema: number }>>({});
-  // 记录文件管理器当前远程路径，作为拖拽上传时的 fallback 目标目录
-  const currentRemotePathRef = useRef<string>('');
-  // 切换 SSH 会话时清空 fallback，避免把上一个会话的远程路径误用为新会话的上传目标
-  useEffect(() => { currentRemotePathRef.current = ''; }, [activeSshSessionId]);
+  // 记录文件管理器当前远程路径 + 其所属会话；拖拽上传时按会话校验，避免跨会话误用旧路径
+  const currentRemotePathRef = useRef<{ sid: string; path: string } | null>(null);
   const [transferPanelVisible, setTransferPanelVisible] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
@@ -1070,8 +1068,9 @@ function App() {
         const paths = event.payload.paths;
         if (!paths.length) return;
         const sid = activeSshSessionId;
-        // 优先使用文件管理器当前远程路径作为目标目录，否则交由后端兜底
-        const fallbackDir = currentRemotePathRef.current || null;
+        // 优先使用文件管理器当前远程路径作为目标目录（仅当属于当前会话），否则交由后端兜底
+        const fb = currentRemotePathRef.current;
+        const fallbackDir = (fb && fb.sid === sid) ? fb.path : null;
         log('拖拽上传', `${paths.length} 个文件通过 SFTP 上传`, paths);
         invoke('drag_upload', { sessionId: sid, files: paths, fallbackDir })
           .then(() => log('拖拽上传', '完成'))
@@ -1753,7 +1752,7 @@ function App() {
             className="border-t border-surface-border bg-surface-light flex flex-col file-browser-panel flex-shrink-0"
             style={{ height: `${fileBrowserHeight}px` }}
           >
-            <FileBrowser sessionId={activeSshSessionId} activeTerminalId={activeTabId} sshUser={activeTab?.sshParams?.user} sftpReady={sftpReady} onRemotePathChange={(p) => { currentRemotePathRef.current = p; }} />
+            <FileBrowser sessionId={activeSshSessionId} activeTerminalId={activeTabId} sshUser={activeTab?.sshParams?.user} sftpReady={sftpReady} onRemotePathChange={(p) => { if (activeSshSessionId) currentRemotePathRef.current = { sid: activeSshSessionId, path: p }; }} />
           </div>
         )}
       </main>
