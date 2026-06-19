@@ -284,20 +284,19 @@ pub async fn ssh_connect(
         // 4. Read loop: SSH channel -> terminal-output event (ZMODEM handled on frontend)
         // Delay to let frontend register event listener
         std::thread::sleep(std::time::Duration::from_millis(500));
-        session.set_blocking(false);
-        let id_for_read = id_clone.clone();
-        // OSC7 cwd 解析器
-        let mut osc7_parser = crate::core::osc7::Osc7Parser::new();
-        // 注入一次性 OSC7 上报钩子（bash/zsh）。前导空格避免进 history；
-        // 不支持的 shell 不生效，自动走上传时的回退逻辑。
+        // 注入一次性 OSC7 上报钩子（bash/zsh）：让 shell 每次显示提示符时上报
+        // 当前目录。此时通道仍是阻塞模式，write_all 会完整写出整条钩子命令，
+        // 避免半截写入导致命令残缺、终端出现乱码。前导空格避免进 history；
+        // 不支持的 shell（fish 等）不生效，拖拽上传会自动回退到文件管理器目录。
         {
             let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi\r";
             let _ = channel.write_all(hook.as_bytes());
             let _ = channel.flush();
-            // 擦除刚回显的注入命令行，尽量不留痕迹
-            let _ = channel.write_all(b"\x1b[2K\r");
-            let _ = channel.flush();
         }
+        session.set_blocking(false);
+        let id_for_read = id_clone.clone();
+        // OSC7 cwd 解析器
+        let mut osc7_parser = crate::core::osc7::Osc7Parser::new();
         let mut last_keepalive = std::time::Instant::now();
         loop {
             // ZMODEM 上传：收到信号时在本线程内联运行整个协议（本线程独占
