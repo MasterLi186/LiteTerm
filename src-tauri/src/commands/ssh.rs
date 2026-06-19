@@ -268,11 +268,7 @@ pub async fn ssh_connect(
         };
         let pty_cols = cols.unwrap_or(120);
         let pty_rows = rows.unwrap_or(36);
-        // 申请 PTY 时关闭输入回显（ECHO=0），使随后注入的 OSC7 钩子命令不在终端
-        // 回显；注入完成后再由钩子行尾的 stty echo 把回显恢复给用户（见下方注入）。
-        let mut pty_modes = ssh2::PtyModes::new();
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHO, false);
-        if let Err(e) = channel.request_pty("xterm-256color", Some(pty_modes), Some((pty_cols, pty_rows, 0, 0))) {
+        if let Err(e) = channel.request_pty("xterm-256color", None, Some((pty_cols, pty_rows, 0, 0))) {
             let _ = status_tx.send(Err(format!("PTY request failed: {}", e)));
             return;
         }
@@ -288,24 +284,9 @@ pub async fn ssh_connect(
         // 4. Read loop: SSH channel -> terminal-output event (ZMODEM handled on frontend)
         // Delay to let frontend register event listener
         std::thread::sleep(std::time::Duration::from_millis(500));
-        // 注入一次性 OSC7 上报钩子（bash/zsh）：让 shell 每次显示提示符时用 OSC7
-        // 上报当前目录，供拖拽上传定位目标。fish 等会原生发 OSC7，无需注入也能跟踪。
-        // 隐藏注入痕迹（kitty 思路）：PTY 申请时已设 ECHO=0，注入命令不回显到终端；
-        // 之后单独发一条 command stty echo 恢复回显（command 防别名劫持，< /dev/tty
-        // 作用于控制终端，2>/dev/null 抑制报错）。stty echo 与钩子行解耦单独发送：
-        // 即使钩子在某些 shell（如 fish，其 if/fi 语法不同会整行解析失败）下未执行，
-        // 回显也一定恢复、不会把用户留在盲打状态。此时通道仍是阻塞模式，write_all
-        // 完整写出整行。前导空格尽量不进 history；不支持的 shell 钩子不生效，拖拽
-        // 上传回退到文件管理器目录。
-        {
-            let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi\r";
-            let _ = channel.write_all(hook.as_bytes());
-            let _ = channel.flush();
-            // 单独发送回显恢复命令（与钩子解耦）：保证任何 shell 下回显都能恢复，
-            // 不会因钩子行在 fish 等 shell 下整行解析失败而把用户留在盲打状态。
-            let _ = channel.write_all(b" command stty echo < /dev/tty 2>/dev/null\r");
-            let _ = channel.flush();
-        }
+        // 不再向终端注入任何命令（避免回显/双提示符）。cwd 由 shell 自身经 rc
+        // 配置主动发 OSC7 上报（见 install_shell_cwd_reporting 一键安装）；未配置
+        // 的 shell 不上报，拖拽上传回退到文件管理器目录。
         session.set_blocking(false);
         let id_for_read = id_clone.clone();
         // OSC7 cwd 解析器（接受任意 host，含 shell 原生 OSC7，如 fish）
@@ -373,21 +354,7 @@ pub async fn ssh_connect(
                     break;
                 }
                 Ok(n) => {
-                    // 诊断：记录流中出现的原始 OSC7 序列（排查 shell 实际上报格式，如 fish）
-                    if let Some(pos) = buf[..n].windows(4).position(|w| w == b"\x1b]7;") {
-                        let end = (pos + 96).min(n);
-                        let snippet: String = buf[pos..end]
-                            .iter()
-                            .map(|&b| match b {
-                                0x1b => "\\e".to_string(),
-                                0x07 => "\\a".to_string(),
-                                0x20..=0x7e => (b as char).to_string(),
-                                _ => format!("\\x{:02x}", b),
-                            })
-                            .collect();
-                        app_log!("OSC7", "原始序列: {}", snippet);
-                    }
-                    // 被动解析 OSC7 更新 cwd（只读，不影响终端）
+                    // 被动解析 shell 自行上报的 OSC7，更新 cwd（只读，不影响终端）
                     if let Some(cwd) = osc7_parser.feed(&buf[..n]) {
                         let mut guard = osc7_cwd_clone.lock().unwrap();
                         if guard.as_deref() != Some(cwd.as_str()) {
