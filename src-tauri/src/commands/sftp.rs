@@ -631,17 +631,17 @@ pub async fn drag_upload(
             .get(&session_id)
             .and_then(|s| s.osc7_cwd.lock().unwrap().clone())
     };
-    app_log!("SFTP", "DRAG UPLOAD: session={}, files={}, osc7_cwd={:?}, fallback={:?}", session_id, files.len(), cwd, fallback_dir);
-    let target_dir = cwd.or(fallback_dir); // None 时用相对路径（落到 home）
+    let target_dir = cwd.clone().or_else(|| fallback_dir.clone()); // None 时用相对路径（落到 home）
     let target_display = target_dir.clone().unwrap_or_else(|| "~".to_string());
-    app_log!("SFTP", "DRAG UPLOAD: 实际目标 target={}", target_display);
+    app_log!("SFTP", "DRAG UPLOAD: session={}, files={}, osc7_cwd={:?}, fallback={:?}, target={}", session_id, files.len(), cwd, fallback_dir, target_display);
 
     // 2. 逐个上传：同批次内文件名去重，避免不同目录的同名文件相互覆盖（数据丢失）；
     //    取消标志按去重后文件名注册（与进度事件、前端取消键 upload-<文件名> 一致）。
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut cancel_keys: Vec<String> = Vec::new();
     let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut last_err: Option<String> = None;
+    let mut errs: Vec<String> = Vec::new();
+    let mut buf = vec![0u8; UPLOAD_CHUNK_SIZE]; // 整批复用一块缓冲，避免每文件重复分配/清零
     for local in &files {
         let expanded = shellexpand::tilde(local).to_string();
         let base = Path::new(&expanded)
@@ -659,9 +659,9 @@ pub async fn drag_upload(
             Some(d) => format!("{}/{}", d.trim_end_matches('/'), name),
             None => name.clone(), // 相对路径 → SFTP home
         };
-        if let Err(e) = upload_one(&state, &app, &session_id, &expanded, &remote_path, &name, &target_display, &cancel) {
+        if let Err(e) = upload_one(&state, &app, &session_id, &expanded, &remote_path, &name, &target_display, &cancel, &mut buf) {
             app_log!("SFTP", "DRAG UPLOAD 失败: {} - {}", name, e);
-            last_err = Some(format!("{}: {}", name, e));
+            errs.push(format!("{}: {}", name, e));
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -685,13 +685,14 @@ pub async fn drag_upload(
         return Ok(());
     }
 
-    match last_err {
-        Some(e) => Err(e),
-        None => Ok(()),
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(errs.join("; "))
     }
 }
 
-/// 单文件 SFTP 上传，支持取消，进度事件附带目标目录。
+/// 单文件 SFTP 上传，支持取消，进度事件附带目标目录。buf 为调用方复用的读写缓冲。
 fn upload_one(
     state: &State<'_, AppState>,
     app: &AppHandle,
@@ -701,6 +702,7 @@ fn upload_one(
     filename: &str,
     target_display: &str,
     cancel: &std::sync::atomic::AtomicBool,
+    buf: &mut [u8],
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
 
@@ -720,7 +722,6 @@ fn upload_one(
     let mut local_file =
         std::fs::File::open(expanded_local).map_err(|e| format!("无法打开本地文件: {}", e))?;
 
-    let mut buf = vec![0u8; UPLOAD_CHUNK_SIZE];
     let mut bytes_so_far: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -728,7 +729,7 @@ fn upload_one(
             let _ = handle.sftp.unlink(Path::new(remote_path));
             return Err("已取消".to_string());
         }
-        let n = read_full(&mut local_file, &mut buf)
+        let n = read_full(&mut local_file, buf)
             .map_err(|e| format!("读取本地文件失败: {}", e))?;
         if n == 0 {
             break;
@@ -768,9 +769,11 @@ fn install_rc_snippet(
 ) -> String {
     let existing = match sftp.open(Path::new(rc)) {
         Ok(mut f) => {
-            let mut s = String::new();
-            let _ = f.read_to_string(&mut s);
-            Some(s)
+            // 用 read_to_end + lossy 而非 read_to_string：非 UTF-8 的 rc 文件也能读出
+            // 内容做 marker 判断，避免幂等失效导致重复追加。
+            let mut bytes = Vec::new();
+            let _ = f.read_to_end(&mut bytes);
+            Some(String::from_utf8_lossy(&bytes).into_owned())
         }
         Err(_) => None,
     };
