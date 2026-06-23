@@ -11,11 +11,6 @@ crate-type = ["lib", "cdylib", "staticlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-[features]
-default = []
-# ZMODEM 发送（rz）支持，默认关闭。启用：cargo build --features zmodem
-zmodem = []
-
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"

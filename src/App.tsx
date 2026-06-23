@@ -1081,7 +1081,7 @@ function App() {
             setGlobalTransfers(prev => {
               const n: typeof prev = {};
               for (const [k, v] of Object.entries(prev)) {
-                if (v.direction === 'upload' && v.bytes < v.total) {
+                if (v.direction.includes('upload') && v.bytes < v.total) {
                   delete transferStatsRef.current[k];
                 } else {
                   n[k] = v;

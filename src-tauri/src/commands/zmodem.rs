@@ -12,16 +12,15 @@ use crate::core::zmodem::sender::{FileInfo, SenderAction, ZmodemSender};
 use crate::core::zmodem::DecodedFrame;
 use crate::state::{AppState, ZmodemSendRequest};
 
-/// 前端调用的 ZMODEM 上传入口。把请求交给该会话的 reader 线程
-/// （它独占 SSH channel），然后阻塞等待结果。
-#[tauri::command]
-pub async fn zmodem_send(
-    state: State<'_, AppState>,
-    app: AppHandle,
+/// ZMODEM(rz) 上传：把请求交给该会话的 reader 线程（独占 SSH channel）执行，阻塞等待
+/// 结果。用于 SFTP 不可用（如交互式堡垒机跳到目标机——独立 SFTP 连接到不了目标机）时
+/// 的拖拽上传回退：rz 在终端会话内运行，能穿透堡垒机菜单把文件传到目标机。
+/// 进度由 reader 线程内的 run_zmodem_send 用自己的 AppHandle 上报，故此处无需 app。
+pub async fn run_zmodem_upload(
+    state: &State<'_, AppState>,
     session_id: String,
     files: Vec<String>,
 ) -> Result<(), String> {
-    let _ = app;
     app_log!("ZMODEM", "SEND START: session={}, files={}", session_id, files.len());
 
     // 收集文件信息

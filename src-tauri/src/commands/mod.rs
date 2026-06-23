@@ -10,5 +10,4 @@ pub mod ssh_keys;
 pub mod recording;
 pub mod terminal;
 pub mod tunnel;
-#[cfg(feature = "zmodem")]
 pub mod zmodem;

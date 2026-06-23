@@ -624,6 +624,14 @@ pub async fn drag_upload(
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
 
+    // SFTP 不可用（如交互式堡垒机跳到目标机：独立 SFTP 连接到不了目标机）→ 回退 ZMODEM，
+    // rz 在终端会话内运行，能穿透堡垒机菜单把文件传到目标机（终端 cwd 即目标目录）。
+    let sftp_available = state.sftp_sessions.lock().unwrap().contains_key(&session_id);
+    if !sftp_available {
+        app_log!("SFTP", "DRAG UPLOAD: 无 SFTP 会话，回退 ZMODEM: session={}", session_id);
+        return crate::commands::zmodem::run_zmodem_upload(&state, session_id, files).await;
+    }
+
     // 1. 解析目标目录
     let cwd = {
         let sessions = state.sessions.lock().unwrap();
