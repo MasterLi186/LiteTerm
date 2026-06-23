@@ -376,9 +376,34 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     });
 
     // User input -> Tauri
-    term.onData((data) => {
+    // WebKitGTK（Tauri 在 Linux 的 webview）下，xterm 自身的中文输入法(composition)处理
+    // 会产出重复甚至错乱的 onData（实测“看看剧情”被发成“看看剧情剧情”/“剧情看看”）。
+    // 改为：组合期间丢弃 xterm 的 onData，由 compositionend 直接取干净的最终文本(e.data)
+    // 发一次；组合刚结束的极短窗口内丢弃 xterm 产出的 CJK 回声（已发过干净版）。纯 ASCII
+    // 输入(含组合后紧接的英文/回车)始终放行，不会被误丢。
+    const sendInput = (data: string) => {
       const bytes = Array.from(new TextEncoder().encode(data));
       invoke('terminal_write', { id: terminalId, data: bytes });
+    };
+    let imeComposing = false;
+    let imeEndedAt = 0;
+    const imeTextarea = term.element?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
+    if (imeTextarea) {
+      imeTextarea.addEventListener('compositionstart', () => { imeComposing = true; });
+      imeTextarea.addEventListener('compositionend', (ev: Event) => {
+        imeComposing = false;
+        const text = (ev as CompositionEvent).data;
+        if (text) {
+          sendInput(text);
+          imeEndedAt = performance.now(); // 仅在发了干净版后才开启丢弃窗口
+        }
+      });
+    }
+    term.onData((data) => {
+      if (imeComposing) return; // 组合进行中，等 compositionend 统一发
+      // 刚结束窗口内丢弃 xterm 的(重复/错乱)CJK 组合回声；ASCII 一律放行
+      if (performance.now() - imeEndedAt < 80 && /[^\x00-\x7f]/.test(data)) return;
+      sendInput(data);
     });
 
     // Resize -> Tauri
