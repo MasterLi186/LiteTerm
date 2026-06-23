@@ -117,9 +117,9 @@ pub async fn start_sftp_session(
 
     // Open a separate SSH connection for SFTP
     let addr = format!("{}:{}", host, port);
-    let sock_addr: std::net::SocketAddr = addr.parse().map_err(|e: std::net::AddrParseError| {
-        app_log!("SFTP", "ERROR: 无效地址: {}", e);
-        format!("无效地址: {}", e)
+    let sock_addr = crate::core::net::resolve_addr(&addr).map_err(|e| {
+        app_log!("SFTP", "ERROR: {}", e);
+        e
     })?;
 
     let tcp = std::net::TcpStream::connect_timeout(

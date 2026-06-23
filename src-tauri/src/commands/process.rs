@@ -45,9 +45,9 @@ fn open_ssh_and_exec(
     command: &str,
 ) -> Result<String, String> {
     let addr = format!("{}:{}", host, port);
-    let sock_addr: std::net::SocketAddr = addr.parse().map_err(|e| {
-        app_log!("PROC", "ERROR: Invalid address: {} ({})", e, addr);
-        format!("Invalid address: {}", e)
+    let sock_addr = crate::core::net::resolve_addr(&addr).map_err(|e| {
+        app_log!("PROC", "ERROR: {}", e);
+        e
     })?;
 
     let tcp = std::net::TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_secs(10))

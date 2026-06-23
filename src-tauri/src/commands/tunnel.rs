@@ -54,11 +54,11 @@ pub async fn create_tunnel(
 
         // 1. TCP connect + SSH handshake
         let addr = format!("{}:{}", host, port);
-        let sock_addr = match addr.parse::<std::net::SocketAddr>() {
+        let sock_addr = match crate::core::net::resolve_addr(&addr) {
             Ok(a) => a,
             Err(e) => {
-                app_log!("TUNNEL", "ERROR: Invalid address: {}", e);
-                let _ = status_tx.send(Err(format!("Invalid address: {}", e)));
+                app_log!("TUNNEL", "ERROR: {}", e);
+                let _ = status_tx.send(Err(e));
                 return;
             }
         };

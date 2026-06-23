@@ -182,10 +182,10 @@ pub async fn start_monitor(
     std::thread::spawn(move || {
         // Open a separate SSH connection for monitoring
         let addr = format!("{}:{}", host, port);
-        let sock_addr = match addr.parse::<std::net::SocketAddr>() {
+        let sock_addr = match crate::core::net::resolve_addr(&addr) {
             Ok(a) => a,
             Err(e) => {
-                app_log!("MON", "Monitor: invalid address: {}", e);
+                app_log!("MON", "Monitor: {}", e);
                 return;
             }
         };
