@@ -95,7 +95,7 @@ pub async fn run_zmodem_upload(
         }
     }
 
-    app_log!("ZMODEM", "SEND END: session={}, ok={}", session_id, result.is_ok());
+    app_log!("ZMODEM", "SEND END: session={}, result={:?}", session_id, result);
     result
 }
 
