@@ -387,6 +387,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     };
     let imeComposing = false;
     let imeEndedAt = 0;
+    let lastComposed = ''; // compositionend 已发的干净文本，用于识别 xterm 的重复回声
     const imeTextarea = term.element?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
     if (imeTextarea) {
       imeTextarea.addEventListener('compositionstart', () => { imeComposing = true; });
@@ -395,14 +396,17 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         const text = (ev as CompositionEvent).data;
         if (text) {
           sendInput(text);
+          lastComposed = text;
           imeEndedAt = performance.now(); // 仅在发了干净版后才开启丢弃窗口
         }
       });
     }
     term.onData((data) => {
       if (imeComposing) return; // 组合进行中，等 compositionend 统一发
-      // 刚结束窗口内丢弃 xterm 的(重复/错乱)CJK 组合回声；ASCII 一律放行
-      if (performance.now() - imeEndedAt < 80 && /[^\x00-\x7f]/.test(data)) return;
+      // 刚结束的极短窗口内丢弃 xterm 的组合回声：CJK 可能错乱/重复 → 丢所有非 ASCII；
+      // 英文经输入法时回声与 compositionend 文本完全一致 → 按文本相等丢弃。
+      // 回车/退格等控制键既非 CJK 也不等于 lastComposed，照常放行（不会误丢）。
+      if (performance.now() - imeEndedAt < 80 && (/[^\x00-\x7f]/.test(data) || data === lastComposed)) return;
       sendInput(data);
     });
 
