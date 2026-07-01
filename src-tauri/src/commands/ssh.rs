@@ -302,6 +302,7 @@ pub async fn ssh_connect(
         }
         session.set_blocking(false);
         let id_for_read = id_clone.clone();
+        app_log!("SSH", "reader LOOP START id={} host={}:{} user={} (把 uuid 锚定到主机,便于按主机对齐断连时刻)", id_for_read, host, port, user);
         // OSC7 cwd 解析器（接受任意 host，含 shell 原生 OSC7，如 fish）
         let mut osc7_parser = crate::core::osc7::Osc7Parser::new();
         let mut last_keepalive = std::time::Instant::now();
@@ -357,6 +358,7 @@ pub async fn ssh_connect(
             match channel.read(&mut buf) {
                 Ok(0) => {
                     answer_orphan();
+                    app_log!("SSH", "terminal-closed via EOF id={} host={}:{} user={} channel_eof={} (服务端关闭/shell 退出,非客户端误判)", id_for_read, host, port, user, channel.eof());
                     let _ = app_clone.emit(
                         "terminal-closed",
                         serde_json::json!({"id": id_for_read}),
@@ -381,8 +383,12 @@ pub async fn ssh_connect(
                     );
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(_) => {
+                Err(ref e) => {
                     answer_orphan();
+                    // 记录断连真实原因:raw_os=104(ECONNRESET 远端/中间设备断)、113(EHOSTUNREACH
+                    // 本机到对端链路/路由断=本机网络共因)、110(ETIMEDOUT)、32(EPIPE);kind=Other
+                    // 且 raw_os=None 则为 libssh2 协议错(看 err 文本)。区分'本机网络事件'与'误判'。
+                    app_log!("SSH", "terminal-closed via READ-ERR id={} host={}:{} user={} kind={:?} raw_os={:?} err={}", id_for_read, host, port, user, e.kind(), e.raw_os_error(), e);
                     let _ = app_clone.emit(
                         "terminal-closed",
                         serde_json::json!({"id": id_for_read}),
@@ -404,7 +410,10 @@ pub async fn ssh_connect(
 
             // 每 15 秒发送 SSH keepalive 防止服务端超时断连
             if last_keepalive.elapsed() >= std::time::Duration::from_secs(15) {
-                let _ = session.keepalive_send();
+                // keepalive 失败是 socket 死亡的早期信号(通常紧邻随后的 READ-ERR);只记录不视为致命。
+                if let Err(e) = session.keepalive_send() {
+                    app_log!("SSH", "keepalive_send 失败 id={} host={}:{} err={} (连接可能正在劣化)", id_for_read, host, port, e);
+                }
                 last_keepalive = std::time::Instant::now();
             }
 

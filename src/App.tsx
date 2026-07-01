@@ -581,13 +581,18 @@ function App() {
         proxyJump: tab.sshParams!.proxyJump || null,
       });
 
+      // 回收旧会话残留的后端资源:旧终端已断,但其监控线程与 SFTP 句柄仍在(否则每次
+      // 掉线重连都会泄漏一条 SFTP 连接 + fd)。close_terminal 会清 sessions/监控/SFTP。
+      invoke('close_terminal', { id: tab.id }).catch(() => {});
+
       // Success: update the tab with new terminal ID
       setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, id: newId } : t));
       setSplitTrees(prev => {
-        const tree = prev[tab.id];
         const next = { ...prev };
         delete next[tab.id];
-        next[newId] = tree || { type: 'terminal', terminalId: newId };
+        // 重连只新建了一个终端(newId),树必须指向 newId。绝不能复用旧树:其 terminalId 仍是
+        // 已关闭的旧终端 id,会让面板绑到死终端 → 无输出、不响应键盘(与手动"重新连接"保持一致)。
+        next[newId] = { type: 'terminal', terminalId: newId };
         return next;
       });
       setReconnecting(prev => {

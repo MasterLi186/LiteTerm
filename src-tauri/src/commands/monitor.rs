@@ -426,7 +426,7 @@ pub async fn start_monitor(
                     let _ = app_clone.emit("monitor-data", payload);
                 }
                 Err(e) => {
-                    app_log!("MON", "Monitor exec failed: {}", e);
+                    app_log!("MON", "Monitor exec failed session_id={}: {} (监控线程退出,无自重连;可与终端 READ-ERR 对齐判断网络共因)", session_id_clone, e);
                     break;
                 }
             }

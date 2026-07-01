@@ -289,6 +289,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       cursorBlink: true,
       rightClickSelectsWord: true,
       fontSize: 14,
+      scrollback: 10000, // xterm 默认仅 1000 行,打印多了无法回溯;取项目既定默认 10000
+
       fontFamily: "'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace",
       theme: getTerminalTheme(),
     });
@@ -439,7 +441,10 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     });
 
     // Listen for output from Tauri — pass through ZMODEM sentry
+    // disposed 标记:同步屏蔽回调,避免 unlisten(异步 Promise)未 resolve 前新旧 listener 短暂共存
+    let disposed = false;
     const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
+      if (disposed) return;
       if (event.payload.id === terminalId) {
         const data = new Uint8Array(event.payload.data);
         try {
@@ -476,6 +481,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     window.addEventListener('resize', doFit);
 
     return () => {
+      disposed = true; // 同步屏蔽:新 listener 注册前旧回调即刻失效,不等 unlisten resolve
       unlisten.then(fn => fn());
       observer.disconnect();
       window.removeEventListener('resize', doFit);
@@ -550,6 +556,12 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   }
 
   function handleClear() {
+    // 清屏:发 Ctrl+L 给 shell,清除可见屏幕但保留回溯历史(等价 clear / Ctrl+L)
+    invoke('terminal_write', { id: terminalId, data: [0x0c] });
+  }
+
+  function handleClearScrollback() {
+    // 清空缓存:清空 xterm 整个缓冲(含回溯历史)释放内存,仅保留当前提示行
     termRef.current?.clear();
   }
 
@@ -664,6 +676,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     { label: '粘贴', onClick: handlePaste },
     { label: '全选', onClick: handleSelectAll },
     { label: '清屏', onClick: handleClear },
+    { label: '清空缓存', onClick: handleClearScrollback },
     { label: '', onClick: () => {}, separator: true },
     { label: '搜索 (Ctrl+Shift+F)', onClick: () => setSearchVisible(true) },
     { label: '', onClick: () => {}, separator: true },

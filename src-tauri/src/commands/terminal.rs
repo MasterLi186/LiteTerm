@@ -356,5 +356,9 @@ pub async fn close_terminal(state: State<'_, AppState>, id: String) -> Result<()
             .monitor_stop
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    // SFTP 会话与终端共用同一 id;关终端时一并回收。否则 sftp_sessions 只 insert 从不
+    // remove —— 每次关闭/掉线重连都会泄漏一条活的 SFTP 连接(TcpStream + libssh2 Session
+    // + 30s keepalive + 1 个 fd),长跑会单调耗尽文件描述符/连接数。
+    state.sftp_sessions.lock().unwrap().remove(&id);
     Ok(())
 }

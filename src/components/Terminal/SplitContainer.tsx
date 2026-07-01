@@ -16,6 +16,7 @@ export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onCl
   if (node.type === 'terminal') {
     return (
       <TerminalPane
+        key={node.terminalId}
         terminalId={node.terminalId}
         isActive={isActive}
         onSplit={(direction) => onSplit(node.terminalId, direction)}
