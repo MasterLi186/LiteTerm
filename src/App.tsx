@@ -1051,6 +1051,8 @@ function App() {
   const currentRemotePathRef = useRef<{ sid: string; path: string } | null>(null);
   const [transferPanelVisible, setTransferPanelVisible] = useState(true);
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+  const [dragTabId, setDragTabId] = useState<string | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<{ tabId: string; side: 'left' | 'right' } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
   const [editingConn, setEditingConn] = useState<{ groupId: string; hostId: string } | null>(null);
@@ -1304,6 +1306,37 @@ function App() {
           {tabs.map((tab) => (
             <div
               key={tab.id}
+              draggable
+              onDragStart={(e) => {
+                setDragTabId(tab.id);
+                e.dataTransfer.effectAllowed = 'move';
+              }}
+              onDragEnd={() => { setDragTabId(null); setDropIndicator(null); }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (!dragTabId || dragTabId === tab.id) { setDropIndicator(null); return; }
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                const side = e.clientX < rect.left + rect.width / 2 ? 'left' : 'right';
+                setDropIndicator({ tabId: tab.id, side });
+              }}
+              onDragLeave={() => { if (dropIndicator?.tabId === tab.id) setDropIndicator(null); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (!dragTabId || dragTabId === tab.id) return;
+                setTabs(prev => {
+                  const from = prev.findIndex(t => t.id === dragTabId);
+                  const to = prev.findIndex(t => t.id === tab.id);
+                  if (from < 0 || to < 0) return prev;
+                  const arr = [...prev];
+                  const [moved] = arr.splice(from, 1);
+                  const insertAt = dropIndicator?.side === 'left' ? (from < to ? to - 1 : to) : (from < to ? to : to + 1);
+                  arr.splice(insertAt, 0, moved);
+                  return arr;
+                });
+                setDragTabId(null);
+                setDropIndicator(null);
+              }}
               onClick={() => {
                 setActiveTabId(tab.id);
                 const tree = splitTrees[tab.id];
@@ -1317,12 +1350,22 @@ function App() {
                 e.stopPropagation();
                 setTabContextMenu({ x: e.clientX, y: e.clientY, tabId: tab.id });
               }}
+              style={{
+                opacity: dragTabId === tab.id ? 0.4 : 1,
+                position: 'relative',
+              }}
               className={`px-3 py-1 rounded text-sm cursor-pointer flex items-center gap-1 flex-shrink-0 border ${
                 activeTabId === tab.id
                   ? 'bg-surface text-accent-cyan border-surface-border'
                   : 'text-gray-400 hover:text-gray-200 border-transparent hover:border-surface-border'
               }`}
             >
+              {dropIndicator?.tabId === tab.id && dropIndicator.side === 'left' && (
+                <div style={{ position: 'absolute', left: -2, top: 2, bottom: 2, width: 2, background: '#00d4ff', borderRadius: 1 }} />
+              )}
+              {dropIndicator?.tabId === tab.id && dropIndicator.side === 'right' && (
+                <div style={{ position: 'absolute', right: -2, top: 2, bottom: 2, width: 2, background: '#00d4ff', borderRadius: 1 }} />
+              )}
               {tab.type === 'ssh' && (
                 <span className="text-accent-green text-xs">{'●'}</span>
               )}
