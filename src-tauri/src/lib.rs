@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
+use commands::ai;
 
 use config::connections::ConnectionStore;
 use config::settings::Settings;
@@ -86,6 +87,9 @@ pub fn run() {
             commands::recording::stop_recording,
             commands::recording::record_event,
             commands::recording::is_recording,
+            commands::ai::ai_download_model,
+            commands::ai::ai_chat,
+            commands::ai::ai_status,
         ])
         .setup(|app| {
             // Inject JS to suppress the native webview right-click menu.
@@ -95,6 +99,14 @@ pub fn run() {
             window.eval(
                 "document.addEventListener('contextmenu',function(e){e.preventDefault();},true);"
             ).ok();
+
+            // Try to start AI sidecar at launch (best-effort; fails silently
+            // if model not yet downloaded or openai_server not found).
+            let state: tauri::State<'_, AppState> = app.state();
+            if let Err(e) = ai::start_sidecar(&state) {
+                crate::log_util::app_log("AI", &format!("启动时 sidecar 未就绪: {}", e));
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod config_io;
 pub mod connection;
 pub mod keyring;
