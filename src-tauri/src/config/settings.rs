@@ -11,6 +11,7 @@ pub struct Settings {
     pub transfer: TransferSettings,
     pub ssh: SshSettings,
     pub zmodem: ZmodemSettings,
+    pub ai: AiSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +69,7 @@ impl Default for Settings {
             transfer: TransferSettings::default(),
             ssh: SshSettings::default(),
             zmodem: ZmodemSettings::default(),
+            ai: AiSettings::default(),
         }
     }
 }
@@ -123,6 +125,22 @@ impl Default for ZmodemSettings {
             auto_detect: true,
             download_dir: "~/Downloads".to_string(),
             timeout_secs: 60,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiSettings {
+    pub enabled: bool,
+    pub model_path: String,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model_path: "~/.config/guishell/models/bitcpm4-0.5b-tq2_0.gguf".to_string(),
         }
     }
 }

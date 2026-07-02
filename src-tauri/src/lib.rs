@@ -6,7 +6,8 @@ pub mod plugin;
 pub mod state;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 
@@ -34,6 +35,9 @@ pub fn run() {
             tunnels: Mutex::new(HashMap::new()),
             recordings: Mutex::new(HashMap::new()),
             transfer_cancel: Mutex::new(HashMap::new()),
+            ai_port: Mutex::new(None),
+            ai_child: Mutex::new(None),
+            ai_downloading: Arc::new(AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             commands::terminal::open_local_terminal,
