@@ -281,6 +281,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     totalSize: number;
     status: 'receiving' | 'sending' | 'complete';
   } | null>(null);
+  const [aiExplain, setAiExplain] = useState<{ text: string; result: string; loading: boolean; error: string } | null>(null);
 
   useEffect(() => {
     if (!containerRef.current || !wrapperRef.current || termRef.current) return;
@@ -551,6 +552,36 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     } catch (_) {}
   }
 
+  async function handleAiExplain() {
+    const term = termRef.current;
+    if (!term) return;
+    const selection = term.getSelection();
+    if (!selection) return;
+
+    setAiExplain({ text: selection, result: '', loading: true, error: '' });
+
+    try {
+      const status: any = await invoke('ai_status');
+      if (!status.sidecar_running) {
+        if (!status.model_exists && !status.downloading) {
+          invoke('ai_download_model').catch(() => {});
+        }
+        setAiExplain(prev => prev ? { ...prev, loading: false, error: status.downloading ? 'AI 模型正在下载中...' : 'AI 服务未就绪' } : null);
+        return;
+      }
+
+      const resp: string = await invoke('ai_chat', {
+        systemPrompt: '用简洁的中文解释以下终端输出的含义，如果是错误请给出可能的原因和解决方法。',
+        userMessage: selection,
+        maxTokens: 256,
+      });
+      setAiExplain(prev => prev ? { ...prev, result: resp, loading: false } : null);
+    } catch (e: any) {
+      const msg = typeof e === 'string' ? e : e.message || 'AI 请求失败';
+      setAiExplain(prev => prev ? { ...prev, loading: false, error: msg } : null);
+    }
+  }
+
   function handleSelectAll() {
     termRef.current?.selectAll();
   }
@@ -678,6 +709,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     { label: '清屏', onClick: handleClear },
     { label: '清空缓存', onClick: handleClearScrollback },
     { label: '', onClick: () => {}, separator: true },
+    { label: 'AI 解释', onClick: handleAiExplain },
     { label: '搜索 (Ctrl+Shift+F)', onClick: () => setSearchVisible(true) },
     { label: '', onClick: () => {}, separator: true },
     { label: '终端主题', onClick: () => {}, submenu: themeSubmenuItems },
@@ -818,6 +850,39 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           onClose={() => setContextMenu(null)}
           items={contextMenuItems}
         />
+      )}
+      {aiExplain && (
+        <div style={{
+          position: 'absolute', bottom: 8, right: 8, width: '360px', maxHeight: '300px',
+          background: '#1c2128', border: '1px solid #30363d', borderRadius: '8px',
+          padding: '10px', zIndex: 40, overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+            <span style={{ color: '#00d4ff', fontSize: '12px', fontWeight: 600 }}>AI 解释</span>
+            <span
+              onClick={() => setAiExplain(null)}
+              style={{ color: '#8b949e', cursor: 'pointer', fontSize: '14px' }}
+            >×</span>
+          </div>
+          <div style={{
+            background: '#0d1117', borderRadius: '4px', padding: '6px 8px', marginBottom: '6px',
+            fontSize: '11px', color: '#8b949e', fontFamily: 'monospace', maxHeight: '60px',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'pre-wrap',
+          }}>
+            {aiExplain.text.substring(0, 200)}{aiExplain.text.length > 200 ? '...' : ''}
+          </div>
+          {aiExplain.loading && (
+            <div style={{ color: '#8b949e', fontSize: '12px' }}>正在分析...</div>
+          )}
+          {aiExplain.error && (
+            <div style={{ color: '#f85149', fontSize: '12px' }}>{aiExplain.error}</div>
+          )}
+          {aiExplain.result && (
+            <div style={{ color: '#e6edf3', fontSize: '12px', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+              {aiExplain.result}
+            </div>
+          )}
+        </div>
       )}
       {zmodemTransfer && (
         <div style={{
