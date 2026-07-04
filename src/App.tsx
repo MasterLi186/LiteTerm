@@ -366,7 +366,7 @@ function App() {
                 setActiveTabId(id);
                 setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
                 setFocusedTerminalId(id);
-                setTimeout(() => invoke('terminal_resize', { id, cols: 120, rows: 36 }).catch(() => {}), 300);
+                setTimeout(() => invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {}), 300);
                 startMonitorAndSftp(id, s.sshParams.host, s.sshParams.port, s.sshParams.user, pw || null, s.sshParams.authMethod, s.sshParams.keyPath);
               }
             } catch (e) {
@@ -467,7 +467,7 @@ function App() {
       setFocusedTerminalId(id);
 
       setTimeout(() => {
-        invoke('terminal_resize', { id, cols: 120, rows: 36 }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
       }, 300);
     } catch (e) {
       setError(`打开终端失败: ${e}`);
@@ -483,7 +483,7 @@ function App() {
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
       setTimeout(() => {
-        invoke('terminal_resize', { id, cols: 120, rows: 36 }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
       }, 300);
     } catch (e) {
       setError(`打开终端失败: ${e}`);
@@ -604,7 +604,7 @@ function App() {
       });
       setActiveTabId(newId);
       setFocusedTerminalId(newId);
-      setTimeout(() => invoke('terminal_resize', { id: newId, cols: 120, rows: 36 }).catch(() => {}), 300);
+      setTimeout(() => invoke('terminal_resize', { id: newId, ...getTerminalSize() }).catch(() => {}), 300);
       startMonitorAndSftp(newId, tab.sshParams!.host, tab.sshParams!.port,
         tab.sshParams!.user, tab.sshParams!.password ?? null, tab.sshParams!.authMethod, tab.sshParams!.keyPath ?? null);
     } catch {
@@ -700,7 +700,7 @@ function App() {
       setFocusedTerminalId(id);
 
       setTimeout(() => {
-        invoke('terminal_resize', { id, cols: 120, rows: 36 }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
       }, 300);
 
       // Start monitor and SFTP
@@ -795,7 +795,7 @@ function App() {
       setFocusedTerminalId(id);
 
       setTimeout(() => {
-        invoke('terminal_resize', { id, cols: 120, rows: 36 }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
       }, 300);
 
       // Start monitor and SFTP
@@ -938,7 +938,7 @@ function App() {
         setSplitTrees(prev => ({ ...prev, [newId]: { type: 'terminal', terminalId: newId } }));
         setFocusedTerminalId(newId);
         setTimeout(() => {
-          invoke('terminal_resize', { id: newId, cols: 120, rows: 36 }).catch(() => {});
+          invoke('terminal_resize', { id: newId, ...getTerminalSize() }).catch(() => {});
         }, 300);
         startMonitorAndSftp(
           newId,
@@ -1007,7 +1007,7 @@ function App() {
         newTerminalId = await invoke<string>('open_local_terminal');
       }
 
-      setTimeout(() => invoke('terminal_resize', { id: newTerminalId, cols: 80, rows: 24 }).catch(() => {}), 300);
+      setTimeout(() => invoke('terminal_resize', { id: newTerminalId, ...getTerminalSize() }).catch(() => {}), 300);
 
       setSplitTrees(prev => {
         const tree = prev[tabId];
@@ -1521,7 +1521,7 @@ function App() {
                         });
                         setActiveTabId(newId);
                         setFocusedTerminalId(newId);
-                        setTimeout(() => invoke('terminal_resize', { id: newId, cols: 120, rows: 36 }).catch(() => {}), 300);
+                        setTimeout(() => invoke('terminal_resize', { id: newId, ...getTerminalSize() }).catch(() => {}), 300);
                         startMonitorAndSftp(newId, sp.host, sp.port, sp.user, pw, sp.authMethod, sp.keyPath);
                       } catch (e) {
                         log('重连', `失败: ${e}`);

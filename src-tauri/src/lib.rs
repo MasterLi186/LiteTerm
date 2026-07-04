@@ -45,6 +45,8 @@ pub fn run() {
             commands::terminal::terminal_write,
             commands::terminal::terminal_resize,
             commands::terminal::close_terminal,
+            commands::terminal::open_file_path,
+            commands::terminal::frontend_log,
             commands::terminal::list_shells,
             commands::terminal::open_shell_terminal,
             commands::serial::list_serial_ports,

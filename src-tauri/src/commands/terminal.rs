@@ -362,3 +362,49 @@ pub async fn close_terminal(state: State<'_, AppState>, id: String) -> Result<()
     state.sftp_sessions.lock().unwrap().remove(&id);
     Ok(())
 }
+
+/// 前端日志桥:把前端的 appLog 写入 ~/guishell.log
+#[tauri::command]
+pub async fn frontend_log(category: String, message: String) -> Result<(), String> {
+    crate::app_log!("FE", "[{}] {}", category, message);
+    Ok(())
+}
+
+/// Ctrl+Click 打开终端里的文件路径。解析相对路径(基于 OSC7 cwd 或 HOME),
+/// 验证文件存在后用系统默认程序打开。
+#[tauri::command]
+pub async fn open_file_path(
+    state: State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<(), String> {
+    let expanded = shellexpand::tilde(&path).to_string();
+
+    let resolved = if std::path::Path::new(&expanded).is_absolute() {
+        expanded
+    } else {
+        // 尝试从 OSC7 cwd 解析相对路径
+        let cwd = state.sessions.lock().unwrap()
+            .get(&id)
+            .and_then(|s| s.osc7_cwd.lock().unwrap().clone());
+        if let Some(cwd) = cwd {
+            let full = std::path::Path::new(&cwd).join(&expanded);
+            full.to_string_lossy().to_string()
+        } else {
+            // 回退到 HOME
+            let home = dirs::home_dir().unwrap_or_default();
+            home.join(&expanded).to_string_lossy().to_string()
+        }
+    };
+
+    if !std::path::Path::new(&resolved).exists() {
+        return Err(format!("文件不存在: {}", resolved));
+    }
+
+    std::process::Command::new("xdg-open")
+        .arg(&resolved)
+        .spawn()
+        .map_err(|e| format!("打开失败: {}", e))?;
+
+    Ok(())
+}
