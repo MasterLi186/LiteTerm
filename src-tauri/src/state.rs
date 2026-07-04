@@ -11,9 +11,6 @@ pub struct AppState {
     pub tunnels: Mutex<HashMap<String, crate::commands::tunnel::TunnelHandle>>,
     pub recordings: Mutex<HashMap<String, crate::commands::recording::Recording>>,
     pub transfer_cancel: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    pub ai_port: Mutex<Option<u16>>,
-    pub ai_child: Mutex<Option<u32>>,
-    pub ai_downloading: Arc<AtomicBool>,
 }
 
 pub struct ManagedSession {
