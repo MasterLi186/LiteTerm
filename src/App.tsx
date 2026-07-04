@@ -18,7 +18,6 @@ import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 import { log, getLogText } from './utils/logger';
 import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay } from './components/Icons';
-import { AiCommandInput } from './components/AI/AiCommandInput';
 
 function getTerminalSize() {
   return {
@@ -436,7 +435,6 @@ function App() {
           if (prev) setActiveTabId(prev.id);
         }
       }
-      if (e.ctrlKey && e.key === 'i') { e.preventDefault(); setShowAiInput(v => !v); }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -1056,7 +1054,6 @@ function App() {
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ tabId: string; side: 'left' | 'right' } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
-  const [showAiInput, setShowAiInput] = useState(false);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
   const [editingConn, setEditingConn] = useState<{ groupId: string; hostId: string } | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
@@ -1301,7 +1298,7 @@ function App() {
       />
 
       {/* Right: Main content */}
-      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden" style={{ position: 'relative' }}>
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {/* Tab bar */}
         <div className="h-9 bg-surface-light border-b border-surface-border flex items-center px-1 gap-1 overflow-x-auto"
           onContextMenu={(e) => e.preventDefault()}
@@ -1433,17 +1430,6 @@ function App() {
             </button>
           )}
         </div>
-
-        <AiCommandInput
-          visible={showAiInput}
-          onClose={() => setShowAiInput(false)}
-          onExecute={(cmd) => {
-            if (focusedTerminalId) {
-              const bytes = Array.from(new TextEncoder().encode(cmd + '\n'));
-              invoke('terminal_write', { id: focusedTerminalId, data: bytes });
-            }
-          }}
-        />
 
         {/* Tab context menu */}
         {tabContextMenu && (
