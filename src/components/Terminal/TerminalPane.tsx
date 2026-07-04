@@ -283,6 +283,133 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   } | null>(null);
   const [aiExplain, setAiExplain] = useState<{ text: string; result: string; loading: boolean; error: string } | null>(null);
 
+  // ---- 历史命令自动补全 ----
+  const [acItems, setAcItems] = useState<string[]>([]);
+  const [acIndex, setAcIndex] = useState(0);
+  const [acPos, setAcPos] = useState<{ x: number; y: number } | null>(null);
+  const currentLineRef = useRef('');
+  const historyRef = useRef<string[]>([]);
+  const acVisibleRef = useRef(false);
+  const acItemsRef = useRef<string[]>([]);
+  const acIndexRef = useRef(0);
+  const acNavigatedRef = useRef(false); // 用户是否主动按过 ↑/↓ 选择了补全项
+
+  // 加载历史:localStorage + 本地 .bash_history + SSH 远端 .bash_history
+  useEffect(() => {
+    // 1. localStorage 已有的历史
+    try {
+      const saved = JSON.parse(localStorage.getItem('guishell_cmd_history') || '[]');
+      historyRef.current = saved;
+    } catch { /* ignore */ }
+
+    function mergeHistory(output: string) {
+      if (!output.trim()) return;
+      const lines = output.trim().split('\n').filter(l => l && !l.startsWith('#') && l.length > 2);
+      const unique = [...new Set([...lines.slice(-500), ...historyRef.current])];
+      historyRef.current = unique;
+      appLog('AC', 'mergeHistory: 新增' + lines.length + '行, 总计=' + unique.length);
+    }
+
+    // 2. 本地 bash/zsh 历史
+    appLog('AC', '开始加载历史, terminalId=' + terminalId);
+    invoke('read_text_file', { path: '~/.bash_history' })
+      .then((output: unknown) => {
+        appLog('AC', 'read_text_file ~/.bash_history 成功, 长度=' + (typeof output === 'string' ? output.length : 'non-string'));
+        if (typeof output === 'string') mergeHistory(output);
+      })
+      .catch((e) => { appLog('AC', 'read_text_file ~/.bash_history 失败: ' + e); });
+    invoke('read_text_file', { path: '~/.zsh_history' })
+      .then((output: unknown) => { if (typeof output === 'string') mergeHistory(output); })
+      .catch(() => {});
+
+    // SSH 远端历史:延迟 3 秒等 SFTP session 建立
+    const timer = setTimeout(() => {
+      invoke('sftp_exec', { sessionId: terminalId, command: 'cat ~/.bash_history 2>/dev/null; cat ~/.zsh_history 2>/dev/null' })
+        .then((output: unknown) => {
+          appLog('AC', 'sftp_exec 远端历史成功, 长度=' + (typeof output === 'string' ? output.length : '?'));
+          if (typeof output === 'string') mergeHistory(output);
+        })
+        .catch(() => {});
+    }, 3000);
+
+    return () => clearTimeout(timer);
+  }, [terminalId]);
+
+  function updateAutocomplete(line: string) {
+    if (line.length < 2) {
+      setAcItems([]);
+      setAcPos(null);
+      acVisibleRef.current = false;
+      return;
+    }
+    const matches = historyRef.current
+      .filter(h => h.startsWith(line) && h !== line)
+      .reduce((acc, h) => acc.includes(h) ? acc : [...acc, h], [] as string[])
+      .slice(0, 6);
+    appLog('AC', '匹配: line=' + JSON.stringify(line) + ' historySize=' + historyRef.current.length + ' matches=' + matches.length);
+    if (matches.length === 0) {
+      setAcItems([]);
+      setAcPos(null);
+      acVisibleRef.current = false;
+      return;
+    }
+    // 计算弹出位置:光标下方
+    const term = termRef.current;
+    const wrapper = wrapperRef.current;
+    if (term && wrapper) {
+      const rowsEl = term.element?.querySelector('.xterm-rows');
+      const rowsRect = rowsEl?.getBoundingClientRect();
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const cellW = (rowsRect?.width || 800) / term.cols;
+      const cellH = (rowsRect?.height || 400) / term.rows;
+      const buf = term.buffer.active;
+      const x = buf.cursorX * cellW;
+      const popupHeight = Math.min(matches.length, 6) * 22 + 8;
+      const cursorBottom = (buf.cursorY + 1) * cellH;
+      const spaceBelow = wrapperRect.height - cursorBottom;
+      // 下方空间不够就向上弹出
+      const y = spaceBelow >= popupHeight
+        ? cursorBottom
+        : buf.cursorY * cellH - popupHeight;
+      appLog('AC', '位置计算: cursorX=' + buf.cursorX + ' cursorY=' + buf.cursorY + ' cellW=' + cellW.toFixed(1) + ' cellH=' + cellH.toFixed(1) + ' → pos=(' + x.toFixed(0) + ',' + y.toFixed(0) + ')');
+      setAcPos({ x, y });
+    } else {
+      appLog('AC', '位置计算失败: term=' + !!term + ' wrapper=' + !!wrapper);
+    }
+    setAcItems(matches);
+    setAcIndex(-1); // -1 = 无高亮,用户必须按 ↑/↓ 才选中
+    acItemsRef.current = matches;
+    acIndexRef.current = -1;
+    acNavigatedRef.current = false;
+    acVisibleRef.current = true;
+    appLog('AC', '弹出框已设置: items=' + matches.length + ' acVisibleRef=' + acVisibleRef.current);
+  }
+
+  function closeAutocomplete() {
+    setAcItems([]);
+    setAcPos(null);
+    acVisibleRef.current = false;
+    acItemsRef.current = [];
+    acIndexRef.current = 0;
+    acNavigatedRef.current = false;
+  }
+
+  function recordCommand(cmd: string) {
+    if (!cmd || cmd.length < 2) return;
+    const hist = historyRef.current;
+    const idx = hist.indexOf(cmd);
+    if (idx >= 0) hist.splice(idx, 1);
+    hist.push(cmd);
+    if (hist.length > 1000) hist.splice(0, hist.length - 1000);
+    historyRef.current = hist;
+    // 同步到 localStorage
+    try {
+      const saved: string[] = JSON.parse(localStorage.getItem('guishell_cmd_history') || '[]');
+      const merged = [cmd, ...saved.filter(h => h !== cmd)].slice(0, 200);
+      localStorage.setItem('guishell_cmd_history', JSON.stringify(merged));
+    } catch { /* ignore */ }
+  }
+
   useEffect(() => {
     if (!containerRef.current || !wrapperRef.current || termRef.current) return;
 
@@ -378,6 +505,35 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       if (e.button === 1) e.preventDefault();
     });
 
+    // Ctrl+Click 打开文件路径
+    containerRef.current.addEventListener('click', (e: MouseEvent) => {
+      if (!e.ctrlKey || e.button !== 0) return;
+      const t = termRef.current;
+      if (!t || !t.element) return;
+      const rows = t.element.querySelector('.xterm-rows');
+      if (!rows) return;
+      const rect = rows.getBoundingClientRect();
+      const cellW = rect.width / t.cols;
+      const cellH = rect.height / t.rows;
+      const col = Math.floor((e.clientX - rect.left) / cellW);
+      const row = Math.floor((e.clientY - rect.top) / cellH);
+      const line = t.buffer.active.getLine(row)?.translateToString(true) || '';
+      if (!line) return;
+      // 从点击位置向两侧扫描,提取 path-like token
+      const delims = ' \t\'"()[]{}|<>;,`';
+      let start = col, end = col;
+      while (start > 0 && !delims.includes(line[start - 1])) start--;
+      while (end < line.length && !delims.includes(line[end])) end++;
+      let token = line.substring(start, end);
+      if (!token) return;
+      // 去掉尾部的冒号+行号(如 src/main.rs:42:5)
+      token = token.replace(/:\d+(?::\d+)?$/, '');
+      // 只处理看起来像文件路径的 token
+      if (/^[~./]/.test(token) || token.startsWith('/')) {
+        invoke('open_file_path', { id: terminalId, path: token }).catch(() => {});
+      }
+    });
+
     // User input -> Tauri
     // WebKitGTK（Tauri 在 Linux 的 webview）下，xterm 自身的中文输入法(composition)处理
     // 会产出重复甚至错乱的 onData（实测“看看剧情”被发成“看看剧情剧情”/“剧情看看”）。
@@ -405,11 +561,75 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       });
     }
     term.onData((data) => {
-      if (imeComposing) return; // 组合进行中，等 compositionend 统一发
-      // 刚结束的极短窗口内丢弃 xterm 的组合回声：CJK 可能错乱/重复 → 丢所有非 ASCII；
-      // 英文经输入法时回声与 compositionend 文本完全一致 → 按文本相等丢弃。
-      // 回车/退格等控制键既非 CJK 也不等于 lastComposed，照常放行（不会误丢）。
+      if (imeComposing) return;
       if (performance.now() - imeEndedAt < 80 && (/[^\x00-\x7f]/.test(data) || data === lastComposed)) return;
+
+      // ---- 自动补全键盘拦截(用 ref 同步读,避免 state 异步延迟) ----
+      if (acVisibleRef.current) {
+        if (data === '\x1b[A') {
+          // 首次按 ↑:跳到最后一项;否则上移
+          acIndexRef.current = acIndexRef.current <= 0
+            ? acItemsRef.current.length - 1
+            : acIndexRef.current - 1;
+          acNavigatedRef.current = true;
+          setAcIndex(acIndexRef.current);
+          return;
+        }
+        if (data === '\x1b[B') {
+          // 首次按 ↓:跳到第一项;否则下移
+          acIndexRef.current = acIndexRef.current < 0
+            ? 0
+            : Math.min(acItemsRef.current.length - 1, acIndexRef.current + 1);
+          acNavigatedRef.current = true;
+          setAcIndex(acIndexRef.current);
+          return;
+        }
+        if (data === '\r' && acNavigatedRef.current) {
+          // 只有用户主动按过 ↑/↓ 选择后,Enter 才注入补全项;
+          // 否则 Enter 就是正常执行用户输入的命令(下面的正常流程处理)
+          const line = currentLineRef.current;
+          const items = acItemsRef.current;
+          const selected = items[Math.min(acIndexRef.current, items.length - 1)];
+          if (selected && line.length > 0) {
+            const bs = '\x7f'.repeat(line.length);
+            sendInput(bs + selected + '\r');
+            recordCommand(selected);
+            currentLineRef.current = '';
+            closeAutocomplete();
+            return;
+          }
+        }
+        if (data === '\x1b' || data === '\t') { closeAutocomplete(); return; }
+      }
+
+      // ---- 追踪当前输入行(重建命令行) ----
+      if (data === '\r' || data === '\n') {
+        const cmd = currentLineRef.current.trim();
+        appLog('AC', '按键: Enter → recordCommand="' + cmd + '"');
+        if (cmd) recordCommand(cmd);
+        currentLineRef.current = '';
+        closeAutocomplete();
+      } else if (data === '\x7f' || data === '\b') {
+        currentLineRef.current = currentLineRef.current.slice(0, -1);
+        appLog('AC', '按键: Backspace → line="' + currentLineRef.current + '"');
+        updateAutocomplete(currentLineRef.current);
+      } else if (data === '\x03' || data === '\x15' || data === '\x04') {
+        appLog('AC', '按键: Ctrl+C/U/D → 重置');
+        currentLineRef.current = '';
+        closeAutocomplete();
+      } else if (data.startsWith('\x1b')) {
+        appLog('AC', '按键: 转义序列 → 关闭补全');
+        closeAutocomplete();
+      } else if (data.length === 1 && data >= ' ') {
+        currentLineRef.current += data;
+        appLog('AC', '按键: "' + data + '" → line="' + currentLineRef.current + '" → 调用 updateAutocomplete');
+        updateAutocomplete(currentLineRef.current);
+      } else if (data.length > 1 && !/[\x00-\x1f]/.test(data)) {
+        currentLineRef.current += data;
+        appLog('AC', '按键: 多字节"' + data + '" → 关闭补全');
+        closeAutocomplete();
+      }
+
       sendInput(data);
     });
 
@@ -463,6 +683,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     let resizeTimers: ReturnType<typeof setTimeout>[] = [];
     const doFit = () => {
+      closeAutocomplete();
       // Clear any pending fits
       resizeTimers.forEach(t => clearTimeout(t));
       resizeTimers = [];
@@ -759,6 +980,58 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           overflow: 'hidden',
         }}
       />
+      {/* 历史命令自动补全弹出框 */}
+      {acItems.length > 0 && acPos && (
+        <div
+          style={{
+            position: 'absolute',
+            left: acPos.x,
+            top: acPos.y,
+            zIndex: 45,
+            background: '#1c2128',
+            border: '1px solid #30363d',
+            borderRadius: '4px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+            minWidth: '200px',
+            maxWidth: '500px',
+            maxHeight: '180px',
+            overflowY: 'auto',
+            padding: '2px 0',
+          }}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {acItems.map((item, i) => (
+            <div
+              key={i}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const line = currentLineRef.current;
+                if (line.length > 0) {
+                  const bs = '\x7f'.repeat(line.length);
+                  const bytes = Array.from(new TextEncoder().encode(bs + item + '\r'));
+                  invoke('terminal_write', { id: terminalId, data: bytes });
+                  recordCommand(item);
+                  currentLineRef.current = '';
+                  closeAutocomplete();
+                }
+              }}
+              style={{
+                padding: '3px 10px',
+                fontSize: '12px',
+                fontFamily: 'monospace',
+                color: i === acIndex ? '#fff' : '#b1bac4',
+                background: i === acIndex ? '#264f78' : 'transparent',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {item}
+            </div>
+          ))}
+        </div>
+      )}
       {logging && !recording && (
         <div style={{
           position: 'absolute', top: 8, right: 8, zIndex: 10,

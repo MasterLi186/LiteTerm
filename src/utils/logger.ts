@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+
 const MAX_LOG_LINES = 500;
 const logBuffer: string[] = [];
 
@@ -11,6 +13,8 @@ export function log(category: string, message: string, data?: unknown) {
   logBuffer.push(line);
   if (logBuffer.length > MAX_LOG_LINES) logBuffer.shift();
   console.log(line);
+  // 同步写入 ~/guishell.log(通过后端 app_log）
+  invoke('frontend_log', { category, message: message + (data !== undefined ? ' ' + JSON.stringify(data) : '') }).catch(() => {});
 }
 
 export function getLogBuffer(): string[] {

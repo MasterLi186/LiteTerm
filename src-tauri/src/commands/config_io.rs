@@ -32,5 +32,6 @@ pub async fn import_config(
 
 #[tauri::command]
 pub async fn read_text_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
+    let expanded = shellexpand::tilde(&path).to_string();
+    std::fs::read_to_string(&expanded).map_err(|e| format!("读取文件失败: {}", e))
 }
