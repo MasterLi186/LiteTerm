@@ -83,17 +83,28 @@ interface Props {
   onOpenProcessManager?: () => void;
 }
 
+// 按 sessionId 缓存监控数据,切换标签时立刻显示上次的快照(零延迟)
+const monitorCache = new Map<string, MonitorData>();
+
 export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Props) {
-  const [data, setData] = useState<MonitorData | null>(null);
+  const [data, setData] = useState<MonitorData | null>(() => monitorCache.get(sessionId) || null);
   const [processTab, setProcessTab] = useState<ProcessTab>('cpu');
   const [selectedIface, setSelectedIface] = useState<string | null>(null);
   const netRxHistory = useRef<number[]>([]);
   const netTxHistory = useRef<number[]>([]);
 
+  // sessionId 变化时立刻从缓存恢复
+  useEffect(() => {
+    setData(monitorCache.get(sessionId) || null);
+    netRxHistory.current = [];
+    netTxHistory.current = [];
+  }, [sessionId]);
+
   useEffect(() => {
     const unlisten = listen<MonitorData>('monitor-data', (event) => {
       if (event.payload.session_id === sessionId) {
         setData(event.payload);
+        monitorCache.set(sessionId, event.payload);
         const iface = selectedIface || event.payload.net_interface;
         const ifaceData = event.payload.net_per_iface?.find(n => n.name === iface);
         const rx = ifaceData ? ifaceData.rx_rate : event.payload.net_rx_rate;

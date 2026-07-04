@@ -358,6 +358,9 @@ function FilePane({
   );
 }
 
+// 按 sessionId+path 缓存远端文件列表,切换标签时零延迟
+const remoteFileCache = new Map<string, FileEntry[]>();
+
 // --- 主组件 ---
 
 interface Props {
@@ -437,8 +440,18 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
     if (loadingSessionRef.current === sessionId) return;
     loadingSessionRef.current = sessionId;
     const thisSession = sessionId;
+    const cacheKey = `${thisSession}:${path}`;
     log('FileBrowser', `loadRemoteFiles: session=${sessionId}, path=${path}`);
-    if (remoteFilesRef.current.length === 0) setRemoteLoading(true);
+
+    // 先从缓存恢复(切换标签时零延迟)
+    const cached = remoteFileCache.get(cacheKey);
+    if (cached) {
+      log('FileBrowser', `缓存命中: ${cacheKey}, ${cached.length} entries`);
+      setRemoteFiles(cached);
+      remoteFilesRef.current = cached;
+    }
+
+    if (!cached && remoteFilesRef.current.length === 0) setRemoteLoading(true);
     setRemoteError(null);
 
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -449,6 +462,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
         log('FileBrowser', `loadRemoteFiles OK: ${entries.length} entries (attempt ${attempt})`);
         setRemoteFiles(entries);
         remoteFilesRef.current = entries;
+        remoteFileCache.set(cacheKey, entries);
         setRemoteLoading(false);
         loadingSessionRef.current = null;
         return;
@@ -478,19 +492,19 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
   const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     loadingSessionRef.current = null;
+    log('FileBrowser', `session 切换: prev=${prevSessionIdRef.current} → new=${sessionId}`);
     if (sessionId && sessionId !== prevSessionIdRef.current) {
       prevSessionIdRef.current = sessionId;
       if (sessionPathsRef.current[sessionId]) {
-        // 已有缓存，直接恢复；同步通知父组件，避免拖拽上传的 fallback 目录仍停留在上一个会话的路径
         const cached = sessionPathsRef.current[sessionId];
+        log('FileBrowser', `路径缓存命中: ${sessionId} → ${cached}`);
         setRemotePathRaw(cached);
         if (onRemotePathChange) onRemotePathChange(cached);
       } else {
-        // 首次：查询真实 home 目录
         const fallback = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
+        log('FileBrowser', `首次连接 ${sessionId}, fallback=${fallback}, 查询 $HOME...`);
         setRemotePathRaw(fallback);
         sessionPathsRef.current[sessionId] = fallback;
-        // 同步通知父组件（即使后续 echo $HOME 失败，fallback 目录也已正确传出）
         if (onRemotePathChange) onRemotePathChange(fallback);
         invoke<string>('sftp_exec', { sessionId, command: 'echo $HOME' })
           .then(home => {
@@ -499,7 +513,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
               setRemotePath(home);
             }
           })
-          .catch(() => {});
+          .catch((e) => { log('FileBrowser', `查询 $HOME 失败 (${sessionId}): ${e}`); });
       }
     }
     if (!sessionId) {
