@@ -1053,6 +1053,7 @@ function App() {
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ tabId: string; side: 'left' | 'right' } | null>(null);
+  const dropIndicatorRef = useRef<{ tabId: string; side: 'left' | 'right' } | null>(null);
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
   const [editingConn, setEditingConn] = useState<{ groupId: string; hostId: string } | null>(null);
@@ -1308,34 +1309,43 @@ function App() {
               key={tab.id}
               draggable
               onDragStart={(e) => {
+                log('标签拖拽', `onDragStart: tab=${tab.label} id=${tab.id}`);
                 setDragTabId(tab.id);
                 e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', tab.id);
               }}
-              onDragEnd={() => { setDragTabId(null); setDropIndicator(null); }}
+              onDragEnd={() => { log('标签拖拽', 'onDragEnd'); setDragTabId(null); setDropIndicator(null); dropIndicatorRef.current = null; }}
               onDragOver={(e) => {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
                 if (!dragTabId || dragTabId === tab.id) { setDropIndicator(null); return; }
                 const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                 const side = e.clientX < rect.left + rect.width / 2 ? 'left' : 'right';
-                setDropIndicator({ tabId: tab.id, side });
+                const indicator: { tabId: string; side: 'left' | 'right' } = { tabId: tab.id, side };
+                setDropIndicator(indicator);
+                dropIndicatorRef.current = indicator;
               }}
               onDragLeave={() => { if (dropIndicator?.tabId === tab.id) setDropIndicator(null); }}
               onDrop={(e) => {
                 e.preventDefault();
+                const ind = dropIndicatorRef.current;
+                log('标签拖拽', `onDrop: dragTabId=${dragTabId} targetTabId=${tab.id} indicator=${JSON.stringify(ind)}`);
                 if (!dragTabId || dragTabId === tab.id) return;
                 setTabs(prev => {
                   const from = prev.findIndex(t => t.id === dragTabId);
                   const to = prev.findIndex(t => t.id === tab.id);
+                  log('标签拖拽', `splice: from=${from} to=${to} side=${ind?.side} tabCount=${prev.length}`);
                   if (from < 0 || to < 0) return prev;
                   const arr = [...prev];
                   const [moved] = arr.splice(from, 1);
-                  const insertAt = dropIndicator?.side === 'left' ? (from < to ? to - 1 : to) : (from < to ? to : to + 1);
+                  const insertAt = ind?.side === 'left' ? (from < to ? to - 1 : to) : (from < to ? to : to + 1);
                   arr.splice(insertAt, 0, moved);
+                  log('标签拖拽', `结果: insertAt=${insertAt} 新顺序=[${arr.map(t => t.label).join(', ')}]`);
                   return arr;
                 });
                 setDragTabId(null);
                 setDropIndicator(null);
+                dropIndicatorRef.current = null;
               }}
               onClick={() => {
                 setActiveTabId(tab.id);
