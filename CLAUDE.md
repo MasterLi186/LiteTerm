@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+**禁止单独执行 `npm run build` 或 `cargo build`，构建统一且只能用 `./build.sh`。**
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 项目概述
