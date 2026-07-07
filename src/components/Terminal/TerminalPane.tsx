@@ -291,16 +291,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   const acVisibleRef = useRef(false);
   const acItemsRef = useRef<string[]>([]);
   const acIndexRef = useRef(0);
-  const acNavigatedRef = useRef(false); // 用户是否主动按过 ↑/↓ 选择了补全项
+  const acNavigatedRef = useRef(false);
+  const isBashRef = useRef(true); // zsh/fish 自带补全,LiteTerm 只在 bash 下启用
 
-  // 加载历史:localStorage + 本地 .bash_history + SSH 远端 .bash_history
+  // 检测 shell 类型 + 加载历史
   useEffect(() => {
-    // 1. localStorage 已有的历史
-    try {
-      const saved = JSON.parse(localStorage.getItem('guishell_cmd_history') || '[]');
-      historyRef.current = saved;
-    } catch { /* ignore */ }
-
     function mergeHistory(output: string) {
       if (!output.trim()) return;
       const lines = output.trim().split('\n').filter(l => l && !l.startsWith('#') && l.length > 2);
@@ -309,21 +304,59 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       appLog('AC', 'mergeHistory: 新增' + lines.length + '行, 总计=' + unique.length);
     }
 
-    // 2. 本地 bash/zsh 历史
-    appLog('AC', '开始加载历史, terminalId=' + terminalId);
-    invoke('read_text_file', { path: '~/.bash_history' })
-      .then((output: unknown) => {
-        appLog('AC', 'read_text_file ~/.bash_history 成功, 长度=' + (typeof output === 'string' ? output.length : 'non-string'));
-        if (typeof output === 'string') mergeHistory(output);
-      })
-      .catch((e) => { appLog('AC', 'read_text_file ~/.bash_history 失败: ' + e); });
-    invoke('read_text_file', { path: '~/.zsh_history' })
-      .then((output: unknown) => { if (typeof output === 'string') mergeHistory(output); })
-      .catch(() => {});
+    function detectAndLoad() {
+      appLog('AC', '开始加载历史, terminalId=' + terminalId);
 
-    // SSH 远端历史:延迟 3 秒等 SFTP session 建立
+      // 1. localStorage 已有的历史
+      try {
+        const saved = JSON.parse(localStorage.getItem('guishell_cmd_history') || '[]');
+        historyRef.current = saved;
+      } catch { /* ignore */ }
+
+      // 2. 检测本地 shell 类型
+      invoke('read_text_file', { path: '/proc/self/exe' }).catch(() => null);
+      // 通过环境变量检测:读 /etc/passwd 当前用户默认 shell 或直接读 SHELL
+      invoke('sftp_exec', { sessionId: '__detect_shell__', command: 'echo $SHELL' })
+        .catch(() => null); // 本地终端没有 sftp session,忽略
+
+      // 本地 shell 检测:读 SHELL 环境变量(后端)
+      invoke('get_default_shell')
+        .then((shell: unknown) => {
+          if (typeof shell === 'string') {
+            const name = shell.split('/').pop() || '';
+            const bash = name === 'bash' || name === 'sh';
+            isBashRef.current = bash;
+            appLog('AC', '本地 shell 检测: SHELL=' + shell + ' isBash=' + bash);
+          }
+        })
+        .catch(() => { isBashRef.current = true; }); // 检测失败默认启用
+
+      // 3. 加载本地 bash 历史
+      invoke('read_text_file', { path: '~/.bash_history' })
+        .then((output: unknown) => {
+          appLog('AC', 'read_text_file ~/.bash_history 成功, 长度=' + (typeof output === 'string' ? output.length : 'non-string'));
+          if (typeof output === 'string') mergeHistory(output);
+        })
+        .catch((e) => { appLog('AC', 'read_text_file ~/.bash_history 失败: ' + e); });
+    }
+
+    detectAndLoad();
+
+    // SSH 远端:延迟 3 秒检测 shell + 加载历史
     const timer = setTimeout(() => {
-      invoke('sftp_exec', { sessionId: terminalId, command: 'cat ~/.bash_history 2>/dev/null; cat ~/.zsh_history 2>/dev/null' })
+      // 检测远端 shell
+      invoke('sftp_exec', { sessionId: terminalId, command: 'basename "$SHELL"' })
+        .then((shell: unknown) => {
+          if (typeof shell === 'string') {
+            const name = shell.trim();
+            const bash = name === 'bash' || name === 'sh';
+            isBashRef.current = bash;
+            appLog('AC', '远端 shell 检测: ' + name + ' isBash=' + bash);
+          }
+        })
+        .catch(() => {});
+      // 加载远端历史
+      invoke('sftp_exec', { sessionId: terminalId, command: 'cat ~/.bash_history 2>/dev/null' })
         .then((output: unknown) => {
           appLog('AC', 'sftp_exec 远端历史成功, 长度=' + (typeof output === 'string' ? output.length : '?'));
           if (typeof output === 'string') mergeHistory(output);
@@ -335,7 +368,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   }, [terminalId]);
 
   function updateAutocomplete(line: string) {
-    if (line.length < 2) {
+    if (!isBashRef.current || line.length < 2) {
       setAcItems([]);
       setAcPos(null);
       acVisibleRef.current = false;
@@ -415,10 +448,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     const term = new Terminal({
       cursorBlink: true,
       rightClickSelectsWord: true,
-      fontSize: 14,
-      scrollback: 10000, // xterm 默认仅 1000 行,打印多了无法回溯;取项目既定默认 10000
-
-      fontFamily: "'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace",
+      fontSize: 15,
+      scrollback: 10000,
+      fontFamily: "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace",
       theme: getTerminalTheme(),
     });
 
@@ -561,7 +593,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     }
     term.onData((data) => {
       if (imeComposing) return;
-      if (performance.now() - imeEndedAt < 80 && (/[^\x00-\x7f]/.test(data) || data === lastComposed)) return;
+      if (performance.now() - imeEndedAt < 80 && lastComposed && (/[^\x00-\x7f]/.test(data) || data.includes(lastComposed))) return;
 
       // ---- 自动补全键盘拦截(用 ref 同步读,避免 state 异步延迟) ----
       if (acVisibleRef.current) {
@@ -591,7 +623,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           const selected = items[Math.min(acIndexRef.current, items.length - 1)];
           if (selected && line.length > 0) {
             const bs = '\x7f'.repeat(line.length);
-            sendInput(bs + selected + '\r');
+            sendInput(bs + selected);
             recordCommand(selected);
             currentLineRef.current = '';
             closeAutocomplete();
@@ -606,6 +638,24 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         const cmd = currentLineRef.current.trim();
         appLog('AC', '按键: Enter → recordCommand="' + cmd + '"');
         if (cmd) recordCommand(cmd);
+        // 检测 shell 切换:用户输入 fish/zsh 时禁用补全,输入 bash/exit 时重新启用
+        if (cmd === 'fish' || cmd === 'zsh') {
+          isBashRef.current = false;
+          appLog('AC', '检测到切换到 ' + cmd + ',禁用补全');
+        } else if (cmd === 'bash' || cmd === 'exit') {
+          isBashRef.current = true;
+          appLog('AC', '检测到切换回 bash/exit,启用补全');
+        }
+        // adb shell 的 PTY 不继承外层终端尺寸,自动注入 stty 修正
+        if (cmd.includes('adb') && cmd.includes('shell')) {
+          const t = termRef.current;
+          if (t) {
+            setTimeout(() => {
+              sendInput(`stty cols ${t.cols} rows ${t.rows}\r`);
+              appLog('AC', `adb shell 自动修正尺寸: ${t.cols}x${t.rows}`);
+            }, 800);
+          }
+        }
         currentLineRef.current = '';
         closeAutocomplete();
       } else if (data === '\x7f' || data === '\b') {
@@ -976,7 +1026,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
                 const line = currentLineRef.current;
                 if (line.length > 0) {
                   const bs = '\x7f'.repeat(line.length);
-                  const bytes = Array.from(new TextEncoder().encode(bs + item + '\r'));
+                  const bytes = Array.from(new TextEncoder().encode(bs + item));
                   invoke('terminal_write', { id: terminalId, data: bytes });
                   recordCommand(item);
                   currentLineRef.current = '';
