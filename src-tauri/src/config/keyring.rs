@@ -19,6 +19,11 @@ impl KeyringEntry {
         format!("guishell:ssh://{}@{}:{}", self.user, self.host, self.port)
     }
 
+    /// Windows Credential Manager 对 ://@ 等特殊字符处理有问题,用简化 key
+    pub fn credential_key(&self) -> String {
+        format!("{}_{}_{}", self.user, self.host, self.port)
+    }
+
     pub fn attributes(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         map.insert("application".to_string(), "guishell".to_string());
@@ -60,7 +65,7 @@ impl KeyringEntry {
 
     #[cfg(not(target_os = "linux"))]
     pub async fn store_password(&self, password: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let key = self.label();
+        let key = self.credential_key();
         let entry = keyring::Entry::new("guishell", &key)?;
         entry.set_password(password)?;
         Ok(())
@@ -68,7 +73,7 @@ impl KeyringEntry {
 
     #[cfg(not(target_os = "linux"))]
     pub async fn retrieve_password(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        let key = self.label();
+        let key = self.credential_key();
         let entry = keyring::Entry::new("guishell", &key)?;
         match entry.get_password() {
             Ok(pw) => Ok(Some(pw)),
