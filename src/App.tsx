@@ -342,12 +342,18 @@ function App() {
             try {
               let pw = s.sshParams.password;
               if (!pw && s.sshParams.authMethod === 'password') {
-                const stored = await invoke<string | null>('retrieve_password', {
-                  user: s.sshParams.user,
-                  host: s.sshParams.host,
-                  port: s.sshParams.port,
-                });
-                if (stored) pw = stored;
+                log('重连', `keyring retrieve: ${s.sshParams.user}@${s.sshParams.host}:${s.sshParams.port} authMethod=${s.sshParams.authMethod}`);
+                try {
+                  const stored = await invoke<string | null>('retrieve_password', {
+                    user: s.sshParams.user,
+                    host: s.sshParams.host,
+                    port: s.sshParams.port,
+                  });
+                  log('重连', `keyring retrieve 结果: ${stored ? '有密码' : '无记录'}`);
+                  if (stored) pw = stored;
+                } catch (e) {
+                  log('重连', `keyring retrieve 异常: ${e}`);
+                }
               }
               if (pw || s.sshParams.authMethod !== 'password') {
                 const id = await sshConnect({
@@ -670,12 +676,16 @@ function App() {
       });
 
       if (params.password && params.authMethod === 'keyring') {
+        log('连接', `keyring store: ${params.user}@${params.host}:${params.port}`);
         invoke('store_password', {
           user: params.user,
           host: params.host,
           port: params.port,
           password: params.password,
-        }).catch(() => {});
+        }).then(() => log('连接', 'keyring store 成功'))
+          .catch((e) => log('连接', `keyring store 失败: ${e}`));
+      } else {
+        log('连接', `跳过 keyring store: pw=${!!params.password} authMethod=${params.authMethod}`);
       }
 
       const tab: Tab = {
@@ -727,19 +737,26 @@ function App() {
     if (!hostConfig) return;
 
     if (hostConfig.auth === 'keyring') {
+      log('连接', `handleConnectExisting: keyring retrieve ${hostConfig.user}@${hostConfig.host}:${hostConfig.port}`);
       try {
         const saved = await invoke<string | null>('retrieve_password', {
           user: hostConfig.user,
           host: hostConfig.host,
           port: hostConfig.port,
         });
+        log('连接', `keyring retrieve 结果: ${saved ? '有密码' : '无记录'}`);
         if (saved) {
           doConnect(hostConfig, saved);
           return;
         }
-      } catch (_) {}
+      } catch (e) {
+        log('连接', `keyring retrieve 失败: ${e}`);
+      }
+      log('连接', `keyring 无密码,弹出密码输入框`);
       setPasswordPrompt({ groupId, hostId, hostLabel: hostConfig.label });
       return;
+    } else {
+      log('连接', `handleConnectExisting: auth=${hostConfig.auth} (非 keyring,跳过密码查询)`);
     }
 
     doConnect(hostConfig, null);
@@ -765,12 +782,14 @@ function App() {
       });
 
       if (password && hostConfig.auth === 'keyring') {
+        log('连接', `doConnect keyring store: ${hostConfig.user}@${hostConfig.host}:${hostConfig.port}`);
         invoke('store_password', {
           user: hostConfig.user,
           host: hostConfig.host,
           port: hostConfig.port,
           password,
-        }).catch(() => {});
+        }).then(() => log('连接', 'doConnect keyring store 成功'))
+          .catch((e) => log('连接', `doConnect keyring store 失败: ${e}`));
       }
 
       const tab: Tab = {
@@ -1863,7 +1882,10 @@ function App() {
                 },
               }).then(() => {
                 if (params.password && params.authMethod === 'keyring') {
-                  invoke('store_password', { user: params.user, host: params.host, port: params.port, password: params.password }).catch(() => {});
+                  log('连接', `新建连接 keyring store: ${params.user}@${params.host}:${params.port}`);
+                  invoke('store_password', { user: params.user, host: params.host, port: params.port, password: params.password })
+                    .then(() => log('连接', '新建连接 keyring store 成功'))
+                    .catch((e) => log('连接', `新建连接 keyring store 失败: ${e}`));
                 }
                 loadConnections();
               }).catch(e => setError(`保存失败: ${e}`));
@@ -1880,7 +1902,10 @@ function App() {
               config: { label: params.label, host: params.host, port: params.port, user: params.user, auth: params.authMethod, key_path: params.keyPath, charset: 'UTF-8', proxy_jump: params.proxyJump },
             }).then(() => {
               if (params.password && params.authMethod === 'keyring') {
-                invoke('store_password', { user: params.user, host: params.host, port: params.port, password: params.password }).catch(() => {});
+                log('连接', `仅保存 keyring store: ${params.user}@${params.host}:${params.port}`);
+                invoke('store_password', { user: params.user, host: params.host, port: params.port, password: params.password })
+                  .then(() => log('连接', '仅保存 keyring store 成功'))
+                  .catch((e) => log('连接', `仅保存 keyring store 失败: ${e}`));
               }
               loadConnections();
             }).catch(e => setError(`保存失败: ${e}`));
