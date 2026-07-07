@@ -59,12 +59,21 @@ impl KeyringEntry {
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub async fn store_password(&self, _password: &str) -> Result<(), Box<dyn std::error::Error>> {
-        Err("密钥环仅在 Linux 上可用".into())
+    pub async fn store_password(&self, password: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let key = self.label();
+        let entry = keyring::Entry::new("guishell", &key)?;
+        entry.set_password(password)?;
+        Ok(())
     }
 
     #[cfg(not(target_os = "linux"))]
     pub async fn retrieve_password(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        Ok(None)
+        let key = self.label();
+        let entry = keyring::Entry::new("guishell", &key)?;
+        match entry.get_password() {
+            Ok(pw) => Ok(Some(pw)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }

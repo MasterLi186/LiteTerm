@@ -1,12 +1,15 @@
 use std::io::Write;
+use std::sync::Mutex;
+
+static LOG_LOCK: Mutex<()> = Mutex::new(());
 
 /// Append a log line to `~/guishell.log`.
 ///
 /// Format: `[epoch.ms] [CATEGORY] message`
 ///
-/// Opens the file, appends one line, then closes it — simple and thread-safe
-/// without requiring a global lock.
+/// 全局 Mutex 保证多线程写入不交错。
 pub fn app_log(category: &str, message: &str) {
+    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let log_path = dirs::home_dir()
         .unwrap_or_default()
         .join("guishell.log");
