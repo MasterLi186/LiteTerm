@@ -363,6 +363,12 @@ pub async fn close_terminal(state: State<'_, AppState>, id: String) -> Result<()
     Ok(())
 }
 
+/// 返回当前用户的默认 shell(SHELL 环境变量)
+#[tauri::command]
+pub async fn get_default_shell() -> Result<String, String> {
+    std::env::var("SHELL").map_err(|e| format!("获取 SHELL 失败: {}", e))
+}
+
 /// 前端日志桥:把前端的 appLog 写入 ~/guishell.log
 #[tauri::command]
 pub async fn frontend_log(category: String, message: String) -> Result<(), String> {

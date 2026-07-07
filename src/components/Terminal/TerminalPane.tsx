@@ -536,33 +536,30 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       if (e.button === 1) e.preventDefault();
     });
 
-    // Ctrl+Click 打开文件路径
-    containerRef.current.addEventListener('click', (e: MouseEvent) => {
-      if (!e.ctrlKey || e.button !== 0) return;
-      const t = termRef.current;
-      if (!t || !t.element) return;
-      const rows = t.element.querySelector('.xterm-rows');
-      if (!rows) return;
-      const rect = rows.getBoundingClientRect();
-      const cellW = rect.width / t.cols;
-      const cellH = rect.height / t.rows;
-      const col = Math.floor((e.clientX - rect.left) / cellW);
-      const row = Math.floor((e.clientY - rect.top) / cellH);
-      const line = t.buffer.active.getLine(row)?.translateToString(true) || '';
-      if (!line) return;
-      // 从点击位置向两侧扫描,提取 path-like token
-      const delims = ' \t\'"()[]{}|<>;,`';
-      let start = col, end = col;
-      while (start > 0 && !delims.includes(line[start - 1])) start--;
-      while (end < line.length && !delims.includes(line[end])) end++;
-      let token = line.substring(start, end);
-      if (!token) return;
-      // 去掉尾部的冒号+行号(如 src/main.rs:42:5)
-      token = token.replace(/:\d+(?::\d+)?$/, '');
-      // 只处理看起来像文件路径的 token
-      if (/^[~./]/.test(token) || token.startsWith('/')) {
-        invoke('open_file_path', { id: terminalId, path: token }).catch(() => {});
-      }
+    // 文件路径链接检测:注册 xterm link provider,悬停时高亮+手型光标,点击用默认程序打开
+    const pathRegex = /(?:~\/|\.\/|\.\.\/|\/)[^\s'"\[\](){}|<>;,`]+/g;
+    term.registerLinkProvider({
+      provideLinks(lineNumber: number, callback: (links: Array<{ range: { start: { x: number; y: number }; end: { x: number; y: number } }; text: string; activate: () => void }> | undefined) => void) {
+        const bufLine = term.buffer.active.getLine(lineNumber);
+        if (!bufLine) { callback(undefined); return; }
+        const text = bufLine.translateToString(true);
+        const links: Array<{ range: { start: { x: number; y: number }; end: { x: number; y: number } }; text: string; activate: () => void }> = [];
+        let m;
+        pathRegex.lastIndex = 0;
+        while ((m = pathRegex.exec(text)) !== null) {
+          let path = m[0].replace(/:\d+(?::\d+)?$/, ''); // 去尾部 :行号:列号
+          const startX = m.index + 1; // xterm link 坐标从 1 开始
+          const endX = m.index + path.length;
+          links.push({
+            range: { start: { x: startX, y: lineNumber + 1 }, end: { x: endX, y: lineNumber + 1 } },
+            text: path,
+            activate: () => {
+              invoke('open_file_path', { id: terminalId, path }).catch(() => {});
+            },
+          });
+        }
+        callback(links.length > 0 ? links : undefined);
+      },
     });
 
     // User input -> Tauri

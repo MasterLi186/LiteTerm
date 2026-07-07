@@ -2,6 +2,8 @@
 
 **禁止单独执行 `npm run build` 或 `cargo build`，构建统一且只能用 `./build.sh`。**
 
+**禁止未经用户明确允许执行 `git tag` 和 `git push origin <tag>`。tag 会触发 CI 构建 + Release，必须由用户决定何时打 tag。**
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 项目概述
