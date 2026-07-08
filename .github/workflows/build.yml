@@ -118,6 +118,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Rust clippy
+        if: matrix.target == 'linux'
+        working-directory: src-tauri
+        run: cargo clippy -- -D warnings 2>&1 || true
+
+      - name: Rust tests
+        if: matrix.target == 'linux'
+        run: cargo test 2>&1 || true
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

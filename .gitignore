@@ -7,3 +7,5 @@ src-tauri/target
 src-tauri/gen
 .cargo/config.toml
 158BitNet/
+credentials.enc
+passwords.toml
