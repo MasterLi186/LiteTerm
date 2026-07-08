@@ -75,22 +75,40 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   async function loadProcesses() {
     if (processes.length === 0) setLoading(true);
     try {
-      // ps h -eo(无 header 无排序无参数展开,最快), awk 过滤 CPU>0 后再前端排序
+      // -HwO lstart: 进程树+启动时间+宽输出(不含环境变量)
+      // 输出格式: PID USER LSTART %CPU %MEM VSZ RSS TTY STAT TIME COMMAND
       const psOutput = await invoke<string>('sftp_exec', {
         sessionId,
-        command: "ps h -eo pid,user,pcpu,rss,comm 2>/dev/null | awk '$3+0>0.1{print}' | head -100",
+        command: "ps -HwO lstart -eo pid,user,lstart,pcpu,rss,args 2>/dev/null | head -200 || ps h -eo pid,user,pcpu,rss,comm | head -100",
       });
       const list: ProcessDetail[] = [];
       for (const line of psOutput.split('\n')) {
+        // 跳过 header
+        if (line.includes('PID') && line.includes('USER')) continue;
         const parts = line.trim().split(/\s+/);
         if (parts.length < 5) continue;
         const pid = parseInt(parts[0]);
-        const cpu = parseFloat(parts[2]);
-        if (isNaN(pid) || isNaN(cpu)) continue;
-        const rssKb = parseInt(parts[3]) || 0;
+        if (isNaN(pid)) continue;
+        // 尝试检测 -HwO lstart 格式(PID USER DAY MON DATE TIME YEAR %CPU RSS COMMAND)
+        // 或 h -eo 格式(PID USER %CPU RSS COMM)
+        let cpu: number, rssKb: number, user: string, command: string, startTime = '';
+        if (parts.length >= 9 && /^\d{4}$/.test(parts[6])) {
+          // -HwO lstart 格式: PID USER DAY MON DATE HH:MM:SS YEAR %CPU RSS COMMAND...
+          user = parts[1];
+          startTime = `${parts[3]} ${parts[4]} ${parts[5]}`;
+          cpu = parseFloat(parts[7]) || 0;
+          rssKb = parseInt(parts[8]) || 0;
+          command = parts.slice(9).join(' ');
+        } else {
+          // h -eo fallback 格式: PID USER %CPU RSS COMM
+          user = parts[1];
+          cpu = parseFloat(parts[2]) || 0;
+          rssKb = parseInt(parts[3]) || 0;
+          command = parts.slice(4).join(' ');
+        }
         const mem = rssKb >= 1048576 ? `${(rssKb/1048576).toFixed(1)}G` : rssKb >= 1024 ? `${(rssKb/1024).toFixed(1)}M` : `${rssKb}K`;
-        const command = parts.slice(4).join(' ');
-        list.push({ pid, user: parts[1], cpu, mem, command, full_command: command, location: '' });
+        const shortName = command.split('/').pop()?.split(' ')[0] || command;
+        list.push({ pid, user, cpu, mem, command: shortName, full_command: command, location: startTime });
       }
       list.sort((a, b) => b.cpu - a.cpu);
       setProcesses(list);
