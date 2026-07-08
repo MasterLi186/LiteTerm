@@ -75,24 +75,24 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   async function loadProcesses() {
     if (processes.length === 0) setLoading(true);
     try {
-      // 复用已有 SFTP session 执行命令,不再每次新建 SSH 连接
+      // ps h -eo(无 header 无排序无参数展开,最快), awk 过滤 CPU>0 后再前端排序
       const psOutput = await invoke<string>('sftp_exec', {
         sessionId,
-        command: "ps -eo user,pid,pcpu,rss,args --no-headers 2>/dev/null | awk '$3+0>0.1' | sort -k3 -rn | head -50 || ps aux --sort=-%cpu | head -50",
+        command: "ps h -eo pid,user,pcpu,rss,comm 2>/dev/null | awk '$3+0>0.1{print}' | head -100",
       });
       const list: ProcessDetail[] = [];
       for (const line of psOutput.split('\n')) {
         const parts = line.trim().split(/\s+/);
         if (parts.length < 5) continue;
-        const pid = parseInt(parts[1]);
+        const pid = parseInt(parts[0]);
         const cpu = parseFloat(parts[2]);
         if (isNaN(pid) || isNaN(cpu)) continue;
         const rssKb = parseInt(parts[3]) || 0;
         const mem = rssKb >= 1048576 ? `${(rssKb/1048576).toFixed(1)}G` : rssKb >= 1024 ? `${(rssKb/1024).toFixed(1)}M` : `${rssKb}K`;
-        const fullCommand = parts.slice(4).join(' ');
-        const command = (parts[4] || '').split('/').pop() || parts[4] || '';
-        list.push({ pid, user: parts[0], cpu, mem, command, full_command: fullCommand, location: '' });
+        const command = parts.slice(4).join(' ');
+        list.push({ pid, user: parts[1], cpu, mem, command, full_command: command, location: '' });
       }
+      list.sort((a, b) => b.cpu - a.cpu);
       setProcesses(list);
       setError(null);
     } catch (e) {
