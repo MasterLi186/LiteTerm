@@ -44,6 +44,7 @@ function SortHeader({
 }
 
 interface Props {
+  sessionId: string;
   sshParams: {
     host: string;
     port: number;
@@ -55,7 +56,7 @@ interface Props {
   hostLabel: string;
 }
 
-export function ProcessTable({ sshParams, hostLabel }: Props) {
+export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   const [processes, setProcesses] = useState<ProcessDetail[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>('cpu');
   const [sortAsc, setSortAsc] = useState(false);
@@ -72,17 +73,26 @@ export function ProcessTable({ sshParams, hostLabel }: Props) {
   }, []);
 
   async function loadProcesses() {
-    // Only show loading spinner on first load, not on refresh
     if (processes.length === 0) setLoading(true);
     try {
-      const list = await invoke<ProcessDetail[]>('get_process_list', {
-        host: sshParams.host,
-        port: sshParams.port,
-        user: sshParams.user,
-        password: sshParams.password,
-        authMethod: sshParams.authMethod,
-        keyPath: sshParams.keyPath,
+      // 复用已有 SFTP session 执行命令,不再每次新建 SSH 连接
+      const psOutput = await invoke<string>('sftp_exec', {
+        sessionId,
+        command: "ps -eo user,pid,pcpu,rss,args --no-headers 2>/dev/null | awk '$3+0>0.1' | sort -k3 -rn | head -50 || ps aux --sort=-%cpu | head -50",
       });
+      const list: ProcessDetail[] = [];
+      for (const line of psOutput.split('\n')) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 5) continue;
+        const pid = parseInt(parts[1]);
+        const cpu = parseFloat(parts[2]);
+        if (isNaN(pid) || isNaN(cpu)) continue;
+        const rssKb = parseInt(parts[3]) || 0;
+        const mem = rssKb >= 1048576 ? `${(rssKb/1048576).toFixed(1)}G` : rssKb >= 1024 ? `${(rssKb/1024).toFixed(1)}M` : `${rssKb}K`;
+        const fullCommand = parts.slice(4).join(' ');
+        const command = (parts[4] || '').split('/').pop() || parts[4] || '';
+        list.push({ pid, user: parts[0], cpu, mem, command, full_command: fullCommand, location: '' });
+      }
       setProcesses(list);
       setError(null);
     } catch (e) {
@@ -126,16 +136,37 @@ export function ProcessTable({ sshParams, hostLabel }: Props) {
   async function handleRowClick(pid: number) {
     setSelectedPid(pid);
     try {
-      const d = await invoke<ProcessFullDetail>('get_process_detail', {
-        host: sshParams.host,
-        port: sshParams.port,
-        user: sshParams.user,
-        password: sshParams.password,
-        authMethod: sshParams.authMethod,
-        keyPath: sshParams.keyPath,
-        pid,
+      const output = await invoke<string>('sftp_exec', {
+        sessionId,
+        command: `cat /proc/${pid}/status 2>/dev/null; echo '===CMDLINE==='; tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null; echo; echo '===EXE==='; readlink /proc/${pid}/exe 2>/dev/null; echo '===CWD==='; readlink /proc/${pid}/cwd 2>/dev/null; echo '===ENV==='; tr '\\0' '\\n' < /proc/${pid}/environ 2>/dev/null | head -30`,
       });
-      setDetail(d);
+      const sections = output.split(/===\w+===/);
+      const status = sections[0] || '';
+      const cmdline = (sections[1] || '').trim();
+      const exe = (sections[2] || '').trim();
+      const cwd = (sections[3] || '').trim();
+      const env = (sections[4] || '').trim();
+      // 从 /proc/pid/status 提取字段
+      const get = (key: string) => {
+        const m = status.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
+        return m ? m[1].trim() : '';
+      };
+      const rssKb = parseInt(get('VmRSS')) || 0;
+      const mem = rssKb >= 1048576 ? `${(rssKb/1048576).toFixed(1)}G` : rssKb >= 1024 ? `${(rssKb/1024).toFixed(1)}M` : `${rssKb}K`;
+      setDetail({
+        pid,
+        user: get('Uid').split(/\s+/)[0] || '',
+        cpu: 0,
+        mem,
+        command: get('Name'),
+        full_command: cmdline || exe,
+        location: exe,
+        working_dir: cwd,
+        environ: env.split('\n').filter(Boolean).map(line => {
+          const eq = line.indexOf('=');
+          return eq > 0 ? { key: line.substring(0, eq), value: line.substring(eq + 1) } : { key: line, value: '' };
+        }),
+      });
     } catch (e) {
       console.error('Failed to load process detail:', e);
     }

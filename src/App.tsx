@@ -1663,6 +1663,7 @@ function App() {
                   }}
                 >
                   <ProcessTable
+                    sessionId={tab.id.replace('process-', '')}
                     sshParams={tab.sshParams!}
                     hostLabel={tab.label}
                   />
