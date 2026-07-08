@@ -2,8 +2,7 @@ name: Build LiteTerm
 
 on:
   push:
-    tags: ['v*']
-    branches: [dev]
+    tags: ['v*', 'dev-*']
   workflow_dispatch:
 
 permissions:
