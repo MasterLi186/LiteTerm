@@ -138,5 +138,4 @@ jobs:
         with:
           name: LiteTerm-windows${{ github.ref == 'refs/heads/dev' && '-dev' || '' }}
           path: |
-            src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
