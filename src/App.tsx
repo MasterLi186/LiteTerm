@@ -507,6 +507,9 @@ function App() {
     }
   }
 
+  // 同一台主机只启动一个监控线程,用 host:port:user 去重
+  const monitorStartedRef = useRef<Set<string>>(new Set());
+
   async function startMonitorAndSftp(
     sessionId: string,
     host: string,
@@ -518,16 +521,23 @@ function App() {
   ) {
     log('SFTP', `启动监控和SFTP, sessionId=${sessionId}, host=${host}, pw=${password ? '有' : '无'}`);
 
-    // Start monitor in background
-    invoke('start_monitor', {
-      sessionId,
-      host,
-      port,
-      user,
-      password: password || null,
-      authMethod,
-      keyPath: keyPath || null,
-    }).catch((e) => log('监控', `启动失败: ${e}`));
+    // 监控按 host:port:user 共用,同一台主机只启动一次
+    const monitorKey = `${user}@${host}:${port}`;
+    if (!monitorStartedRef.current.has(monitorKey)) {
+      monitorStartedRef.current.add(monitorKey);
+      invoke('start_monitor', {
+        sessionId: monitorKey, // 用共享 key 而非 sessionId,这样所有同主机标签共享一份数据
+        host,
+        port,
+        user,
+        password: password || null,
+        authMethod,
+        keyPath: keyPath || null,
+      }).catch((e) => { log('监控', `启动失败: ${e}`); monitorStartedRef.current.delete(monitorKey); });
+      log('监控', `新建监控线程: ${monitorKey}`);
+    } else {
+      log('监控', `复用已有监控: ${monitorKey}`);
+    }
 
     // Delay SFTP start to let SSH session fully stabilize
     log('SFTP', '等待2秒后启动SFTP session...');
@@ -1299,7 +1309,7 @@ function App() {
 
         {/* System info — local or remote */}
         <SystemInfoPanel
-          sessionId={activeSshSessionId || 'local'}
+          sessionId={activeTab?.sshParams ? `${activeTab.sshParams.user}@${activeTab.sshParams.host}:${activeTab.sshParams.port}` : 'local'}
           hostIp={activeSshSessionId ? activeTab?.sshParams?.host : '本机'}
           onOpenProcessManager={activeSshSessionId ? openProcessManager : undefined}
         />
