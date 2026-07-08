@@ -11,73 +11,8 @@ import * as Zmodem from 'zmodem.js';
 import '@xterm/xterm/css/xterm.css';
 import type { ITheme } from '@xterm/xterm';
 import { log as appLog, getLogText } from '../../utils/logger';
-
-// ---- Terminal Themes ----
-const TERMINAL_THEMES: Record<string, ITheme> = {
-  '暗色默认': {
-    background: '#0d1117', foreground: '#e6edf3', cursor: '#00d4ff',
-    selectionBackground: '#264f78',
-    black: '#ffffff', red: '#ff7b72', green: '#2e6b30', yellow: '#d29922',
-    blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#b1bac4',
-    brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#7ec850',
-    brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
-    brightCyan: '#56d364', brightWhite: '#f0f6fc',
-  },
-  'AdventureTime': {
-    background: '#1f1d45', foreground: '#f8dcc0', cursor: '#efbf38',
-    selectionBackground: '#264f78',
-    black: '#050404', red: '#bd0013', green: '#4ab118', yellow: '#e7741e',
-    blue: '#0f4ac6', magenta: '#665993', cyan: '#70a598', white: '#f8dcc0',
-    brightBlack: '#4e7cbf', brightRed: '#fc5f5a', brightGreen: '#9eff6e',
-    brightYellow: '#efc11a', brightBlue: '#1997c6', brightMagenta: '#9b5953',
-    brightCyan: '#c8faf4', brightWhite: '#f6f5fb',
-  },
-  'Monokai': {
-    background: '#272822', foreground: '#f8f8f2', cursor: '#f8f8f0',
-    selectionBackground: '#49483e',
-    black: '#272822', red: '#f92672', green: '#a6e22e', yellow: '#f4bf75',
-    blue: '#66d9ef', magenta: '#ae81ff', cyan: '#a1efe4', white: '#f8f8f2',
-    brightBlack: '#75715e', brightRed: '#f92672', brightGreen: '#a6e22e',
-    brightYellow: '#f4bf75', brightBlue: '#66d9ef', brightMagenta: '#ae81ff',
-    brightCyan: '#a1efe4', brightWhite: '#f9f8f5',
-  },
-  'Solarized Dark': {
-    background: '#002b36', foreground: '#839496', cursor: '#93a1a1',
-    selectionBackground: '#073642',
-    black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900',
-    blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
-    brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#586e75',
-    brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4',
-    brightCyan: '#93a1a1', brightWhite: '#fdf6e3',
-  },
-  'Dracula': {
-    background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2',
-    selectionBackground: '#44475a',
-    black: '#21222c', red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c',
-    blue: '#bd93f9', magenta: '#ff79c6', cyan: '#8be9fd', white: '#f8f8f2',
-    brightBlack: '#6272a4', brightRed: '#ff6e6e', brightGreen: '#69ff94',
-    brightYellow: '#ffffa5', brightBlue: '#d6acff', brightMagenta: '#ff92df',
-    brightCyan: '#a4ffff', brightWhite: '#ffffff',
-  },
-  'One Dark': {
-    background: '#282c34', foreground: '#abb2bf', cursor: '#528bff',
-    selectionBackground: '#3e4451',
-    black: '#282c34', red: '#e06c75', green: '#98c379', yellow: '#e5c07b',
-    blue: '#61afef', magenta: '#c678dd', cyan: '#56b6c2', white: '#abb2bf',
-    brightBlack: '#5c6370', brightRed: '#e06c75', brightGreen: '#98c379',
-    brightYellow: '#e5c07b', brightBlue: '#61afef', brightMagenta: '#c678dd',
-    brightCyan: '#56b6c2', brightWhite: '#ffffff',
-  },
-  '浅色': {
-    background: '#ffffff', foreground: '#383a42', cursor: '#526eff',
-    selectionBackground: '#d7d7ff',
-    black: '#383a42', red: '#e45649', green: '#50a14f', yellow: '#c18401',
-    blue: '#4078f2', magenta: '#a626a4', cyan: '#0184bc', white: '#a0a1a7',
-    brightBlack: '#696c77', brightRed: '#e45649', brightGreen: '#50a14f',
-    brightYellow: '#c18401', brightBlue: '#4078f2', brightMagenta: '#a626a4',
-    brightCyan: '#0184bc', brightWhite: '#ffffff',
-  },
-};
+import { TERMINAL_THEMES } from '../../themes';
+import { getTerminalFontFamily } from '../Settings';
 
 /** Get the current theme name from localStorage */
 function getTerminalThemeName(): string {
@@ -304,7 +239,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   const acItemsRef = useRef<string[]>([]);
   const acIndexRef = useRef(0);
   const acNavigatedRef = useRef(false);
-  const isBashRef = useRef(true); // zsh/fish 自带补全,LiteTerm 只在 bash 下启用
+  const isBashRef = useRef(true);
+  const isActiveRef = useRef(isActive);
+  useEffect(() => { isActiveRef.current = isActive; }, [isActive]); // zsh/fish 自带补全,LiteTerm 只在 bash 下启用
 
   // 检测 shell 类型 + 加载历史
   useEffect(() => {
@@ -461,7 +398,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       rightClickSelectsWord: true,
       fontSize: (() => { try { return parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15; } catch { return 15; } })(),
       scrollback: 10000,
-      fontFamily: (() => { const f = localStorage.getItem('guishell_terminal_font') || 'Ubuntu Mono'; return `'${f}', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace`; })(),
+      fontFamily: getTerminalFontFamily(),
       theme: getTerminalTheme(),
     });
 
@@ -486,14 +423,19 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     };
     themeChangeListeners.add(onThemeChange);
 
-    // 设置面板改了字体/字号/主题后实时应用
+    // 设置面板改了字体/字号/主题后:焦点终端立刻应用,其余延迟 100ms 错开
+    const applySettings = () => {
+      if (!termRef.current) return;
+      termRef.current.options.fontFamily = getTerminalFontFamily();
+      termRef.current.options.fontSize = parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15;
+      termRef.current.options.theme = getTerminalTheme();
+      if (fitRef.current) fitRef.current.fit();
+    };
     const onSettingsChanged = () => {
-      if (termRef.current) {
-        const f = localStorage.getItem('guishell_terminal_font') || 'Ubuntu Mono';
-        termRef.current.options.fontFamily = `'${f}', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace`;
-        termRef.current.options.fontSize = parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15;
-        termRef.current.options.theme = getTerminalTheme();
-        if (fitRef.current) fitRef.current.fit();
+      if (isActiveRef.current) {
+        applySettings();
+      } else {
+        setTimeout(applySettings, 100);
       }
     };
     window.addEventListener('terminal-settings-changed', onSettingsChanged);
@@ -557,6 +499,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     containerRef.current.addEventListener('mouseup', handleMiddleClick);
     containerRef.current.addEventListener('mousedown', (e: MouseEvent) => {
       if (e.button === 1) e.preventDefault();
+      // 点击终端画布关闭补全弹窗(对标 WindTerm)
+      closeAutocomplete();
     });
 
     // 文件路径链接检测:注册 xterm link provider,悬停时高亮+手型光标,点击用默认程序打开
