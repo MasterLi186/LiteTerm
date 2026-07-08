@@ -285,11 +285,12 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
             }}>
               <span title={d.mount} style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#c9d1d9', fontSize: '11px' }}>{d.mount}</span>
               <span style={{
-                width: '32px', textAlign: 'right', flexShrink: 0, fontSize: '10px', fontVariantNumeric: 'tabular-nums',
+                width: '36px', textAlign: 'right', flexShrink: 0, fontSize: '10px', fontVariantNumeric: 'tabular-nums',
                 color: d.percent > 90 ? '#f85149' : d.percent > 70 ? '#d29922' : '#8b949e',
                 fontWeight: d.percent > 90 ? 600 : 400,
+                marginRight: '6px',
               }}>{d.percent}%</span>
-              <span title={`${d.avail}/${d.size}`} style={{ width: '80px', textAlign: 'right', color: '#8b949e', fontSize: '10px', flexShrink: 0, fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span title={`${d.avail}/${d.size}`} style={{ width: '100px', textAlign: 'right', color: '#8b949e', fontSize: '10px', flexShrink: 0, fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {d.avail}/{d.size}
               </span>
             </div>
