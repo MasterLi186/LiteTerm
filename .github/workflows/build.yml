@@ -95,8 +95,25 @@ jobs:
           echo "下载对应平台的安装包:" >> $GITHUB_OUTPUT
           echo "- **Linux**: .deb / .rpm / .AppImage" >> $GITHUB_OUTPUT
           echo "- **macOS**: .dmg" >> $GITHUB_OUTPUT
-          echo "- **Windows**: .msi / .exe" >> $GITHUB_OUTPUT
+          echo "- **Windows**: .exe" >> $GITHUB_OUTPUT
           echo "ENDOFLOG" >> $GITHUB_OUTPUT
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          # v0.9.0 → 0.9.0 ; dev-0.8.11 → 0.8.11-dev
+          if [[ "$TAG" == v* ]]; then
+            VERSION="${TAG#v}"
+          elif [[ "$TAG" == dev-* ]]; then
+            VERSION="${TAG#dev-}-dev"
+          else
+            VERSION="0.0.${{ github.run_number }}"
+          fi
+          echo "VERSION=$VERSION"
+          sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
+          rm -f src-tauri/tauri.conf.json.bak
+          grep '"version"' src-tauri/tauri.conf.json
 
       - name: Install frontend dependencies
         run: npm ci
