@@ -502,18 +502,10 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
         if (onRemotePathChange) onRemotePathChange(cached);
       } else {
         const fallback = sshUser ? (sshUser === 'root' ? '/root' : `/home/${sshUser}`) : '/home';
-        log('FileBrowser', `首次连接 ${sessionId}, fallback=${fallback}, 查询 $HOME...`);
+        log('FileBrowser', `首次连接 ${sessionId}, fallback=${fallback}, 等 SFTP 就绪后查询 $HOME`);
         setRemotePathRaw(fallback);
         sessionPathsRef.current[sessionId] = fallback;
         if (onRemotePathChange) onRemotePathChange(fallback);
-        invoke<string>('sftp_exec', { sessionId, command: 'echo $HOME' })
-          .then(home => {
-            if (home && home.startsWith('/')) {
-              log('FileBrowser', `远端 home (${sessionId}): ${home}`);
-              setRemotePath(home);
-            }
-          })
-          .catch((e) => { log('FileBrowser', `查询 $HOME 失败 (${sessionId}): ${e}`); });
       }
     }
     if (!sessionId) {
@@ -526,11 +518,23 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
     loadLocalFiles(localPath);
   }, [localPath]);
 
-  // sftpReady 变化时说明 SFTP session 刚建立成功，触发刷新
+  // sftpReady 变化时说明 SFTP session 刚建立成功,此时才查 $HOME + 加载文件
   useEffect(() => {
-    if (sessionId) {
+    if (sessionId && sftpReady) {
+      // 首次:查询真实 home 目录
+      if (!sessionPathsRef.current[sessionId] || sessionPathsRef.current[sessionId].startsWith('/home')) {
+        invoke<string>('sftp_exec', { sessionId, command: 'echo $HOME' })
+          .then(home => {
+            if (home && home.startsWith('/')) {
+              log('FileBrowser', `SFTP 就绪,远端 home (${sessionId}): ${home}`);
+              sessionPathsRef.current[sessionId] = home;
+              setRemotePath(home);
+            }
+          })
+          .catch(() => {});
+      }
       loadRemoteFiles(remotePath);
-    } else {
+    } else if (!sessionId) {
       setRemoteFiles([]);
       remoteFilesRef.current = [];
       setRemoteError(null);
