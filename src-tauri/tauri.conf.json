@@ -31,6 +31,17 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "headerImage": null,
+        "sidebarImage": null
+      }
+    },
+    "shortDescription": "轻量级跨平台 SSH 客户端",
+    "longDescription": "LiteTerm 是一个基于 Tauri 2 的轻量级跨平台 SSH 客户端，支持多标签、SFTP 文件管理、系统监控、串口终端、端口转发等功能。"
   }
 }
