@@ -1062,24 +1062,27 @@ function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [aboutInfo, setAboutInfo] = useState<Record<string, string> | null>(null);
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
-  // 文件管理器:本地终端默认隐藏,SSH 默认打开,手动切换后按 sessionId 记住
+  // 文件管理器:本地终端默认隐藏,SSH 默认打开,手动切换后按连接标识记住
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
   const fileBrowserPrefRef = useRef<Record<string, boolean>>(
     (() => { try { return JSON.parse(localStorage.getItem('guishell_fb_pref') || '{}'); } catch { return {}; } })()
   );
+  // 用 user@host:port 作为持久 key(sessionId 每次重启会变)
+  const fbPrefKey = activeTab?.sshParams
+    ? `${activeTab.sshParams.user}@${activeTab.sshParams.host}:${activeTab.sshParams.port}`
+    : null;
   useEffect(() => {
-    const sid = activeSshSessionId;
-    if (!sid) {
+    if (!activeSshSessionId || !fbPrefKey) {
       setFileBrowserOpen(false);
       return;
     }
     const prefs = fileBrowserPrefRef.current;
-    if (sid in prefs) {
-      setFileBrowserOpen(prefs[sid]);
+    if (fbPrefKey in prefs) {
+      setFileBrowserOpen(prefs[fbPrefKey]);
     } else {
       setFileBrowserOpen(true);
     }
-  }, [activeSshSessionId]);
+  }, [activeSshSessionId, fbPrefKey]);
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
   const [showLogPanel, setShowLogPanel] = useState(false);
@@ -1867,8 +1870,8 @@ function App() {
           onClick={() => {
             const next = !fileBrowserOpen;
             setFileBrowserOpen(next);
-            if (activeSshSessionId) {
-              fileBrowserPrefRef.current[activeSshSessionId] = next;
+            if (fbPrefKey) {
+              fileBrowserPrefRef.current[fbPrefKey] = next;
               try { localStorage.setItem('guishell_fb_pref', JSON.stringify(fileBrowserPrefRef.current)); } catch {}
             }
           }}
