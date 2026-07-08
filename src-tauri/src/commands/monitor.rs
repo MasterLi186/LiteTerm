@@ -555,7 +555,8 @@ pub async fn start_local_monitor(
             };
             let net_iface = all_ifaces.first().cloned().unwrap_or_default();
 
-            // 进程(按 CPU 排序取前 10)
+            // 进程(按 CPU 排序取前 10,CPU 归一化到 0-100%)
+            let num_cpus = sys.cpus().len().max(1) as f32;
             let mut procs: Vec<(&sysinfo::Pid, &sysinfo::Process)> = sys.processes().iter().collect();
             procs.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
             let processes: Vec<ProcessInfo> = procs.iter().take(10).map(|(_, p)| {
@@ -564,7 +565,7 @@ pub async fn start_local_monitor(
                     else if mem_bytes >= 1_048_576 { format!("{:.1}M", mem_bytes as f64 / 1_048_576.0) }
                     else { format!("{}K", mem_bytes / 1024) };
                 let name = p.name().to_string_lossy().to_string();
-                ProcessInfo { mem, cpu: p.cpu_usage(), command: name }
+                ProcessInfo { mem, cpu: p.cpu_usage() / num_cpus, command: name }
             }).collect();
 
             let payload = MonitorPayload {
