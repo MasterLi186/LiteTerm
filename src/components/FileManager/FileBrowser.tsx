@@ -463,6 +463,10 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
         setRemoteFiles(entries);
         remoteFilesRef.current = entries;
         remoteFileCache.set(cacheKey, entries);
+        if (remoteFileCache.size > 200) {
+          const oldest = remoteFileCache.keys().next().value;
+          if (oldest) remoteFileCache.delete(oldest);
+        }
         setRemoteLoading(false);
         loadingSessionRef.current = null;
         return;

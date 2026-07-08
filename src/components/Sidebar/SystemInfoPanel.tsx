@@ -102,8 +102,11 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
 
   useEffect(() => {
     const unlisten = listen<MonitorData>('monitor-data', (event) => {
-      // 所有 session 的数据都缓存,切标签时立刻可用(不等 2 秒采样)
       monitorCache.set(event.payload.session_id, event.payload);
+      if (monitorCache.size > 50) {
+        const oldest = monitorCache.keys().next().value;
+        if (oldest) monitorCache.delete(oldest);
+      }
       if (event.payload.session_id === sessionId) {
         setData(event.payload);
         const iface = selectedIface || event.payload.net_interface;
