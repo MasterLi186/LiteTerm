@@ -39,8 +39,8 @@ impl KeyringEntry {
 
         let mut key = vec![0u8; 32]; // AES-256
         pbkdf2_hmac(
-            salt.as_bytes(),
-            b"liteterm-credential-store",
+            b"liteterm-credential-store", // pass: 应用固定密码
+            salt.as_bytes(),               // salt: hostname+username(绑定机器)
             100_000,
             MessageDigest::sha256(),
             &mut key,
@@ -111,7 +111,12 @@ impl KeyringEntry {
             std::fs::create_dir_all(parent)?;
         }
         let content = serde_json::to_string_pretty(map)?;
-        std::fs::write(&path, content)?;
+        std::fs::write(&path, &content)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 
@@ -123,13 +128,14 @@ impl KeyringEntry {
         map.insert(self.storage_key(), encoded);
         Self::save_store(&map)?;
 
-        // 立即验证
-        let stored = map.get(&self.storage_key()).unwrap();
+        // 从磁盘重读验证(确认文件写入完整)
+        let reloaded = Self::load_store();
+        let stored = reloaded.get(&self.storage_key()).ok_or("写入后磁盘读回找不到记录")?;
         let decoded = hex::decode(stored)?;
         let decrypted = Self::decrypt(&decoded)?;
         let verify = String::from_utf8(decrypted)?;
         if verify != password {
-            return Err("store 后 verify 失败".into());
+            return Err("store 后 verify 失败: 解密内容不匹配".into());
         }
 
         app_log!("KEYRING", "file store+verify 成功: {}", self.storage_key());
@@ -167,6 +173,8 @@ impl KeyringEntry {
                 attrs.insert("key", &key);
                 collection.create_item(&self.storage_key(), attrs, password.as_bytes(), true, "text/plain").await?;
                 app_log!("KEYRING", "secret-service store 成功: {}", self.storage_key());
+                // 同时写文件备份,secret-service 不可用时还能取到
+                let _ = self.file_store(password);
                 Ok(())
             }
             Err(e) => {
