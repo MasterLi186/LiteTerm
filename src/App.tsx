@@ -300,6 +300,8 @@ function App() {
   const [splitTrees, setSplitTrees] = useState<Record<string, SplitNode>>({});
   const [focusedTerminalId, setFocusedTerminalId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 切标签时清除全局错误提示(错误属于上一个标签的上下文)
+  useEffect(() => { setError(null); }, [activeTabId]);
   const [showNewTab, setShowNewTab] = useState(false);
   const [passwordPrompt, setPasswordPrompt] = useState<{
     groupId: string;

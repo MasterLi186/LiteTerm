@@ -97,7 +97,9 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
       setError(null);
     } catch (e) {
       console.error('Failed to load processes:', e);
-      if (processes.length === 0) setError(String(e));
+      setError(String(e));
+      // 5 秒后自动清除错误提示(下次 3 秒刷新如果成功会 setError(null))
+      setTimeout(() => setError(null), 5000);
     }
     setLoading(false);
   }
