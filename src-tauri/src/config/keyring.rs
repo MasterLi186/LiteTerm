@@ -1,5 +1,6 @@
-use std::collections::HashMap;
 use crate::app_log;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub struct KeyringEntry {
     user: String,
@@ -16,135 +17,201 @@ impl KeyringEntry {
         }
     }
 
-    pub fn label(&self) -> String {
-        format!("guishell:ssh://{}@{}:{}", self.user, self.host, self.port)
-    }
-
-    pub fn credential_key(&self) -> String {
+    fn storage_key(&self) -> String {
         format!("{}_{}_{}", self.user, self.host, self.port)
     }
 
-    pub fn attributes(&self) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-        map.insert("application".to_string(), "guishell".to_string());
-        map.insert("user".to_string(), self.user.clone());
-        map.insert("host".to_string(), self.host.clone());
-        map.insert("port".to_string(), self.port.to_string());
-        map
+    // ---- AES-256-GCM 文件存储(所有平台通用,100% 可靠) ----
+
+    fn credentials_path() -> PathBuf {
+        crate::config::settings::Settings::config_dir().join("credentials.enc")
     }
 
-    // ---- 文件 fallback:base64 混淆存到 ~/.config/guishell/passwords.toml ----
+    fn derive_key() -> Vec<u8> {
+        use openssl::hash::MessageDigest;
+        use openssl::pkcs5::pbkdf2_hmac;
 
-    fn passwords_path() -> std::path::PathBuf {
-        crate::config::settings::Settings::config_dir().join("passwords.toml")
+        let hostname = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown-host".to_string());
+        let username = whoami::username();
+        let salt = format!("liteterm-v1-{}-{}", hostname, username);
+
+        let mut key = vec![0u8; 32]; // AES-256
+        pbkdf2_hmac(
+            salt.as_bytes(),
+            b"liteterm-credential-store",
+            100_000,
+            MessageDigest::sha256(),
+            &mut key,
+        ).expect("PBKDF2 失败");
+        key
     }
 
-    fn load_passwords() -> HashMap<String, String> {
-        let path = Self::passwords_path();
+    fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use openssl::symm::{encrypt_aead, Cipher};
+        use openssl::rand::rand_bytes;
+
+        let key = Self::derive_key();
+        let mut nonce = vec![0u8; 12];
+        rand_bytes(&mut nonce)?;
+        let mut tag = vec![0u8; 16];
+
+        let ciphertext = encrypt_aead(
+            Cipher::aes_256_gcm(),
+            &key,
+            Some(&nonce),
+            &[],
+            plaintext,
+            &mut tag,
+        )?;
+
+        // 格式: nonce(12) + tag(16) + ciphertext
+        let mut result = Vec::with_capacity(12 + 16 + ciphertext.len());
+        result.extend_from_slice(&nonce);
+        result.extend_from_slice(&tag);
+        result.extend_from_slice(&ciphertext);
+        Ok(result)
+    }
+
+    fn decrypt(data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use openssl::symm::{decrypt_aead, Cipher};
+
+        if data.len() < 28 {
+            return Err("密文太短".into());
+        }
+
+        let key = Self::derive_key();
+        let nonce = &data[..12];
+        let tag = &data[12..28];
+        let ciphertext = &data[28..];
+
+        let plaintext = decrypt_aead(
+            Cipher::aes_256_gcm(),
+            &key,
+            Some(nonce),
+            &[],
+            ciphertext,
+            tag,
+        )?;
+        Ok(plaintext)
+    }
+
+    fn load_store() -> HashMap<String, String> {
+        let path = Self::credentials_path();
         match std::fs::read_to_string(&path) {
-            Ok(content) => toml::from_str(&content).unwrap_or_default(),
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
             Err(_) => HashMap::new(),
         }
     }
 
-    fn save_passwords(map: &HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
-        let path = Self::passwords_path();
+    fn save_store(map: &HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
+        let path = Self::credentials_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(map)?;
+        let content = serde_json::to_string_pretty(map)?;
         std::fs::write(&path, content)?;
         Ok(())
     }
 
     fn file_store(&self, password: &str) -> Result<(), Box<dyn std::error::Error>> {
-        use base64::Engine;
-        let mut map = Self::load_passwords();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(password.as_bytes());
-        map.insert(self.credential_key(), encoded);
-        Self::save_passwords(&map)?;
-        app_log!("KEYRING", "file fallback store 成功: {}", self.credential_key());
+        let encrypted = Self::encrypt(password.as_bytes())?;
+        let encoded = hex::encode(&encrypted);
+
+        let mut map = Self::load_store();
+        map.insert(self.storage_key(), encoded);
+        Self::save_store(&map)?;
+
+        // 立即验证
+        let stored = map.get(&self.storage_key()).unwrap();
+        let decoded = hex::decode(stored)?;
+        let decrypted = Self::decrypt(&decoded)?;
+        let verify = String::from_utf8(decrypted)?;
+        if verify != password {
+            return Err("store 后 verify 失败".into());
+        }
+
+        app_log!("KEYRING", "file store+verify 成功: {}", self.storage_key());
         Ok(())
     }
 
     fn file_retrieve(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        use base64::Engine;
-        let map = Self::load_passwords();
-        match map.get(&self.credential_key()) {
+        let map = Self::load_store();
+        match map.get(&self.storage_key()) {
             Some(encoded) => {
-                let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-                let pw = String::from_utf8(bytes)?;
-                app_log!("KEYRING", "file fallback retrieve 成功: {}", self.credential_key());
-                Ok(Some(pw))
+                let data = hex::decode(encoded)?;
+                let plaintext = Self::decrypt(&data)?;
+                let password = String::from_utf8(plaintext)?;
+                app_log!("KEYRING", "file retrieve 成功: {}", self.storage_key());
+                Ok(Some(password))
             }
-            None => Ok(None),
+            None => {
+                app_log!("KEYRING", "file retrieve 无记录: {}", self.storage_key());
+                Ok(None)
+            }
         }
     }
 
-    // ---- Linux: secret-service (GNOME Keyring) ----
+    // ---- 公开接口 ----
 
     #[cfg(target_os = "linux")]
     pub async fn store_password(&self, password: &str) -> Result<(), Box<dyn std::error::Error>> {
         use secret_service::{EncryptionType, SecretService};
-        let ss = SecretService::connect(EncryptionType::Dh).await?;
-        let collection = ss.get_default_collection().await?;
-        let attrs = self.attributes();
-        let attr_refs: HashMap<&str, &str> = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        collection.create_item(&self.label(), attr_refs, password.as_bytes(), true, "text/plain").await?;
-        Ok(())
+        match SecretService::connect(EncryptionType::Dh).await {
+            Ok(ss) => {
+                let collection = ss.get_default_collection().await?;
+                let mut attrs = HashMap::new();
+                attrs.insert("application", "guishell");
+                let key = self.storage_key();
+                attrs.insert("key", &key);
+                collection.create_item(&self.storage_key(), attrs, password.as_bytes(), true, "text/plain").await?;
+                app_log!("KEYRING", "secret-service store 成功: {}", self.storage_key());
+                Ok(())
+            }
+            Err(e) => {
+                app_log!("KEYRING", "secret-service 不可用({}), 回退文件存储", e);
+                self.file_store(password)
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
     pub async fn retrieve_password(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
         use secret_service::{EncryptionType, SecretService};
-        let ss = SecretService::connect(EncryptionType::Dh).await?;
-        let attrs = self.attributes();
-        let attr_refs: HashMap<&str, &str> = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let results = ss.search_items(attr_refs).await?;
-        let item = match results.unlocked.first() {
-            Some(item) => item,
-            None => match results.locked.first() {
-                Some(item) => { item.unlock().await?; item }
-                None => return Ok(None),
-            },
-        };
-        let secret = item.get_secret().await?;
-        let password = String::from_utf8(secret)?;
-        Ok(Some(password))
+        match SecretService::connect(EncryptionType::Dh).await {
+            Ok(ss) => {
+                let mut attrs = HashMap::new();
+                attrs.insert("application", "guishell");
+                let key = self.storage_key();
+                attrs.insert("key", &key);
+                let results = ss.search_items(attrs).await?;
+                let item = match results.unlocked.first() {
+                    Some(item) => item,
+                    None => match results.locked.first() {
+                        Some(item) => { item.unlock().await?; item }
+                        None => return self.file_retrieve(),
+                    },
+                };
+                let secret = item.get_secret().await?;
+                let password = String::from_utf8(secret)?;
+                app_log!("KEYRING", "secret-service retrieve 成功: {}", self.storage_key());
+                Ok(Some(password))
+            }
+            Err(e) => {
+                app_log!("KEYRING", "secret-service 不可用({}), 回退文件", e);
+                self.file_retrieve()
+            }
+        }
     }
-
-    // ---- 非 Linux: keyring crate + 文件 fallback ----
 
     #[cfg(not(target_os = "linux"))]
     pub async fn store_password(&self, password: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // 尝试系统 keyring
-        let key = self.credential_key();
-        if let Ok(entry) = keyring::Entry::new("guishell", &key) {
-            if entry.set_password(password).is_ok() {
-                // 验证是否真的存进去了
-                if let Ok(pw) = entry.get_password() {
-                    if pw == password {
-                        return Ok(());
-                    }
-                }
-                app_log!("KEYRING", "系统 keyring store 后 verify 失败,回退文件存储");
-            }
-        }
-        // 回退到文件存储
-        self.file_store(password)?;
-        Ok(())
+        self.file_store(password)
     }
 
     #[cfg(not(target_os = "linux"))]
     pub async fn retrieve_password(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        // 先尝试系统 keyring
-        let key = self.credential_key();
-        if let Ok(entry) = keyring::Entry::new("guishell", &key) {
-            if let Ok(pw) = entry.get_password() {
-                return Ok(Some(pw));
-            }
-        }
-        // 回退到文件
         self.file_retrieve()
     }
 }
