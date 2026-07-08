@@ -96,10 +96,11 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
       setProcesses(list);
       setError(null);
     } catch (e) {
-      console.error('Failed to load processes:', e);
-      setError(String(e));
-      // 5 秒后自动清除错误提示(下次 3 秒刷新如果成功会 setError(null))
-      setTimeout(() => setError(null), 5000);
+      // 已有数据时静默跳过(等下次 3 秒刷新),只在首次加载零数据时提示
+      if (processes.length === 0) {
+        setError(String(e));
+        setTimeout(() => setError(null), 5000);
+      }
     }
     setLoading(false);
   }
