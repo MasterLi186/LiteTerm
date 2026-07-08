@@ -1062,7 +1062,24 @@ function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [aboutInfo, setAboutInfo] = useState<Record<string, string> | null>(null);
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
-  const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
+  // 文件管理器:本地终端默认隐藏,SSH 默认打开,手动切换后按 sessionId 记住
+  const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  const fileBrowserPrefRef = useRef<Record<string, boolean>>(
+    (() => { try { return JSON.parse(localStorage.getItem('guishell_fb_pref') || '{}'); } catch { return {}; } })()
+  );
+  useEffect(() => {
+    const sid = activeSshSessionId;
+    if (!sid) {
+      setFileBrowserOpen(false);
+      return;
+    }
+    const prefs = fileBrowserPrefRef.current;
+    if (sid in prefs) {
+      setFileBrowserOpen(prefs[sid]);
+    } else {
+      setFileBrowserOpen(true);
+    }
+  }, [activeSshSessionId]);
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
   const [showLogPanel, setShowLogPanel] = useState(false);
@@ -1847,7 +1864,14 @@ function App() {
         )}
         <div
           className="h-6 border-t border-surface-border bg-surface-light flex items-center justify-center cursor-pointer hover:bg-surface-lighter select-none flex-shrink-0"
-          onClick={() => setFileBrowserOpen(!fileBrowserOpen)}
+          onClick={() => {
+            const next = !fileBrowserOpen;
+            setFileBrowserOpen(next);
+            if (activeSshSessionId) {
+              fileBrowserPrefRef.current[activeSshSessionId] = next;
+              try { localStorage.setItem('guishell_fb_pref', JSON.stringify(fileBrowserPrefRef.current)); } catch {}
+            }
+          }}
         >
           <span className="text-xs text-gray-500">{fileBrowserOpen ? '▼ 隐藏文件管理器' : '▲ 显示文件管理器'}</span>
         </div>
