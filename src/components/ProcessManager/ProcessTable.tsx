@@ -142,9 +142,10 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   async function handleRowClick(pid: number) {
     setSelectedPid(pid);
     try {
+      // 一次性获取:status + cmdline + exe + cwd + 环境变量 + 进程树链(向上追溯到 PID 1)
       const output = await invoke<string>('sftp_exec', {
         sessionId,
-        command: `cat /proc/${pid}/status 2>/dev/null; echo '===CMDLINE==='; tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null; echo; echo '===EXE==='; readlink /proc/${pid}/exe 2>/dev/null; echo '===CWD==='; readlink /proc/${pid}/cwd 2>/dev/null; echo '===ENV==='; tr '\\0' '\\n' < /proc/${pid}/environ 2>/dev/null | head -30`,
+        command: `cat /proc/${pid}/status 2>/dev/null; echo '===CMDLINE==='; tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null; echo; echo '===EXE==='; readlink /proc/${pid}/exe 2>/dev/null; echo '===CWD==='; readlink /proc/${pid}/cwd 2>/dev/null; echo '===ENV==='; tr '\\0' '\\n' < /proc/${pid}/environ 2>/dev/null; echo '===TREE==='; p=${pid}; while [ "$p" != "1" ] && [ "$p" != "0" ] && [ -n "$p" ]; do pp=$(awk '{print $4}' /proc/$p/stat 2>/dev/null); name=$(awk '{gsub(/[()]/, "", $2); print $2}' /proc/$p/stat 2>/dev/null); cmd=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null); echo "$p|$name|$cmd"; p=$pp; done; echo "1|systemd|/sbin/init"`,
       });
       const sections = output.split(/===\w+===/);
       const status = sections[0] || '';
@@ -152,13 +153,21 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
       const exe = (sections[2] || '').trim();
       const cwd = (sections[3] || '').trim();
       const env = (sections[4] || '').trim();
-      // 从 /proc/pid/status 提取字段
+      const treeText = (sections[5] || '').trim();
+
       const get = (key: string) => {
         const m = status.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
         return m ? m[1].trim() : '';
       };
       const rssKb = parseInt(get('VmRSS')) || 0;
       const mem = rssKb >= 1048576 ? `${(rssKb/1048576).toFixed(1)}G` : rssKb >= 1024 ? `${(rssKb/1024).toFixed(1)}M` : `${rssKb}K`;
+
+      // 解析进程树链: "PID|NAME|CMDLINE" 每行一个祖先
+      const ancestors = treeText.split('\n').filter(Boolean).map(line => {
+        const [p, name, ...rest] = line.split('|');
+        return { pid: parseInt(p) || 0, name: name || '', cmdline: rest.join('|').trim() };
+      });
+
       setDetail({
         pid,
         user: get('Uid').split(/\s+/)[0] || '',
@@ -172,6 +181,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
           const eq = line.indexOf('=');
           return eq > 0 ? { key: line.substring(0, eq), value: line.substring(eq + 1) } : { key: line, value: '' };
         }),
+        ancestors,
       });
     } catch (e) {
       console.error('Failed to load process detail:', e);

@@ -104,9 +104,16 @@ export interface EnvVar {
   value: string;
 }
 
+export interface ProcessAncestor {
+  pid: number;
+  name: string;
+  cmdline: string;
+}
+
 export interface ProcessFullDetail extends ProcessDetail {
   working_dir: string;
   environ: EnvVar[];
+  ancestors: ProcessAncestor[];
 }
 
 export interface ShellInfo {
