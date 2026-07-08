@@ -102,6 +102,8 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
 
   useEffect(() => {
     const unlisten = listen<MonitorData>('monitor-data', (event) => {
+      // delete+set 保证 LRU 顺序(Map 按插入序迭代,更新时先删再插移到末尾)
+      monitorCache.delete(event.payload.session_id);
       monitorCache.set(event.payload.session_id, event.payload);
       if (monitorCache.size > 50) {
         const oldest = monitorCache.keys().next().value;

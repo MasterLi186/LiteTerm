@@ -913,6 +913,15 @@ function App() {
       delete next[id];
       return next;
     });
+    // 关闭最后一个连接到某台主机的 tab 时,清理 monitorStartedRef 允许重连时重新启动监控
+    if (tab?.sshParams) {
+      const mk = `${tab.sshParams.user}@${tab.sshParams.host}:${tab.sshParams.port}`;
+      const otherSame = tabs.filter(t => t.id !== id && t.sshParams &&
+        `${t.sshParams.user}@${t.sshParams.host}:${t.sshParams.port}` === mk);
+      if (otherSame.length === 0) {
+        monitorStartedRef.current.delete(mk);
+      }
+    }
     setTabs((prev) => prev.filter((t) => t.id !== id));
     setActiveTabId((prev) => {
       if (prev !== id) return prev;

@@ -462,6 +462,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
         log('FileBrowser', `loadRemoteFiles OK: ${entries.length} entries (attempt ${attempt})`);
         setRemoteFiles(entries);
         remoteFilesRef.current = entries;
+        remoteFileCache.delete(cacheKey);
         remoteFileCache.set(cacheKey, entries);
         if (remoteFileCache.size > 200) {
           const oldest = remoteFileCache.keys().next().value;

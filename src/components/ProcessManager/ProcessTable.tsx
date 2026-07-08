@@ -65,6 +65,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   const [detail, setDetail] = useState<ProcessFullDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const hasDataRef = useRef(false);
 
   // Auto-refresh every 3 seconds(列表 + 已选中的进程详情)
   useEffect(() => {
@@ -77,13 +78,13 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   }, []);
 
   async function loadProcesses() {
-    if (processes.length === 0) setLoading(true);
+    if (!hasDataRef.current) setLoading(true);
     try {
       // -O lstart 加启动时间(0.026s),不用 -H 进程树(256 核上 24 秒)
       // 输出: PID USER LSTART %CPU RSS COMMAND(lstart 展开为 DAY MON DD HH:MM:SS YYYY)
       const psOutput = await invoke<string>('sftp_exec', {
         sessionId,
-        command: "ps -eo pid,user,lstart,pcpu,rss,comm --no-headers 2>/dev/null | awk '$9+0>0.1{print}' | head -100",
+        command: "ps -eo pid,user,lstart,pcpu,rss,comm --no-headers 2>/dev/null | awk '$8+0>0.1{print}' | head -100",
       });
       const list: ProcessDetail[] = [];
       for (const line of psOutput.split('\n')) {
@@ -101,10 +102,10 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
       }
       list.sort((a, b) => b.cpu - a.cpu);
       setProcesses(list);
+      hasDataRef.current = list.length > 0;
       setError(null);
     } catch (e) {
-      // 已有数据时静默跳过(等下次 3 秒刷新),只在首次加载零数据时提示
-      if (processes.length === 0) {
+      if (!hasDataRef.current) {
         setError(String(e));
         setTimeout(() => setError(null), 5000);
       }
@@ -150,7 +151,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
       // 一次性获取:status + cmdline + exe + cwd + 环境变量 + 进程树链(向上追溯到 PID 1)
       const output = await invoke<string>('sftp_exec', {
         sessionId,
-        command: `cat /proc/${pid}/status 2>/dev/null; echo '===CMDLINE==='; tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null; echo; echo '===EXE==='; readlink /proc/${pid}/exe 2>/dev/null; echo '===CWD==='; readlink /proc/${pid}/cwd 2>/dev/null; echo '===ENV==='; tr '\\0' '\\n' < /proc/${pid}/environ 2>/dev/null; echo '===LSTART==='; ps -p ${pid} -o lstart= 2>/dev/null; echo '===TREE==='; p=${pid}; while [ "$p" != "1" ] && [ "$p" != "0" ] && [ -n "$p" ]; do pp=$(awk '{print $4}' /proc/$p/stat 2>/dev/null); name=$(awk '{gsub(/[()]/, "", $2); print $2}' /proc/$p/stat 2>/dev/null); cmd=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null); echo "$p|$name|$cmd"; p=$pp; done; echo "1|systemd|/sbin/init"`,
+        command: `cat /proc/${pid}/status 2>/dev/null; echo '===CMDLINE==='; tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null; echo; echo '===EXE==='; readlink /proc/${pid}/exe 2>/dev/null; echo '===CWD==='; readlink /proc/${pid}/cwd 2>/dev/null; echo '===ENV==='; tr '\\0' '\\n' < /proc/${pid}/environ 2>/dev/null; echo '===LSTART==='; ps -p ${pid} -o lstart= 2>/dev/null; echo '===TREE==='; p=${pid}; i=0; while [ "$p" != "1" ] && [ "$p" != "0" ] && [ -n "$p" ] && [ $i -lt 50 ]; do i=$((i+1)); pp=$(awk '{print $4}' /proc/$p/stat 2>/dev/null); name=$(awk '{gsub(/[()]/, "", $2); print $2}' /proc/$p/stat 2>/dev/null); cmd=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null); echo "$p|$name|$cmd"; p=$pp; done; echo "1|systemd|/sbin/init"`,
       });
       const sections = output.split(/===\w+===/);
       const status = sections[0] || '';

@@ -21,6 +21,7 @@ echo "  ✓ clippy 通过"
 
 echo "=== Rust 单元测试 ==="
 cargo test 2>&1 | tail -10
+(cd src-tauri && cargo test 2>&1 | tail -10)
 echo "  ✓ 测试通过"
 
 echo "=== 验证产物 ==="
