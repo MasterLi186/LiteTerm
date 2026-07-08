@@ -30,6 +30,7 @@ uuid = { version = "1", features = ["v4"] }
 tauri-plugin-dialog = "2.7.1"
 serialport = "4"
 hostname = "0.4"
+sysinfo = "0.34"
 whoami = "1"
 hex = "0.4"
 

@@ -444,118 +444,146 @@ pub async fn start_monitor(
     Ok(())
 }
 
-/// Local system monitor — same data as SSH monitor but reads from local /proc.
+/// Local system monitor — 使用 sysinfo crate,跨平台(Linux/macOS/Windows)。
 #[tauri::command]
 pub async fn start_local_monitor(
     app: AppHandle,
 ) -> Result<(), String> {
+    use sysinfo::{System, Disks, Networks, CpuRefreshKind, MemoryRefreshKind, ProcessesToUpdate};
+
     let app_clone = app.clone();
 
     std::thread::spawn(move || {
-        let cmd = collect_command();
-        let mut prev_cpu = None;
-        let mut prev_net_rx: u64 = 0;
-        let mut prev_net_tx: u64 = 0;
-        let mut prev_per_iface: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
-        let mut first_sample = true;
+        let mut sys = System::new();
+        let mut networks = Networks::new_with_refreshed_list();
+        let disks = Disks::new_with_refreshed_list();
         let session_id = "local".to_string();
+        let mut prev_net: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+        let mut first_sample = true;
+
+        // 首次刷新 CPU(第一次采样不准,需要两次间隔)
+        sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
         loop {
-            match exec_local_command(cmd) {
-                Ok(output) => {
-                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text, cpuinfo_text, route_text) =
-                        parse_sections(&output);
+            sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+            sys.refresh_memory_specifics(MemoryRefreshKind::everything());
+            sys.refresh_processes(ProcessesToUpdate::All, true);
+            networks.refresh(true);
 
-                    let cpu_metrics = parse_proc_stat_cpu(&stat_text);
-                    let cpu_percent = if let Some(ref prev) = prev_cpu {
-                        if let Some(curr) = cpu_metrics.first() {
-                            curr.usage_percent(prev)
-                        } else { 0.0 }
-                    } else { 0.0 };
-                    prev_cpu = cpu_metrics.into_iter().next();
+            // CPU
+            let cpu_percent = sys.global_cpu_usage() as f64;
+            let cpu_info = {
+                let brand = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+                let cores = sys.cpus().len();
+                if brand.is_empty() { format!("{}核", cores) } else { format!("{} ({}核)", brand.trim(), cores) }
+            };
 
-                    let (memory_used_percent, memory_display) =
-                        if let Some(mem) = parse_proc_meminfo(&mem_text) {
-                            let used_kb = mem.total_kb.saturating_sub(mem.available_kb);
-                            let pct = if mem.total_kb > 0 { (used_kb as f64 / mem.total_kb as f64) * 100.0 } else { 0.0 };
-                            (pct, format!("{} / {}", format_kb_to_human(used_kb), format_kb_to_human(mem.total_kb)))
-                        } else { (0.0, "N/A".to_string()) };
+            // 内存
+            let total_mem = sys.total_memory();
+            let used_mem = sys.used_memory();
+            let memory_used_percent = if total_mem > 0 { (used_mem as f64 / total_mem as f64) * 100.0 } else { 0.0 };
+            let memory_text = format!("{} / {}", format_bytes(used_mem), format_bytes(total_mem));
 
-                    let (swap_used_kb, swap_total_kb) = parse_swap_info(&mem_text);
-                    let swap_percent = if swap_total_kb > 0 { (swap_used_kb as f64 / swap_total_kb as f64) * 100.0 } else { 0.0 };
-                    let swap_display = format!("{} / {}", format_kb_to_human(swap_used_kb), format_kb_to_human(swap_total_kb));
+            // Swap
+            let total_swap = sys.total_swap();
+            let used_swap = sys.used_swap();
+            let swap_percent = if total_swap > 0 { (used_swap as f64 / total_swap as f64) * 100.0 } else { 0.0 };
+            let swap_text = format!("{} / {}", format_bytes(used_swap), format_bytes(total_swap));
 
-                    let uptime_display = parse_proc_uptime(&uptime_text);
-                    let load_display = if let Some(load) = parse_loadavg(&load_text) {
-                        format!("{:.2}, {:.2}, {:.2}", load.load_1m, load.load_5m, load.load_15m)
-                    } else { "N/A".to_string() };
+            // 运行时间
+            let uptime_secs = System::uptime();
+            let days = uptime_secs / 86400;
+            let hours = (uptime_secs % 86400) / 3600;
+            let mins = (uptime_secs % 3600) / 60;
+            let uptime_text = if days > 0 {
+                format!("{}天{}小时{}分钟", days, hours, mins)
+            } else {
+                format!("{}小时{}分钟", hours, mins)
+            };
 
-                    let disks = parse_df_output(&disk_text);
-                    let disk_items: Vec<DiskItem> = disks.iter()
-                        .filter(|d| d.mount_point.starts_with("/") && !d.filesystem.starts_with("tmpfs") && !d.filesystem.starts_with("udev") && !d.filesystem.starts_with("overlay"))
-                        .map(|d| DiskItem { mount: d.mount_point.clone(), avail: d.avail.clone(), size: d.size.clone(), percent: d.use_percent })
-                        .collect();
+            // 负载(Linux/macOS 有,Windows 返回 [0,0,0])
+            let load_avg = System::load_average();
+            let load_text = format!("{:.2}, {:.2}, {:.2}", load_avg.one, load_avg.five, load_avg.fifteen);
 
-                    let net_metrics = parse_proc_net_dev(&net_text);
-                    let all_ifaces: Vec<String> = net_metrics.iter().map(|n| n.interface.clone()).collect();
-                    let total_rx: u64 = net_metrics.iter().map(|n| n.rx_bytes).sum();
-                    let total_tx: u64 = net_metrics.iter().map(|n| n.tx_bytes).sum();
-                    let default_iface = parse_default_iface(&route_text);
-                    let net_iface = default_iface
-                        .filter(|d| all_ifaces.contains(d))
-                        .unwrap_or_else(|| net_metrics.first().map(|n| n.interface.clone()).unwrap_or_default());
-
-                    let mut net_per_iface: Vec<NetIfaceRate> = Vec::new();
-                    let (net_rx_rate, net_tx_rate) = if first_sample {
-                        first_sample = false;
-                        for m in &net_metrics {
-                            prev_per_iface.insert(m.interface.clone(), (m.rx_bytes, m.tx_bytes));
-                            net_per_iface.push(NetIfaceRate { name: m.interface.clone(), rx_rate: 0, tx_rate: 0 });
-                        }
-                        (0u64, 0u64)
-                    } else {
-                        for m in &net_metrics {
-                            let (prx, ptx) = prev_per_iface.get(&m.interface).copied().unwrap_or((0, 0));
-                            net_per_iface.push(NetIfaceRate {
-                                name: m.interface.clone(),
-                                rx_rate: m.rx_bytes.saturating_sub(prx) / 2,
-                                tx_rate: m.tx_bytes.saturating_sub(ptx) / 2,
-                            });
-                            prev_per_iface.insert(m.interface.clone(), (m.rx_bytes, m.tx_bytes));
-                        }
-                        (total_rx.saturating_sub(prev_net_rx) / 2, total_tx.saturating_sub(prev_net_tx) / 2)
-                    };
-                    prev_net_rx = total_rx;
-                    prev_net_tx = total_tx;
-
-                    let all_procs = parse_ps_aux(&ps_text);
-                    let processes: Vec<ProcessInfo> = all_procs.iter().take(10).map(|p| {
-                        let mem = if p.rss_kb >= 1048576 { format!("{:.1}G", p.rss_kb as f64 / 1048576.0) }
-                            else if p.rss_kb >= 1024 { format!("{:.1}M", p.rss_kb as f64 / 1024.0) }
-                            else { format!("{}K", p.rss_kb) };
-                        let short_name = p.command.split_whitespace().next()
-                            .and_then(|s| s.rsplit('/').next()).unwrap_or(&p.command).to_string();
-                        ProcessInfo { mem, cpu: p.cpu_percent as f32, command: short_name }
-                    }).collect();
-
-                    let payload = MonitorPayload {
-                        session_id: session_id.clone(), cpu_percent, memory_used_percent,
-                        memory_text: memory_display, swap_text: swap_display, swap_percent,
-                        uptime_text: uptime_display, load_text: load_display, disk_items,
-                        net_rx_rate, net_tx_rate, net_interface: net_iface, net_interfaces: all_ifaces, net_per_iface,
-                        cpu_info: {
-                            let (model, cores) = parse_cpuinfo(&cpuinfo_text);
-                            if model.is_empty() { format!("{}核", cores) } else { format!("{} ({}核)", model, cores) }
-                        },
-                        processes,
-                    };
-                    let _ = app_clone.emit("monitor-data", payload);
+            // 磁盘
+            let disk_items: Vec<DiskItem> = disks.list().iter().map(|d| {
+                let total = d.total_space();
+                let avail = d.available_space();
+                let percent = if total > 0 { ((total - avail) as f64 / total as f64 * 100.0) as u8 } else { 0 };
+                DiskItem {
+                    mount: d.mount_point().to_string_lossy().to_string(),
+                    avail: format_bytes(avail),
+                    size: format_bytes(total),
+                    percent,
                 }
-                Err(e) => { app_log!("MON", "Local monitor failed: {}", e); break; }
+            }).collect();
+
+            // 网络
+            let mut all_ifaces: Vec<String> = Vec::new();
+            let mut net_per_iface: Vec<NetIfaceRate> = Vec::new();
+            let mut total_rx: u64 = 0;
+            let mut total_tx: u64 = 0;
+
+            for (name, data) in networks.iter() {
+                let rx = data.total_received();
+                let tx = data.total_transmitted();
+                all_ifaces.push(name.clone());
+                total_rx += rx;
+                total_tx += tx;
+
+                if first_sample {
+                    net_per_iface.push(NetIfaceRate { name: name.clone(), rx_rate: 0, tx_rate: 0 });
+                } else {
+                    let (prx, ptx) = prev_net.get(name.as_str()).copied().unwrap_or((0, 0));
+                    net_per_iface.push(NetIfaceRate {
+                        name: name.clone(),
+                        rx_rate: rx.saturating_sub(prx) / 2,
+                        tx_rate: tx.saturating_sub(ptx) / 2,
+                    });
+                }
+                prev_net.insert(name.clone(), (rx, tx));
             }
+
+            let (net_rx_rate, net_tx_rate) = if first_sample {
+                first_sample = false;
+                (0, 0)
+            } else {
+                let prx: u64 = prev_net.values().map(|(r, _)| r).sum();
+                let ptx: u64 = prev_net.values().map(|(_, t)| t).sum();
+                (total_rx.saturating_sub(prx) / 2, total_tx.saturating_sub(ptx) / 2)
+            };
+            let net_iface = all_ifaces.first().cloned().unwrap_or_default();
+
+            // 进程(按 CPU 排序取前 10)
+            let mut procs: Vec<(&sysinfo::Pid, &sysinfo::Process)> = sys.processes().iter().collect();
+            procs.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
+            let processes: Vec<ProcessInfo> = procs.iter().take(10).map(|(_, p)| {
+                let mem_bytes = p.memory();
+                let mem = if mem_bytes >= 1_073_741_824 { format!("{:.1}G", mem_bytes as f64 / 1_073_741_824.0) }
+                    else if mem_bytes >= 1_048_576 { format!("{:.1}M", mem_bytes as f64 / 1_048_576.0) }
+                    else { format!("{}K", mem_bytes / 1024) };
+                let name = p.name().to_string_lossy().to_string();
+                ProcessInfo { mem, cpu: p.cpu_usage(), command: name }
+            }).collect();
+
+            let payload = MonitorPayload {
+                session_id: session_id.clone(), cpu_percent, memory_used_percent,
+                memory_text, swap_text, swap_percent, uptime_text, load_text, disk_items,
+                net_rx_rate, net_tx_rate, net_interface: net_iface, net_interfaces: all_ifaces, net_per_iface,
+                cpu_info, processes,
+            };
+            let _ = app_clone.emit("monitor-data", payload);
+
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
     });
 
     Ok(())
+}
+
+fn format_bytes(bytes: u64) -> String {
+    let gb = bytes as f64 / 1_073_741_824.0;
+    if gb >= 1.0 { format!("{:.1}G", gb) }
+    else { format!("{:.0}M", bytes as f64 / 1_048_576.0) }
 }
