@@ -328,7 +328,7 @@ function App() {
   useEffect(() => {
     const sessions = tabs
       .filter(t => t.type === 'ssh' && t.sshParams)
-      .map(t => ({ label: t.label, sshParams: t.sshParams! }));
+      .map(t => ({ label: t.label, sshParams: t.sshParams!, fileBrowserHidden: t.fileBrowserHidden }));
     localStorage.setItem('guishell_sessions', JSON.stringify(sessions));
   }, [tabs]);
 
@@ -336,7 +336,7 @@ function App() {
     try {
       const saved = localStorage.getItem('guishell_sessions');
       if (saved) {
-        const sessions: Array<{ label: string; sshParams: Tab['sshParams'] }> = JSON.parse(saved);
+        const sessions: Array<{ label: string; sshParams: Tab['sshParams']; fileBrowserHidden?: boolean }> = JSON.parse(saved);
         for (const s of sessions) {
           if (s.sshParams) {
             try {
@@ -366,7 +366,7 @@ function App() {
                   label: s.label,
                   proxyJump: s.sshParams.proxyJump || null,
                 });
-                const tab: Tab = { id, label: s.label, type: 'ssh', sshParams: { ...s.sshParams, password: pw || null } };
+                const tab: Tab = { id, label: s.label, type: 'ssh', sshParams: { ...s.sshParams, password: pw || null }, fileBrowserHidden: s.fileBrowserHidden };
                 setTabs(prev => [...prev, tab]);
                 setActiveTabId(id);
                 setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
@@ -1062,27 +1062,16 @@ function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [aboutInfo, setAboutInfo] = useState<Record<string, string> | null>(null);
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
-  // 文件管理器:本地终端默认隐藏,SSH 默认打开,手动切换后按连接标识记住
+  // 文件管理器:本地终端默认隐藏,SSH 看 tab.fileBrowserHidden(每个标签独立记忆)
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
-  const fileBrowserPrefRef = useRef<Record<string, boolean>>(
-    (() => { try { return JSON.parse(localStorage.getItem('guishell_fb_pref') || '{}'); } catch { return {}; } })()
-  );
-  // 用 user@host:port 作为持久 key(sessionId 每次重启会变)
-  const fbPrefKey = activeTab?.sshParams
-    ? `${activeTab.sshParams.user}@${activeTab.sshParams.host}:${activeTab.sshParams.port}`
-    : null;
   useEffect(() => {
-    if (!activeSshSessionId || !fbPrefKey) {
+    if (!activeSshSessionId) {
       setFileBrowserOpen(false);
       return;
     }
-    const prefs = fileBrowserPrefRef.current;
-    if (fbPrefKey in prefs) {
-      setFileBrowserOpen(prefs[fbPrefKey]);
-    } else {
-      setFileBrowserOpen(true);
-    }
-  }, [activeSshSessionId, fbPrefKey]);
+    // SSH 标签:读该标签的 fileBrowserHidden 属性(默认打开)
+    setFileBrowserOpen(!activeTab?.fileBrowserHidden);
+  }, [activeSshSessionId]);
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
   const [showLogPanel, setShowLogPanel] = useState(false);
@@ -1870,9 +1859,9 @@ function App() {
           onClick={() => {
             const next = !fileBrowserOpen;
             setFileBrowserOpen(next);
-            if (fbPrefKey) {
-              fileBrowserPrefRef.current[fbPrefKey] = next;
-              try { localStorage.setItem('guishell_fb_pref', JSON.stringify(fileBrowserPrefRef.current)); } catch {}
+            // 把隐藏状态写到 tab 对象上,会通过 tabs useEffect 自动持久化到 localStorage
+            if (activeTabId) {
+              setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, fileBrowserHidden: !next } : t));
             }
           }}
         >

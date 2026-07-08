@@ -44,6 +44,7 @@ export interface Tab {
     baudRate: number;
   };
   recordingPath?: string;
+  fileBrowserHidden?: boolean;
 }
 
 export interface DiskItem {
