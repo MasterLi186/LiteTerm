@@ -136,22 +136,9 @@ fn exec_command(session: &ssh2::Session, cmd: &str) -> Result<String, String> {
     Ok(output)
 }
 
-#[cfg(unix)]
-fn exec_local_command(cmd: &str) -> Result<String, String> {
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .output()
-        .map_err(|e| format!("执行本地命令失败: {}", e))?;
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-#[cfg(not(unix))]
-fn exec_local_command(_cmd: &str) -> Result<String, String> {
-    Err("本地监控暂不支持此平台".to_string())
-}
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_monitor(
     state: State<'_, AppState>,
     app: AppHandle,

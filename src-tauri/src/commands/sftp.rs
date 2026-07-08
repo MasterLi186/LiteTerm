@@ -103,6 +103,7 @@ pub async fn list_local_dir(path: String) -> Result<Vec<FileEntry>, String> {
 
 /// Start an SFTP session over a new SSH connection and store it in app state.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_sftp_session(
     state: State<'_, AppState>,
     session_id: String,
@@ -701,6 +702,7 @@ pub async fn drag_upload(
 }
 
 /// 单文件 SFTP 上传，支持取消，进度事件附带目标目录。buf 为调用方复用的读写缓冲。
+#[allow(clippy::too_many_arguments)]
 fn upload_one(
     state: &State<'_, AppState>,
     app: &AppHandle,

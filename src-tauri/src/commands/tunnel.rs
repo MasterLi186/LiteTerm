@@ -24,6 +24,7 @@ pub struct TunnelHandle {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_tunnel(
     state: State<'_, AppState>,
     app: AppHandle,

@@ -66,6 +66,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const hasDataRef = useRef(false);
+  const [procStats, setProcStats] = useState<{ total: number; running: number; sleeping: number; zombie: number; stopped: number } | null>(null);
 
   // Auto-refresh every 3 seconds(列表 + 已选中的进程详情)
   useEffect(() => {
@@ -104,6 +105,27 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
       setProcesses(list);
       hasDataRef.current = list.length > 0;
       setError(null);
+      // 进程状态统计(轻量,只读 /proc/stat 一行)
+      invoke<string>('sftp_exec', {
+        sessionId,
+        command: "ps h -eo stat | cut -c1 | sort | uniq -c",
+      }).then((out: unknown) => {
+        if (typeof out !== 'string') return;
+        const lines = (out as string).trim().split('\n');
+        let total = 0, running = 0, sleeping = 0, zombie = 0, stopped = 0;
+        for (const line of lines) {
+          const m = line.trim().match(/^(\d+)\s+(\S)/);
+          if (m) {
+            const count = parseInt(m[1]);
+            total += count;
+            if (m[2] === 'R') running = count;
+            else if (m[2] === 'S' || m[2] === 'D' || m[2] === 'I') sleeping += count;
+            else if (m[2] === 'Z') zombie = count;
+            else if (m[2] === 'T' || m[2] === 't') stopped += count;
+          }
+        }
+        setProcStats({ total, running, sleeping, zombie, stopped });
+      }).catch(() => {});
     } catch (e) {
       if (!hasDataRef.current) {
         setError(String(e));
@@ -199,11 +221,30 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   return (
     <div className="flex flex-col h-full bg-surface text-gray-200 text-sm">
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-1 border-b border-surface-border bg-surface-light">
+      <div className="flex items-center gap-2 px-3 py-1 border-b border-surface-border bg-surface-light flex-wrap">
         <span className="text-gray-400">
           进程列表 - {hostLabel}
           {!loading && ` (${processes.length})`}
         </span>
+        {procStats && (
+          <span className="text-[10px] text-gray-500" style={{ fontVariantNumeric: 'tabular-nums' }}>
+            共 <span className={procStats.total > 10000 ? 'text-accent-red font-bold' : 'text-gray-300'}>{procStats.total}</span>
+            {' '}运行 <span className="text-accent-green">{procStats.running}</span>
+            {' '}休眠 <span className="text-gray-400">{procStats.sleeping}</span>
+            {procStats.zombie > 0 && <>{' '}僵尸 <span className="text-accent-red font-bold">{procStats.zombie}</span></>}
+            {procStats.stopped > 0 && <>{' '}停止 <span className="text-accent-yellow">{procStats.stopped}</span></>}
+          </span>
+        )}
+        {procStats && procStats.total > 10000 && (
+          <span className="text-[10px] text-accent-red bg-accent-red/10 px-1.5 py-0.5 rounded">
+            ⚠ 进程数异常({procStats.total}),可能存在进程泄漏
+          </span>
+        )}
+        {procStats && procStats.zombie > 100 && (
+          <span className="text-[10px] text-accent-red bg-accent-red/10 px-1.5 py-0.5 rounded">
+            ⚠ 僵尸进程过多({procStats.zombie}),建议排查父进程
+          </span>
+        )}
         <div className="flex-1" />
         {loading && <span className="text-xs text-gray-500">加载中...</span>}
         <button

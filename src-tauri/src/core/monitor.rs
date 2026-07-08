@@ -126,6 +126,10 @@ impl<T: Clone> MetricBuffer<T> {
         self.buf.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
     /// Return a reference to the most recent element.
     pub fn last(&self) -> Option<&T> {
         self.buf.back()

@@ -387,26 +387,21 @@ function App() {
     openLocalTerminal();
   }
 
-  // Listen for terminal-closed events (with SSH auto-reconnect)
+  // Listen for terminal-closed events — 不自动重连,显示"连接已断开"
   useEffect(() => {
     const unlisten = listen<{ id: string }>('terminal-closed', (event) => {
       const closedId = event.payload.id;
-      let isReconnecting = false;
       setTabs((prev) => {
         const tab = prev.find(t => t.id === closedId);
         if (tab?.type === 'ssh' && tab.sshParams) {
-          // Start reconnection for SSH tabs
-          isReconnecting = true;
-          setReconnecting(r => ({ ...r, [closedId]: { attempts: 0, status: '正在重连...' } }));
-          attemptReconnect(tab);
-          return prev; // keep the tab
+          // SSH 断开:保留标签,显示断开提示(不自动重连)
+          setReconnecting(r => ({ ...r, [closedId]: { attempts: 0, status: '连接已断开' } }));
+          return prev;
         }
-        // For non-SSH tabs, just remove
+        // 非 SSH 标签(本地终端等):直接移除
+        setActiveTabId(prev2 => prev2 === closedId ? null : prev2);
         return prev.filter(t => t.id !== closedId);
       });
-      if (!isReconnecting) {
-        setActiveTabId((prev) => prev === closedId ? null : prev);
-      }
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -570,23 +565,8 @@ function App() {
     log('SFTP', 'SFTP session 建立最终失败');
   }
 
-  async function attemptReconnect(tab: Tab, attempt = 1) {
-    if (attempt > 5) {
-      setReconnecting(prev => ({ ...prev, [tab.id]: { attempts: attempt, status: '重连失败' } }));
-      return;
-    }
-    setReconnecting(prev => ({ ...prev, [tab.id]: { attempts: attempt, status: `正在重连... (第 ${attempt} 次)` } }));
-
-    // Exponential backoff: 2s, 4s, 8s, 16s, 32s
-    await new Promise(r => setTimeout(r, Math.min(2000 * Math.pow(2, attempt - 1), 32000)));
-
-    // Check if user cancelled while waiting
-    let cancelled = false;
-    setReconnecting(prev => {
-      if (!prev[tab.id]) cancelled = true;
-      return prev;
-    });
-    if (cancelled) return;
+  async function attemptReconnect(tab: Tab, _attempt = 1) {
+    setReconnecting(prev => ({ ...prev, [tab.id]: { attempts: 1, status: '正在重连...' } }));
 
     try {
       const newId = await sshConnect({
@@ -622,10 +602,14 @@ function App() {
       setActiveTabId(newId);
       setFocusedTerminalId(newId);
       setTimeout(() => invoke('terminal_resize', { id: newId, ...getTerminalSize() }).catch(() => {}), 300);
+      // 清理旧的监控去重标记,允许重新启动监控线程
+      const mk = `${tab.sshParams!.user}@${tab.sshParams!.host}:${tab.sshParams!.port}`;
+      monitorStartedRef.current.delete(mk);
       startMonitorAndSftp(newId, tab.sshParams!.host, tab.sshParams!.port,
         tab.sshParams!.user, tab.sshParams!.password ?? null, tab.sshParams!.authMethod, tab.sshParams!.keyPath ?? null);
-    } catch {
-      attemptReconnect(tab, attempt + 1);
+    } catch (e) {
+      // 失败后不自动重试,回显错误让用户再按 Enter
+      setReconnecting(prev => ({ ...prev, [tab.id]: { attempts: 0, status: `重连失败: ${e}` } }));
     }
   }
 
@@ -1429,7 +1413,7 @@ function App() {
                 <div style={{ position: 'absolute', right: -2, top: 2, bottom: 2, width: 2, background: '#00d4ff', borderRadius: 1 }} />
               )}
               {tab.type === 'ssh' && (
-                <span className="text-accent-green text-xs">{'●'}</span>
+                <span className={`text-xs ${reconnecting[tab.id] ? 'text-accent-red' : 'text-accent-green'}`}>{'●'}</span>
               )}
               {tab.type === 'process' && (
                 <span className="text-accent-cyan text-xs">{'◉'}</span>
@@ -1739,35 +1723,46 @@ function App() {
                     </div>
                   )}
                   {reconnecting[tab.id] && (
-                    <div style={{
-                      position: 'absolute', inset: 0, zIndex: 20,
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      background: 'rgba(13,17,23,0.9)',
-                    }}>
-                      <div style={{ color: '#00d4ff', fontSize: '14px', marginBottom: '8px' }}>
+                    <div
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && tab.sshParams) {
+                          e.preventDefault();
+                          attemptReconnect(tab, 1);
+                        }
+                      }}
+                      ref={(el) => { if (el && tab.id === activeTabId) el.focus(); }}
+                      style={{
+                        position: 'absolute', inset: 0, zIndex: 20,
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        background: 'rgba(13,17,23,0.9)', outline: 'none',
+                      }}
+                    >
+                      <div style={{ color: '#f85149', fontSize: '16px', marginBottom: '12px' }}>
                         {reconnecting[tab.id].status}
                       </div>
-                      {reconnecting[tab.id].attempts > 5 && (
-                        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                          <button
-                            onClick={() => attemptReconnect(tab, 1)}
-                            style={{
-                              background: '#00d4ff', color: '#0d1117', border: 'none',
-                              borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
-                            }}
-                          >重试</button>
-                          <button
-                            onClick={() => {
-                              setReconnecting(prev => { const n = { ...prev }; delete n[tab.id]; return n; });
-                              closeTab(tab.id);
-                            }}
-                            style={{
-                              background: '#30363d', color: '#e6edf3', border: 'none',
-                              borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
-                            }}
-                          >关闭</button>
-                        </div>
-                      )}
+                      <div style={{ color: '#8b949e', fontSize: '13px', marginBottom: '16px' }}>
+                        按 Enter 重新连接
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          onClick={() => attemptReconnect(tab, 1)}
+                          style={{
+                            background: '#00d4ff', color: '#0d1117', border: 'none',
+                            borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
+                          }}
+                        >重新连接</button>
+                        <button
+                          onClick={() => {
+                            setReconnecting(prev => { const n = { ...prev }; delete n[tab.id]; return n; });
+                            closeTab(tab.id);
+                          }}
+                          style={{
+                            background: '#30363d', color: '#e6edf3', border: 'none',
+                            borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
+                          }}
+                        >关闭标签</button>
+                      </div>
                       <button
                         onClick={() => {
                           setReconnecting(prev => { const n = { ...prev }; delete n[tab.id]; return n; });
@@ -1799,35 +1794,46 @@ function App() {
                     onOpenRecording={openRecordingTab}
                   />
                   {reconnecting[tab.id] && (
-                    <div style={{
-                      position: 'absolute', inset: 0, zIndex: 20,
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      background: 'rgba(13,17,23,0.9)',
-                    }}>
-                      <div style={{ color: '#00d4ff', fontSize: '14px', marginBottom: '8px' }}>
+                    <div
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && tab.sshParams) {
+                          e.preventDefault();
+                          attemptReconnect(tab, 1);
+                        }
+                      }}
+                      ref={(el) => { if (el && tab.id === activeTabId) el.focus(); }}
+                      style={{
+                        position: 'absolute', inset: 0, zIndex: 20,
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        background: 'rgba(13,17,23,0.9)', outline: 'none',
+                      }}
+                    >
+                      <div style={{ color: '#f85149', fontSize: '16px', marginBottom: '12px' }}>
                         {reconnecting[tab.id].status}
                       </div>
-                      {reconnecting[tab.id].attempts > 5 && (
-                        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                          <button
-                            onClick={() => attemptReconnect(tab, 1)}
-                            style={{
-                              background: '#00d4ff', color: '#0d1117', border: 'none',
-                              borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
-                            }}
-                          >重试</button>
-                          <button
-                            onClick={() => {
-                              setReconnecting(prev => { const n = { ...prev }; delete n[tab.id]; return n; });
-                              closeTab(tab.id);
-                            }}
-                            style={{
-                              background: '#30363d', color: '#e6edf3', border: 'none',
-                              borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
-                            }}
-                          >关闭</button>
-                        </div>
-                      )}
+                      <div style={{ color: '#8b949e', fontSize: '13px', marginBottom: '16px' }}>
+                        按 Enter 重新连接
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          onClick={() => attemptReconnect(tab, 1)}
+                          style={{
+                            background: '#00d4ff', color: '#0d1117', border: 'none',
+                            borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
+                          }}
+                        >重新连接</button>
+                        <button
+                          onClick={() => {
+                            setReconnecting(prev => { const n = { ...prev }; delete n[tab.id]; return n; });
+                            closeTab(tab.id);
+                          }}
+                          style={{
+                            background: '#30363d', color: '#e6edf3', border: 'none',
+                            borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
+                          }}
+                        >关闭标签</button>
+                      </div>
                       <button
                         onClick={() => {
                           setReconnecting(prev => { const n = { ...prev }; delete n[tab.id]; return n; });
@@ -1848,13 +1854,15 @@ function App() {
           )}
         </div>
 
-        {/* Command input bar */}
-        <CommandInputBar
-          terminalId={focusedTerminalId || activeTabId}
-        />
+        {/* Command input bar — 连接断开时隐藏 */}
+        {!(activeTabId && reconnecting[activeTabId]) && (
+          <CommandInputBar
+            terminalId={focusedTerminalId || activeTabId}
+          />
+        )}
 
-        {/* File browser: drag handle + toggle + panel */}
-        {fileBrowserOpen && (
+        {/* File browser: drag handle + toggle + panel — 连接断开时隐藏 */}
+        {fileBrowserOpen && !(activeTabId && reconnecting[activeTabId]) && (
           <div
             className="h-1 flex-shrink-0 cursor-row-resize hover:bg-accent-cyan/30 active:bg-accent-cyan/50"
             onMouseDown={(e) => {
@@ -1879,6 +1887,7 @@ function App() {
         )}
         <div
           className="h-6 border-t border-surface-border bg-surface-light flex items-center justify-center cursor-pointer hover:bg-surface-lighter select-none flex-shrink-0"
+          style={{ display: activeTabId && reconnecting[activeTabId] ? 'none' : undefined }}
           onClick={() => {
             const next = !fileBrowserOpen;
             setFileBrowserOpen(next);
@@ -1890,7 +1899,7 @@ function App() {
         >
           <span className="text-xs text-gray-500">{fileBrowserOpen ? '▼ 隐藏文件管理器' : '▲ 显示文件管理器'}</span>
         </div>
-        {fileBrowserOpen && (
+        {fileBrowserOpen && !(activeTabId && reconnecting[activeTabId]) && (
           <div
             className="border-t border-surface-border bg-surface-light flex flex-col file-browser-panel flex-shrink-0"
             style={{ height: `${fileBrowserHeight}px` }}

@@ -9,6 +9,7 @@ use crate::app_log;
 use crate::state::{AppState, LocalTerminal, ManagedSession, SftpRequest};
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn ssh_connect(
     state: State<'_, AppState>,
     app: AppHandle,

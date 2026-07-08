@@ -108,9 +108,11 @@ function ContextMenu({ x, y, onClose, items }: {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('click', handleClick);
+    document.addEventListener('mousedown', handleClick);
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('click', handleClick);
+      document.removeEventListener('mousedown', handleClick);
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [onClose]);
@@ -118,6 +120,7 @@ function ContextMenu({ x, y, onClose, items }: {
   return (
     <div
       className="fixed z-50 bg-surface-light border border-surface-border rounded shadow-lg py-1 min-w-[160px]"
+      onMouseDown={(e) => e.stopPropagation()}
       style={{ left: x, top: y }}
     >
       {items.map((item, i) =>
