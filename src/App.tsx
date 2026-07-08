@@ -1100,7 +1100,7 @@ function App() {
   const [renameTab, setRenameTab] = useState<{ tabId: string; name: string } | null>(null);
   const [connContextMenu, setConnContextMenu] = useState<{ x: number; y: number; groupId: string; hostId: string } | null>(null);
   const [editingConn, setEditingConn] = useState<{ groupId: string; hostId: string } | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(240);
+  const [sidebarWidth, setSidebarWidth] = useState(260);
   const sidebarDragging = useRef(false);
   const [fileBrowserHeight, setFileBrowserHeight] = useState(256);
   const fbDragging = useRef(false);

@@ -283,13 +283,13 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
               borderBottom: i < data.disk_items.length - 1 ? '1px solid #21262d' : 'none',
               background: i % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent',
             }}>
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#c9d1d9', fontSize: '11px' }}>{d.mount}</span>
+              <span title={d.mount} style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#c9d1d9', fontSize: '11px' }}>{d.mount}</span>
               <span style={{
-                width: '36px', textAlign: 'right', flexShrink: 0, fontSize: '10px', fontVariantNumeric: 'tabular-nums',
+                width: '32px', textAlign: 'right', flexShrink: 0, fontSize: '10px', fontVariantNumeric: 'tabular-nums',
                 color: d.percent > 90 ? '#f85149' : d.percent > 70 ? '#d29922' : '#8b949e',
                 fontWeight: d.percent > 90 ? 600 : 400,
               }}>{d.percent}%</span>
-              <span style={{ width: '90px', textAlign: 'right', color: '#8b949e', fontSize: '11px', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+              <span title={`${d.avail}/${d.size}`} style={{ width: '80px', textAlign: 'right', color: '#8b949e', fontSize: '10px', flexShrink: 0, fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {d.avail}/{d.size}
               </span>
             </div>
