@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ProcessDetailPanel } from './ProcessDetail';
 import type { ProcessDetail, ProcessFullDetail } from '../../types';
@@ -61,14 +61,18 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>('cpu');
   const [sortAsc, setSortAsc] = useState(false);
   const [selectedPid, setSelectedPid] = useState<number | null>(null);
+  const selectedPidRef = useRef<number | null>(null);
   const [detail, setDetail] = useState<ProcessFullDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Auto-refresh every 3 seconds
+  // Auto-refresh every 3 seconds(列表 + 已选中的进程详情)
   useEffect(() => {
     loadProcesses();
-    const timer = setInterval(loadProcesses, 3000);
+    const timer = setInterval(() => {
+      loadProcesses();
+      if (selectedPidRef.current) handleRowClick(selectedPidRef.current);
+    }, 3000);
     return () => clearInterval(timer);
   }, []);
 
@@ -141,6 +145,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
 
   async function handleRowClick(pid: number) {
     setSelectedPid(pid);
+    selectedPidRef.current = pid;
     try {
       // 一次性获取:status + cmdline + exe + cwd + 环境变量 + 进程树链(向上追溯到 PID 1)
       const output = await invoke<string>('sftp_exec', {
@@ -229,7 +234,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
                 名称 | 命令行
               </th>
               <th className="text-left px-2 py-1 text-gray-400 font-normal" style={{ width: '20%' }}>
-                位置
+                启动时间
               </th>
             </tr>
           </thead>
@@ -266,6 +271,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
             onClose={() => {
               setDetail(null);
               setSelectedPid(null);
+              selectedPidRef.current = null;
             }}
           />
         </div>
