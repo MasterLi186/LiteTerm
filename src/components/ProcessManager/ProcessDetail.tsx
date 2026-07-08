@@ -23,6 +23,8 @@ export function ProcessDetailPanel({ detail, onClose }: Props) {
         <span>{detail.user}</span>
         <span className="text-gray-500">内存</span>
         <span>{detail.mem}</span>
+        <span className="text-gray-500">启动时间</span>
+        <span>{detail.start_time || '—'}</span>
         <span className="text-gray-500">可执行文件</span>
         <span className="break-all font-mono text-accent-green">{detail.location || '—'}</span>
         <span className="text-gray-500">工作目录</span>

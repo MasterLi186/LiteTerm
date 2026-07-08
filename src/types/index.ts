@@ -112,6 +112,7 @@ export interface ProcessAncestor {
 
 export interface ProcessFullDetail extends ProcessDetail {
   working_dir: string;
+  start_time: string;
   environ: EnvVar[];
   ancestors: ProcessAncestor[];
 }

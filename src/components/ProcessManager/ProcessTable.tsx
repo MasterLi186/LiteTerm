@@ -145,7 +145,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
       // 一次性获取:status + cmdline + exe + cwd + 环境变量 + 进程树链(向上追溯到 PID 1)
       const output = await invoke<string>('sftp_exec', {
         sessionId,
-        command: `cat /proc/${pid}/status 2>/dev/null; echo '===CMDLINE==='; tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null; echo; echo '===EXE==='; readlink /proc/${pid}/exe 2>/dev/null; echo '===CWD==='; readlink /proc/${pid}/cwd 2>/dev/null; echo '===ENV==='; tr '\\0' '\\n' < /proc/${pid}/environ 2>/dev/null; echo '===TREE==='; p=${pid}; while [ "$p" != "1" ] && [ "$p" != "0" ] && [ -n "$p" ]; do pp=$(awk '{print $4}' /proc/$p/stat 2>/dev/null); name=$(awk '{gsub(/[()]/, "", $2); print $2}' /proc/$p/stat 2>/dev/null); cmd=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null); echo "$p|$name|$cmd"; p=$pp; done; echo "1|systemd|/sbin/init"`,
+        command: `cat /proc/${pid}/status 2>/dev/null; echo '===CMDLINE==='; tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null; echo; echo '===EXE==='; readlink /proc/${pid}/exe 2>/dev/null; echo '===CWD==='; readlink /proc/${pid}/cwd 2>/dev/null; echo '===ENV==='; tr '\\0' '\\n' < /proc/${pid}/environ 2>/dev/null; echo '===LSTART==='; ps -p ${pid} -o lstart= 2>/dev/null; echo '===TREE==='; p=${pid}; while [ "$p" != "1" ] && [ "$p" != "0" ] && [ -n "$p" ]; do pp=$(awk '{print $4}' /proc/$p/stat 2>/dev/null); name=$(awk '{gsub(/[()]/, "", $2); print $2}' /proc/$p/stat 2>/dev/null); cmd=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null); echo "$p|$name|$cmd"; p=$pp; done; echo "1|systemd|/sbin/init"`,
       });
       const sections = output.split(/===\w+===/);
       const status = sections[0] || '';
@@ -153,7 +153,8 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
       const exe = (sections[2] || '').trim();
       const cwd = (sections[3] || '').trim();
       const env = (sections[4] || '').trim();
-      const treeText = (sections[5] || '').trim();
+      const lstart = (sections[5] || '').trim();
+      const treeText = (sections[6] || '').trim();
 
       const get = (key: string) => {
         const m = status.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
@@ -177,6 +178,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
         full_command: cmdline || exe,
         location: exe,
         working_dir: cwd,
+        start_time: lstart,
         environ: env.split('\n').filter(Boolean).map(line => {
           const eq = line.indexOf('=');
           return eq > 0 ? { key: line.substring(0, eq), value: line.substring(eq + 1) } : { key: line, value: '' };
