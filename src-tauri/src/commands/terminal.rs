@@ -363,6 +363,26 @@ pub async fn close_terminal(state: State<'_, AppState>, id: String) -> Result<()
     Ok(())
 }
 
+/// 返回系统信息(关于对话框用)
+#[tauri::command]
+pub async fn get_system_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let username = whoami::username();
+    let rust_version = env!("CARGO_PKG_RUST_VERSION", "unknown");
+
+    Ok(serde_json::json!({
+        "app_version": app.package_info().version.to_string(),
+        "os": os,
+        "arch": arch,
+        "hostname": hostname,
+        "username": username,
+    }))
+}
+
 /// 返回当前用户的默认 shell(SHELL 环境变量)
 #[tauri::command]
 pub async fn get_default_shell() -> Result<String, String> {

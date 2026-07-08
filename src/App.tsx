@@ -1059,6 +1059,8 @@ function App() {
   const [showBatchCommand, setShowBatchCommand] = useState(false);
   const [showShortcutSettings, setShowShortcutSettings] = useState(false);
   const [showTunnelManager, setShowTunnelManager] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [aboutInfo, setAboutInfo] = useState<Record<string, string> | null>(null);
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(true);
   const [sftpReady, setSftpReady] = useState(0);
@@ -1448,6 +1450,19 @@ function App() {
             title="快捷键设置"
           >
             <IconSettings size={14} />
+          </button>
+          <button
+            onClick={async () => {
+              try {
+                const info: any = await invoke('get_system_info');
+                setAboutInfo(info);
+              } catch { setAboutInfo({}); }
+              setShowAbout(true);
+            }}
+            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
+            title="关于"
+          >
+            <span style={{ fontSize: '13px' }}>?</span>
           </button>
           {import.meta.env.DEV && (
             <button
@@ -1946,6 +1961,36 @@ function App() {
       {/* Tunnel Manager */}
       {showTunnelManager && (
         <TunnelManager onClose={() => setShowTunnelManager(false)} connections={connections} />
+      )}
+
+      {/* 关于对话框 */}
+      {showAbout && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowAbout(false)}>
+          <div className="bg-surface-light border border-surface-border rounded-lg p-6 w-96 shadow-xl" onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ color: '#00d4ff', fontSize: '18px', fontWeight: 700, margin: 0 }}>LiteTerm</h2>
+              <span onClick={() => setShowAbout(false)} style={{ color: '#8b949e', cursor: 'pointer', fontSize: '18px' }}>×</span>
+            </div>
+            <div style={{ fontSize: '13px', color: '#e6edf3', lineHeight: 1.8 }}>
+              <div><span style={{ color: '#8b949e', display: 'inline-block', width: '80px' }}>版本</span>v{aboutInfo?.app_version || '?'}</div>
+              {aboutInfo && (
+                <>
+                  <div><span style={{ color: '#8b949e', display: 'inline-block', width: '80px' }}>操作系统</span>{aboutInfo.os || '?'} ({aboutInfo.arch || '?'})</div>
+                  <div><span style={{ color: '#8b949e', display: 'inline-block', width: '80px' }}>主机名</span>{aboutInfo.hostname || '?'}</div>
+                  <div><span style={{ color: '#8b949e', display: 'inline-block', width: '80px' }}>用户</span>{aboutInfo.username || '?'}</div>
+                </>
+              )}
+              <div style={{ borderTop: '1px solid #30363d', marginTop: '12px', paddingTop: '12px', color: '#8b949e', fontSize: '11px' }}>
+                轻量级跨平台 SSH 客户端<br />
+                Tauri 2 + React + xterm.js<br />
+                <a href="https://github.com/MasterLi186/LiteTerm" style={{ color: '#58a6ff', textDecoration: 'none' }}
+                   onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(m => m.open('https://github.com/MasterLi186/LiteTerm')); }}>
+                  github.com/MasterLi186/LiteTerm
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 右上角传输进度浮窗 */}

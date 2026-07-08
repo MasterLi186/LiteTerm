@@ -43,6 +43,7 @@ pub fn run() {
             commands::terminal::open_file_path,
             commands::terminal::frontend_log,
             commands::terminal::get_default_shell,
+            commands::terminal::get_system_info,
             commands::terminal::list_shells,
             commands::terminal::open_shell_terminal,
             commands::serial::list_serial_ports,
