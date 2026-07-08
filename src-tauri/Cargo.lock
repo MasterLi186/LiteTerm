@@ -1456,6 +1456,7 @@ dependencies = [
 name = "guishell-tauri"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "crc32fast",
  "dirs",
  "env_logger",
