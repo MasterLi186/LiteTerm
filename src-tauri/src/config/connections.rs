@@ -164,7 +164,7 @@ impl ConnectionStore {
             fs::create_dir_all(parent)?;
         }
         let content = toml::to_string_pretty(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
         fs::write(path, content)
     }
 }

@@ -233,7 +233,7 @@ pub fn run_zmodem_send(
         }
 
         // 2. 处理队列中的帧
-        let frames: Vec<DecodedFrame> = pending.drain(..).collect();
+        let frames: Vec<DecodedFrame> = std::mem::take(&mut pending);
         for frame in frames {
             app_log!("ZMODEM", "帧 {:?} off={}", frame.frame_type, frame.offset());
             match sender.handle_frame(&frame) {

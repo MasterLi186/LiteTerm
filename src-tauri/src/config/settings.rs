@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Settings {
     pub terminal: TerminalSettings,
     pub appearance: AppearanceSettings,
@@ -60,17 +61,6 @@ pub struct ZmodemSettings {
 
 // --- Default implementations ---
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            terminal: TerminalSettings::default(),
-            appearance: AppearanceSettings::default(),
-            transfer: TransferSettings::default(),
-            ssh: SshSettings::default(),
-            zmodem: ZmodemSettings::default(),
-        }
-    }
-}
 
 impl Default for TerminalSettings {
     fn default() -> Self {
@@ -166,7 +156,7 @@ impl Settings {
             fs::create_dir_all(parent)?;
         }
         let content = toml::to_string_pretty(self).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, e)
+            io::Error::other(e)
         })?;
         fs::write(path, content)
     }

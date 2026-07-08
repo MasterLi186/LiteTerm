@@ -28,7 +28,7 @@ impl SshConnection {
         stream.set_nodelay(true)?;
 
         let mut session = Session::new()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
         session.set_tcp_stream(stream.try_clone()?);
         session
             .handshake()
@@ -82,13 +82,13 @@ impl SshConnection {
         let mut channel = self
             .session
             .channel_session()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
         channel
             .request_pty("xterm-256color", None, Some((cols, rows, 0, 0)))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
         channel
             .shell()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
         Ok(channel)
     }
 

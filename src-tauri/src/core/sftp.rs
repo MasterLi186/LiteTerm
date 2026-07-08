@@ -29,7 +29,7 @@ impl<'a> SftpOps<'a> {
         let dir = self
             .sftp
             .readdir(Path::new(path))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
         let entries = dir
             .into_iter()
@@ -61,7 +61,7 @@ impl<'a> SftpOps<'a> {
         let mut remote_file = self
             .sftp
             .open(Path::new(remote_path))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
         let mut local_file = fs::File::create(local_path)?;
         let mut buf = [0u8; 32768];
@@ -94,7 +94,7 @@ impl<'a> SftpOps<'a> {
         let mut remote_file = self
             .sftp
             .create(Path::new(remote_path))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
         let mut buf = [0u8; 32768];
         let mut total: u64 = 0;
@@ -116,28 +116,28 @@ impl<'a> SftpOps<'a> {
     pub fn mkdir(&self, path: &str, mode: i32) -> io::Result<()> {
         self.sftp
             .mkdir(Path::new(path), mode)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::other(e))
     }
 
     /// Remove a remote file.
     pub fn remove_file(&self, path: &str) -> io::Result<()> {
         self.sftp
             .unlink(Path::new(path))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::other(e))
     }
 
     /// Remove a remote directory.
     pub fn remove_dir(&self, path: &str) -> io::Result<()> {
         self.sftp
             .rmdir(Path::new(path))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::other(e))
     }
 
     /// Rename (move) a remote file or directory.
     pub fn rename(&self, from: &str, to: &str) -> io::Result<()> {
         self.sftp
             .rename(Path::new(from), Path::new(to), None)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::other(e))
     }
 
     /// Get metadata for a remote path.
@@ -145,7 +145,7 @@ impl<'a> SftpOps<'a> {
         let stat = self
             .sftp
             .stat(Path::new(path))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
         let name = Path::new(path)
             .file_name()

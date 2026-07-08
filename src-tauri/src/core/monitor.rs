@@ -204,7 +204,7 @@ pub fn parse_proc_meminfo(input: &str) -> Option<MemoryMetric> {
 
 /// Helper: extract the numeric value from "   12345 kB".
 fn parse_kb_value(s: &str) -> Option<u64> {
-    s.trim().split_whitespace().next()?.parse().ok()
+    s.split_whitespace().next()?.parse().ok()
 }
 
 /// Parse `df -h` output into DiskMetric entries (skips the header line).
@@ -269,7 +269,7 @@ pub fn parse_proc_net_dev(input: &str) -> Vec<NetworkMetric> {
 
 /// Parse /proc/loadavg into a LoadMetric.
 pub fn parse_loadavg(input: &str) -> Option<LoadMetric> {
-    let parts: Vec<&str> = input.trim().split_whitespace().collect();
+    let parts: Vec<&str> = input.split_whitespace().collect();
     if parts.len() < 3 {
         return None;
     }
@@ -313,7 +313,7 @@ pub fn parse_ps_aux(input: &str) -> Vec<ProcessMetric> {
 /// Parse /proc/uptime into a human-readable Chinese string.
 /// Format: "12345.67 98765.43" (uptime_seconds idle_seconds)
 pub fn parse_proc_uptime(input: &str) -> String {
-    let parts: Vec<&str> = input.trim().split_whitespace().collect();
+    let parts: Vec<&str> = input.split_whitespace().collect();
     if parts.is_empty() {
         return "N/A".to_string();
     }

@@ -32,6 +32,12 @@ pub struct ZmodemDecoder {
     buf: Vec<u8>,
 }
 
+impl Default for ZmodemDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ZmodemDecoder {
     pub fn new() -> Self {
         Self { buf: Vec::with_capacity(256) }

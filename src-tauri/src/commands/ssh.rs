@@ -43,7 +43,7 @@ pub async fn ssh_connect(
             cmd.arg("-J");
             cmd.arg(proxy);
             cmd.arg("-p");
-            cmd.arg(&port.to_string());
+            cmd.arg(port.to_string());
             cmd.arg("-o");
             cmd.arg("StrictHostKeyChecking=no");
             if let Some(ref kp) = key_path {
@@ -53,7 +53,7 @@ pub async fn ssh_connect(
                     cmd.arg(expanded.as_ref());
                 }
             }
-            cmd.arg(&format!("{}@{}", user, host));
+            cmd.arg(format!("{}@{}", user, host));
 
             let _child = pair
                 .slave

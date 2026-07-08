@@ -11,6 +11,12 @@ pub struct Osc7Parser {
     pending: Vec<u8>,
 }
 
+impl Default for Osc7Parser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Osc7Parser {
     pub fn new() -> Self {
         Self { pending: Vec::new() }
