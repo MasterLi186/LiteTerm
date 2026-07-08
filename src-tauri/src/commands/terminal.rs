@@ -372,7 +372,6 @@ pub async fn get_system_info(app: tauri::AppHandle) -> Result<serde_json::Value,
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     let username = whoami::username();
-    let rust_version = env!("CARGO_PKG_RUST_VERSION", "unknown");
 
     Ok(serde_json::json!({
         "app_version": app.package_info().version.to_string(),
