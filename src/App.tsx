@@ -18,6 +18,7 @@ import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 import { log, getLogText } from './utils/logger';
 import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay } from './components/Icons';
+import { SettingsPanel } from './components/Settings';
 
 function getTerminalSize() {
   return {
@@ -1064,6 +1065,7 @@ function App() {
   const [showSshKeyManager, setShowSshKeyManager] = useState(false);
   const [showBatchCommand, setShowBatchCommand] = useState(false);
   const [showShortcutSettings, setShowShortcutSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [showTunnelManager, setShowTunnelManager] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [aboutInfo, setAboutInfo] = useState<Record<string, string> | null>(null);
@@ -1465,6 +1467,13 @@ function App() {
             title="快捷键设置"
           >
             <IconSettings size={14} />
+          </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
+            title="系统设置"
+          >
+            <span style={{ fontSize: '13px' }}>⚙</span>
           </button>
           <button
             onClick={async () => {
@@ -2004,6 +2013,17 @@ function App() {
       {/* Shortcut Settings */}
       {showShortcutSettings && (
         <ShortcutSettings onClose={() => setShowShortcutSettings(false)} />
+      )}
+
+      {/* System Settings */}
+      {showSettings && (
+        <SettingsPanel
+          onClose={() => setShowSettings(false)}
+          onApply={() => {
+            // 通知所有终端刷新字体/字号/主题
+            window.dispatchEvent(new Event('terminal-settings-changed'));
+          }}
+        />
       )}
 
       {/* Tunnel Manager */}

@@ -17,11 +17,20 @@ const TERMINAL_THEMES: Record<string, ITheme> = {
   '暗色默认': {
     background: '#0d1117', foreground: '#e6edf3', cursor: '#00d4ff',
     selectionBackground: '#264f78',
-    black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+    black: '#ffffff', red: '#ff7b72', green: '#2e6b30', yellow: '#d29922',
     blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#b1bac4',
-    brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+    brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#7ec850',
     brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
     brightCyan: '#56d364', brightWhite: '#f0f6fc',
+  },
+  'AdventureTime': {
+    background: '#1f1d45', foreground: '#f8dcc0', cursor: '#efbf38',
+    selectionBackground: '#264f78',
+    black: '#050404', red: '#bd0013', green: '#4ab118', yellow: '#e7741e',
+    blue: '#0f4ac6', magenta: '#665993', cyan: '#70a598', white: '#f8dcc0',
+    brightBlack: '#4e7cbf', brightRed: '#fc5f5a', brightGreen: '#9eff6e',
+    brightYellow: '#efc11a', brightBlue: '#1997c6', brightMagenta: '#9b5953',
+    brightCyan: '#c8faf4', brightWhite: '#f6f5fb',
   },
   'Monokai': {
     background: '#272822', foreground: '#f8f8f2', cursor: '#f8f8f0',
@@ -400,12 +409,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       const buf = term.buffer.active;
       const x = buf.cursorX * cellW;
       const popupHeight = Math.min(matches.length, 6) * 22 + 8;
-      const cursorBottom = (buf.cursorY + 1) * cellH;
-      const spaceBelow = wrapperRect.height - cursorBottom;
-      // 下方空间不够就向上弹出
-      const y = spaceBelow >= popupHeight
-        ? cursorBottom
-        : buf.cursorY * cellH - popupHeight;
+      const cursorTop = buf.cursorY * cellH;
+      // 默认在光标上方弹出(不挡终端输出),上方不够才向下
+      const y = cursorTop >= popupHeight
+        ? cursorTop - popupHeight
+        : (buf.cursorY + 1) * cellH;
       appLog('AC', '位置计算: cursorX=' + buf.cursorX + ' cursorY=' + buf.cursorY + ' cellW=' + cellW.toFixed(1) + ' cellH=' + cellH.toFixed(1) + ' → pos=(' + x.toFixed(0) + ',' + y.toFixed(0) + ')');
       setAcPos({ x, y });
     } else {
@@ -451,9 +459,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     const term = new Terminal({
       cursorBlink: true,
       rightClickSelectsWord: true,
-      fontSize: 15,
+      fontSize: (() => { try { return parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15; } catch { return 15; } })(),
       scrollback: 10000,
-      fontFamily: "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace",
+      fontFamily: (() => { const f = localStorage.getItem('guishell_terminal_font') || 'Ubuntu Mono'; return `'${f}', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace`; })(),
       theme: getTerminalTheme(),
     });
 
@@ -477,6 +485,18 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       }
     };
     themeChangeListeners.add(onThemeChange);
+
+    // 设置面板改了字体/字号/主题后实时应用
+    const onSettingsChanged = () => {
+      if (termRef.current) {
+        const f = localStorage.getItem('guishell_terminal_font') || 'Ubuntu Mono';
+        termRef.current.options.fontFamily = `'${f}', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace`;
+        termRef.current.options.fontSize = parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15;
+        termRef.current.options.theme = getTerminalTheme();
+        if (fitRef.current) fitRef.current.fit();
+      }
+    };
+    window.addEventListener('terminal-settings-changed', onSettingsChanged);
 
     // Force fit: read size from wrapper, write to container, fit, refresh
     const forceFit = () => {
@@ -758,6 +778,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       window.removeEventListener('resize', doFit);
       resizeTimers.forEach(t => clearTimeout(t));
       themeChangeListeners.delete(onThemeChange);
+      window.removeEventListener('terminal-settings-changed', onSettingsChanged);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
