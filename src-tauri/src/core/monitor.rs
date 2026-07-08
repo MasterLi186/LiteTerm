@@ -280,32 +280,32 @@ pub fn parse_loadavg(input: &str) -> Option<LoadMetric> {
     })
 }
 
-/// Parse `ps aux --sort=-%cpu` output into ProcessMetric entries.
+/// Parse process list output into ProcessMetric entries.
 ///
-/// Expected columns: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+/// Supports two formats:
+/// - `ps -eo user,pid,pcpu,rss,comm --no-headers`: 5 columns (USER PID %CPU RSS COMMAND)
+/// - `ps aux` fallback: 11+ columns (USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND)
 pub fn parse_ps_aux(input: &str) -> Vec<ProcessMetric> {
     let mut procs = Vec::new();
-    for line in input.lines().skip(1) {
+    for line in input.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 11 {
-            continue;
+        if parts.len() >= 5 {
+            // 尝试 5 列格式: USER PID %CPU RSS COMMAND
+            if let (Ok(pid), Ok(cpu)) = (parts[1].parse::<u32>(), parts[2].parse::<f64>()) {
+                let rss_kb = parts[3].parse::<u64>().unwrap_or(0);
+                if parts.len() >= 11 && parts[6].len() <= 8 {
+                    // ps aux 格式(11+ 列): USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+                    let mem_percent = parts[3].parse::<f64>().unwrap_or(0.0);
+                    let rss = parts[5].parse::<u64>().unwrap_or(0);
+                    let command = parts[10..].join(" ");
+                    procs.push(ProcessMetric { pid, user: parts[0].to_string(), cpu_percent: cpu, mem_percent, rss_kb: rss, command });
+                } else {
+                    // ps -eo 格式(5 列): USER PID %CPU RSS COMMAND
+                    let command = parts[4..].join(" ");
+                    procs.push(ProcessMetric { pid, user: parts[0].to_string(), cpu_percent: cpu, mem_percent: 0.0, rss_kb, command });
+                }
+            }
         }
-        let pid = match parts[1].parse::<u32>() {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let cpu_percent = parts[2].parse::<f64>().unwrap_or(0.0);
-        let mem_percent = parts[3].parse::<f64>().unwrap_or(0.0);
-        let rss_kb = parts[5].parse::<u64>().unwrap_or(0);
-        let command = parts[10..].join(" ");
-        procs.push(ProcessMetric {
-            pid,
-            user: parts[0].to_string(),
-            cpu_percent,
-            mem_percent,
-            rss_kb,
-            command,
-        });
     }
     procs
 }
@@ -357,7 +357,7 @@ pub fn collect_command() -> &'static str {
         "echo '===NET==='; cat /proc/net/dev; ",
         "echo '===LOAD==='; cat /proc/loadavg; ",
         "echo '===UPTIME==='; cat /proc/uptime; ",
-        "echo '===PS==='; ps aux --sort=-%cpu | head -20; ",
+        "echo '===PS==='; ps -eo user,pid,pcpu,rss,comm --no-headers 2>/dev/null | awk '$3+0>0.5' | sort -k3 -rn | head -15 || ps aux | head -15; ",
         "echo '===CPUINFO==='; grep -c ^processor /proc/cpuinfo; grep 'model name' /proc/cpuinfo | head -1; nproc; ",
         "echo '===ROUTE==='; ip route show default 2>/dev/null || route -n 2>/dev/null | grep '^0.0.0.0'; ",
         "echo '===END==='"
