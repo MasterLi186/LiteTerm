@@ -526,7 +526,8 @@ function App() {
     if (!monitorStartedRef.current.has(monitorKey)) {
       monitorStartedRef.current.add(monitorKey);
       invoke('start_monitor', {
-        sessionId: monitorKey, // 用共享 key 而非 sessionId,这样所有同主机标签共享一份数据
+        sessionId,       // 后端需要 UUID 查 state.sessions 获取 stop flag
+        monitorKey,      // 共享 key,后端 emit 事件时用这个标识
         host,
         port,
         user,
@@ -534,7 +535,7 @@ function App() {
         authMethod,
         keyPath: keyPath || null,
       }).catch((e) => { log('监控', `启动失败: ${e}`); monitorStartedRef.current.delete(monitorKey); });
-      log('监控', `新建监控线程: ${monitorKey}`);
+      log('监控', `新建监控线程: ${monitorKey} (session=${sessionId})`);
     } else {
       log('监控', `复用已有监控: ${monitorKey}`);
     }

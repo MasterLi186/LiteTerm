@@ -156,6 +156,7 @@ pub async fn start_monitor(
     state: State<'_, AppState>,
     app: AppHandle,
     session_id: String,
+    monitor_key: Option<String>,
     host: String,
     port: u16,
     user: String,
@@ -175,7 +176,8 @@ pub async fn start_monitor(
     // Reset stop flag
     monitor_stop.store(false, Ordering::Relaxed);
 
-    let session_id_clone = session_id.clone();
+    // emit 事件用 monitor_key(共享标识),这样同一台主机的多个标签都能匹配
+    let session_id_clone = monitor_key.unwrap_or(session_id);
     let app_clone = app.clone();
     let stop_flag = monitor_stop.clone();
 
