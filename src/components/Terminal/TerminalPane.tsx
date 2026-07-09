@@ -633,6 +633,10 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         if (cmd) recordCommand(cmd);
         // 每次命令执行后,等 PTY 回传数据后 forceFit 纠正尺寸
         pendingFit = true;
+        // clear/reset 需要额外强制重建渲染纹理(WebView2 canvas 缓存问题)
+        if (cmd === 'clear' || cmd === 'reset') {
+          pendingRepaint = true;
+        }
         // 检测 shell 切换:用户输入 fish/zsh 时禁用补全,输入 bash/exit 时重新启用
         if (cmd === 'fish' || cmd === 'zsh') {
           isBashRef.current = false;
@@ -710,6 +714,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     // disposed 标记:同步屏蔽回调,避免 unlisten(异步 Promise)未 resolve 前新旧 listener 短暂共存
     let disposed = false;
     let pendingFit = false;
+    let pendingRepaint = false;
     let pendingFitTimer: ReturnType<typeof setTimeout> | null = null;
     const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
       if (disposed) return;
@@ -722,6 +727,23 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
             if (!disposed) forceFit('cmd');
             pendingFitTimer = null;
           }, 50);
+        }
+        // clear/reset: 强制重建渲染纹理 + resize cycle 刷新 WebView2 canvas 缓存
+        if (pendingRepaint) {
+          pendingRepaint = false;
+          setTimeout(() => {
+            if (disposed || !termRef.current) return;
+            const t = termRef.current;
+            appLog('PTY', 'clear 后强制重绘: clearTextureAtlas + resize cycle');
+            try { t.clearTextureAtlas(); } catch (_) {}
+            // resize cycle: 临时缩小1行再恢复,强制 xterm 完全重绘 viewport
+            const cols = t.cols, rows = t.rows;
+            try {
+              t.resize(cols, rows - 1);
+              t.resize(cols, rows);
+            } catch (_) {}
+            t.refresh(0, rows - 1);
+          }, 100);
         }
         const data = new Uint8Array(event.payload.data);
         try {

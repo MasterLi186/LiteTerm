@@ -53,9 +53,13 @@ jobs:
             libudev-dev \
             patchelf
 
-      - name: Install Windows dependencies (NASM for OpenSSL)
+      - name: Install Windows dependencies (pre-built OpenSSL)
         if: matrix.target == 'windows'
-        uses: ilammy/setup-nasm@v1
+        shell: pwsh
+        run: |
+          choco install openssl -y --no-progress
+          echo "OPENSSL_DIR=C:\Program Files\OpenSSL-Win64" >> $env:GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=1" >> $env:GITHUB_ENV
 
       - name: Generate changelog
         id: changelog
