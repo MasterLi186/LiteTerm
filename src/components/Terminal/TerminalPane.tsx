@@ -469,6 +469,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       }
     };
     requestAnimationFrame(tryInitFit);
+    // Windows WebView2 初始化慢:UI 元素(标签栏/底部面板)渲染完成后 wrapper 高度会变,
+    // 需要在更长延迟点补 fit,确保 PTY 拿到最终正确的 rows
+    for (const delay of [500, 1000, 2000]) {
+      setTimeout(() => { if (!disposed) forceFit(); }, delay);
+    }
 
     // Ctrl+Shift+F to toggle search bar
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -685,19 +690,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     // Listen for output from Tauri — pass through ZMODEM sentry
     // disposed 标记:同步屏蔽回调,避免 unlisten(异步 Promise)未 resolve 前新旧 listener 短暂共存
     let disposed = false;
-    let firstDataFitDone = false;
     let pendingClearRefresh = false;
     let clearRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
       if (disposed) return;
       if (event.payload.id === terminalId) {
-        // 首次收到数据后强制 fit,确保 PTY 尺寸与实际 viewport 一致
-        if (!firstDataFitDone) {
-          firstDataFitDone = true;
-          setTimeout(() => {
-            if (!disposed) forceFit();
-          }, 200);
-        }
         // clear/reset 后等 PTY 数据到达再 refresh(比固定延迟更可靠)
         if (pendingClearRefresh) {
           pendingClearRefresh = false;
