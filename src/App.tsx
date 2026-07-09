@@ -365,11 +365,13 @@ function App() {
     saveWindowState();
     const unlistenResize = appWindow.onResized(() => saveWindowState());
     const unlistenMove = appWindow.onMoved(() => saveWindowState());
-    // 关闭时同步写 localStorage,然后让窗口自然关闭(不 preventDefault)
-    const unlisten = appWindow.onCloseRequested(() => {
+    // 关闭: preventDefault → 同步写 state → 立即 destroy(中间不做任何 async IPC)
+    const unlisten = appWindow.onCloseRequested((event) => {
+      event.preventDefault();
       if (windowState) {
         try { localStorage.setItem('guishell_window_state', JSON.stringify(windowState)); } catch (_) {}
       }
+      appWindow.destroy();
     });
     return () => {
       unlisten.then(fn => fn());
