@@ -175,7 +175,7 @@ async function handleZmodemDetection(
             await invoke('save_file', { path: savePath, data: Array.from(merged) });
           }
         } catch (e) {
-          console.error('ZMODEM 保存失败:', e);
+          appLog('ZM', 'ZMODEM 保存失败: ' + String(e));
         }
 
         setZmodemTransfer({ filename, bytesReceived: totalLen, totalSize, status: 'complete' });

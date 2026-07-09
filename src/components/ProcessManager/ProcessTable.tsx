@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ProcessDetailPanel } from './ProcessDetail';
 import type { ProcessDetail, ProcessFullDetail } from '../../types';
+import { log } from '../../utils/logger';
 
 type SortKey = 'pid' | 'user' | 'mem' | 'cpu' | 'command';
 
@@ -237,7 +238,7 @@ export function ProcessTable({ sessionId, sshParams, hostLabel, isLocal }: Props
         ancestors,
       });
     } catch (e) {
-      console.error('Failed to load process detail:', e);
+      log('进程', '加载进程详情失败: ' + String(e));
     }
   }
 

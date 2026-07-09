@@ -325,6 +325,12 @@ function App() {
   // 恢复上次关闭时的窗口大小和位置
   useEffect(() => {
     const appWindow = getCurrentWindow();
+    // 上次关闭的日志(存在 localStorage),写入文件后清除
+    const prevCloseLog = localStorage.getItem('guishell_close_log');
+    if (prevCloseLog) {
+      localStorage.removeItem('guishell_close_log');
+      log('关闭', '上次关闭路径:\n' + prevCloseLog.trim());
+    }
     // 恢复
     (async () => {
       try {
@@ -340,7 +346,7 @@ function App() {
             }
           }
         }
-      } catch (e) { console.warn('窗口恢复失败:', e); }
+      } catch (e) { log('窗口', '窗口恢复失败: ' + String(e)); }
     })();
     // 每次 resize/move 直接写 localStorage
     const saveWindowState = async () => {
@@ -369,19 +375,27 @@ function App() {
     const unlistenResize = appWindow.onResized(() => saveWindowState());
     const unlistenMove = appWindow.onMoved(() => saveWindowState());
 
+    // 关闭日志写 localStorage(同步,不走 Tauri IPC),下次启动时读出写入日志文件
+    const closeLog = (msg: string) => {
+      const ts = (Date.now() / 1000).toFixed(3);
+      const prev = localStorage.getItem('guishell_close_log') || '';
+      localStorage.setItem('guishell_close_log', prev + `[${ts}] [关闭] ${msg}\n`);
+    };
     // 关闭: preventDefault → destroy → 2秒兜底 force_quit
     const unlisten = appWindow.onCloseRequested((event) => {
       event.preventDefault();
-      console.log('[关闭] onCloseRequested 触发');
+      closeLog('onCloseRequested 触发');
+      closeLog('调用 appWindow.destroy()');
       const fallbackTimer = setTimeout(() => {
-        console.log('[关闭] destroy 超时 2s,调用 force_quit');
+        closeLog('destroy 超时 2s,调用 force_quit');
         invoke('force_quit').catch(() => {});
       }, 2000);
       appWindow.destroy().then(() => {
         clearTimeout(fallbackTimer);
-      }).catch(() => {
+        closeLog('destroy 成功');
+      }).catch((e) => {
         clearTimeout(fallbackTimer);
-        console.log('[关闭] destroy 失败,立即 force_quit');
+        closeLog('destroy 失败: ' + String(e) + ',调用 force_quit');
         invoke('force_quit').catch(() => {});
       });
     });
@@ -451,7 +465,7 @@ function App() {
                 startMonitorAndSftp(id, s.sshParams.host, s.sshParams.port, s.sshParams.user, pw || null, s.sshParams.authMethod, s.sshParams.keyPath);
               }
             } catch (e) {
-              console.error('Failed to restore session:', s.label, e);
+              log('会话', '恢复失败: ' + s.label + ' ' + String(e));
             }
           }
         }
@@ -527,7 +541,7 @@ function App() {
       }
       setExpandedGroups(expanded);
     } catch (e) {
-      console.error('Failed to load connections:', e);
+      log('连接', '加载连接列表失败: ' + String(e));
     }
   }
 
@@ -961,9 +975,9 @@ function App() {
       const tree = splitTrees[id];
       if (tree) {
         const termIds = collectTerminalIds(tree);
-        termIds.forEach(tid => invoke('close_terminal', { id: tid }).catch(console.error));
+        termIds.forEach(tid => invoke('close_terminal', { id: tid }).catch((e: any) => log('终端', 'close_terminal 失败: ' + String(e))));
       } else {
-        invoke('close_terminal', { id }).catch(console.error);
+        invoke('close_terminal', { id }).catch((e: any) => log('终端', 'close_terminal 失败: ' + String(e)));
       }
     }
     setSplitTrees(prev => {
@@ -993,9 +1007,9 @@ function App() {
       if (t.id !== keepId && t.type !== 'process') {
         const tree = splitTrees[t.id];
         if (tree) {
-          collectTerminalIds(tree).forEach(tid => invoke('close_terminal', { id: tid }).catch(console.error));
+          collectTerminalIds(tree).forEach(tid => invoke('close_terminal', { id: tid }).catch((e: any) => log('终端', 'close_terminal 失败: ' + String(e))));
         } else {
-          invoke('close_terminal', { id: t.id }).catch(console.error);
+          invoke('close_terminal', { id: t.id }).catch((e: any) => log('终端', 'close_terminal 失败: ' + String(e)));
         }
       }
     });

@@ -513,6 +513,6 @@ pub async fn open_file_path(
 
 #[tauri::command]
 pub fn force_quit() {
-    eprintln!("[force_quit] 强制退出进程");
+    crate::log_util::app_log("关闭", "force_quit: destroy 超时或失败,强制退出进程");
     std::process::exit(0);
 }
