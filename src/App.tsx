@@ -6,6 +6,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize, LogicalPosition } from '@tauri-apps/api/dpi';
 import { TerminalPane } from './components/Terminal/TerminalPane';
+import { QuickCommandBar } from './components/QuickCommandBar';
 import { SplitContainer } from './components/Terminal/SplitContainer';
 import { ConnectionDialog } from './components/ConnectionDialog';
 import { SystemInfoPanel } from './components/Sidebar/SystemInfoPanel';
@@ -1924,6 +1925,16 @@ function App() {
         {!(activeTabId && reconnecting[activeTabId]) && (
           <CommandInputBar
             terminalId={focusedTerminalId || activeTabId}
+          />
+        )}
+
+        {/* 快捷命令栏 — 连接断开时隐藏 */}
+        {!(activeTabId && reconnecting[activeTabId]) && (
+          <QuickCommandBar
+            sendCommand={(cmd) => {
+              const tid = focusedTerminalId || activeTabId;
+              if (tid) invoke('terminal_write', { id: tid, data: Array.from(new TextEncoder().encode(cmd + '\n')) });
+            }}
           />
         )}
 
