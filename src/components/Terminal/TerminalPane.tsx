@@ -415,11 +415,19 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     fitRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
 
+    // wrapper 背景跟随终端主题(消除 xterm canvas 底部间隙)
+    const syncWrapperBg = () => {
+      const bg = getTerminalTheme().background;
+      if (bg && wrapperRef.current) wrapperRef.current.style.backgroundColor = bg;
+    };
+    syncWrapperBg();
+
     // Listen for theme changes from other panes / context menu
     const onThemeChange = () => {
       if (termRef.current) {
         termRef.current.options.theme = getTerminalTheme();
       }
+      syncWrapperBg();
     };
     themeChangeListeners.add(onThemeChange);
 
@@ -429,6 +437,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       termRef.current.options.fontFamily = getTerminalFontFamily();
       termRef.current.options.fontSize = parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15;
       termRef.current.options.theme = getTerminalTheme();
+      syncWrapperBg();
       if (fitRef.current) fitRef.current.fit();
     };
     const onSettingsChanged = () => {

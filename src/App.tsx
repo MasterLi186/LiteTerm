@@ -1717,7 +1717,7 @@ function App() {
         )}
 
         {/* Terminal area — isolated from flex to prevent xterm canvas from blowing layout */}
-        <div className="flex-1 bg-black relative" style={{ minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
+        <div className="flex-1 bg-surface relative" style={{ minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
           {tabs.length === 0 ? (
             <div className="p-4 text-gray-500 font-mono text-sm">
               暂无终端。点击 + 新建一个。
