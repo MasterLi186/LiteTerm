@@ -325,12 +325,6 @@ function App() {
   // 恢复上次关闭时的窗口大小和位置
   useEffect(() => {
     const appWindow = getCurrentWindow();
-    // 上次关闭的日志(存在 localStorage),写入文件后清除
-    const prevCloseLog = localStorage.getItem('guishell_close_log');
-    if (prevCloseLog) {
-      localStorage.removeItem('guishell_close_log');
-      log('关闭', '上次关闭路径:\n' + prevCloseLog.trim());
-    }
     // 恢复
     (async () => {
       try {
@@ -375,33 +369,9 @@ function App() {
     const unlistenResize = appWindow.onResized(() => saveWindowState());
     const unlistenMove = appWindow.onMoved(() => saveWindowState());
 
-    // 关闭日志写 localStorage(同步,不走 Tauri IPC),下次启动时读出写入日志文件
-    const closeLog = (msg: string) => {
-      const ts = (Date.now() / 1000).toFixed(3);
-      const prev = localStorage.getItem('guishell_close_log') || '';
-      localStorage.setItem('guishell_close_log', prev + `[${ts}] [关闭] ${msg}\n`);
-    };
-    // 关闭: preventDefault → destroy → 2秒兜底 force_quit
-    const unlisten = appWindow.onCloseRequested((event) => {
-      event.preventDefault();
-      closeLog('onCloseRequested 触发');
-      closeLog('调用 appWindow.destroy()');
-      const fallbackTimer = setTimeout(() => {
-        closeLog('destroy 超时 2s,调用 force_quit');
-        invoke('force_quit').catch(() => {});
-      }, 2000);
-      appWindow.destroy().then(() => {
-        clearTimeout(fallbackTimer);
-        closeLog('destroy 成功');
-      }).catch((e) => {
-        clearTimeout(fallbackTimer);
-        closeLog('destroy 失败: ' + String(e) + ',调用 force_quit');
-        invoke('force_quit').catch(() => {});
-      });
-    });
-
+    // 不注册 onCloseRequested — 让 Tauri 原生关闭(v0.8.7 的行为)
+    // 窗口状态已在 resize/move 时实时写入 localStorage,关闭时无需干预
     return () => {
-      unlisten.then(fn => fn());
       unlistenResize.then(fn => fn());
       unlistenMove.then(fn => fn());
     };

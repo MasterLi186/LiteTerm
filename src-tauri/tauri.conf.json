@@ -38,7 +38,8 @@
         "displayLanguageSelector": false,
         "installerIcon": "icons/icon.ico",
         "headerImage": null,
-        "sidebarImage": null
+        "sidebarImage": null,
+        "installMode": "currentUser"
       }
     },
     "shortDescription": "轻量级跨平台 SSH 客户端",
