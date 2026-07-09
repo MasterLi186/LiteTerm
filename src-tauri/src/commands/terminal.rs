@@ -363,6 +363,83 @@ pub async fn close_terminal(state: State<'_, AppState>, id: String) -> Result<()
     Ok(())
 }
 
+/// 本地进程列表(sysinfo,跨平台)
+#[tauri::command]
+pub async fn get_local_processes() -> Result<serde_json::Value, String> {
+    use sysinfo::{System, ProcessesToUpdate};
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_cpu_all();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let num_cpus = sys.cpus().len().max(1) as f32;
+    let mut procs: Vec<(&sysinfo::Pid, &sysinfo::Process)> = sys.processes().iter().collect();
+    procs.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
+    let list: Vec<serde_json::Value> = procs.iter().take(100).map(|(pid, p)| {
+        let mem = p.memory();
+        let mem_str = if mem >= 1_073_741_824 { format!("{:.1}G", mem as f64 / 1_073_741_824.0) }
+            else if mem >= 1_048_576 { format!("{:.1}M", mem as f64 / 1_048_576.0) }
+            else { format!("{}K", mem / 1024) };
+        serde_json::json!({
+            "pid": pid.as_u32(),
+            "user": "",
+            "cpu": p.cpu_usage() / num_cpus,
+            "mem": mem_str,
+            "command": p.name().to_string_lossy(),
+            "full_command": p.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>().join(" "),
+            "start_time": p.start_time(),
+        })
+    }).collect();
+    Ok(serde_json::json!(list))
+}
+
+/// 本地进程详情(sysinfo)
+#[tauri::command]
+pub async fn get_local_process_detail(pid: u32) -> Result<serde_json::Value, String> {
+    use sysinfo::{System, ProcessesToUpdate, Pid};
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let target = Pid::from_u32(pid);
+    let p = sys.process(target).ok_or("进程未找到")?;
+    let mem = p.memory();
+    let mem_str = if mem >= 1_073_741_824 { format!("{:.1}G", mem as f64 / 1_073_741_824.0) }
+        else if mem >= 1_048_576 { format!("{:.1}M", mem as f64 / 1_048_576.0) }
+        else { format!("{}K", mem / 1024) };
+    let parent_pid = p.parent().map(|pp| pp.as_u32());
+    // 向上追溯进程树
+    let mut ancestors = Vec::new();
+    let mut cur = Some(target);
+    for _ in 0..50 {
+        match cur {
+            Some(cp) if cp.as_u32() > 1 => {
+                if let Some(proc) = sys.process(cp) {
+                    ancestors.push(serde_json::json!({
+                        "pid": cp.as_u32(),
+                        "name": proc.name().to_string_lossy(),
+                        "cmdline": proc.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>().join(" "),
+                    }));
+                    cur = proc.parent();
+                } else { break; }
+            }
+            _ => break,
+        }
+    }
+    Ok(serde_json::json!({
+        "pid": pid,
+        "user": "",
+        "cpu": 0,
+        "mem": mem_str,
+        "command": p.name().to_string_lossy(),
+        "full_command": p.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>().join(" "),
+        "location": p.exe().map(|e| e.to_string_lossy().to_string()).unwrap_or_default(),
+        "working_dir": p.cwd().map(|c| c.to_string_lossy().to_string()).unwrap_or_default(),
+        "start_time": p.start_time(),
+        "parent_pid": parent_pid,
+        "environ": p.environ().iter().take(50).map(|s| s.to_string_lossy().to_string()).collect::<Vec<String>>(),
+        "ancestors": ancestors,
+    }))
+}
+
 /// 返回系统信息(关于对话框用)
 #[tauri::command]
 pub async fn get_system_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {

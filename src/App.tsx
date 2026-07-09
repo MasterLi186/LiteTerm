@@ -993,9 +993,8 @@ function App() {
   }
 
   function openProcessManager() {
-    if (!activeTab?.sshParams) return;
+    if (!activeTab) return;
     const id = `process-${activeTab.id}`;
-    // If a process tab for this session already exists, just switch to it
     const existing = tabs.find((t) => t.id === id);
     if (existing) {
       setActiveTabId(id);
@@ -1003,7 +1002,7 @@ function App() {
     }
     const tab: Tab = {
       id,
-      label: `进程 - ${activeTab.label}`,
+      label: activeTab.sshParams ? `进程 - ${activeTab.label}` : '进程 - 本机',
       type: 'process',
       sshParams: activeTab.sshParams,
     };
@@ -1309,7 +1308,7 @@ function App() {
         <SystemInfoPanel
           sessionId={activeTab?.sshParams ? `${activeTab.sshParams.user}@${activeTab.sshParams.host}:${activeTab.sshParams.port}` : 'local'}
           hostIp={activeSshSessionId ? activeTab?.sshParams?.host : '本机'}
-          onOpenProcessManager={activeSshSessionId ? openProcessManager : undefined}
+          onOpenProcessManager={openProcessManager}
         />
       </aside>
 
@@ -1678,9 +1677,10 @@ function App() {
                   }}
                 >
                   <ProcessTable
-                    sessionId={tab.id.replace('process-', '')}
-                    sshParams={tab.sshParams!}
+                    sessionId={tab.sshParams ? tab.id.replace('process-', '') : undefined}
+                    sshParams={tab.sshParams}
                     hostLabel={tab.label}
+                    isLocal={!tab.sshParams}
                   />
                 </div>
               ) : tab.type === 'recording' ? (

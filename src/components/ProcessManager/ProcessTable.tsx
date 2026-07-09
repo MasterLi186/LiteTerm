@@ -44,8 +44,8 @@ function SortHeader({
 }
 
 interface Props {
-  sessionId: string;
-  sshParams: {
+  sessionId?: string;
+  sshParams?: {
     host: string;
     port: number;
     user: string;
@@ -54,9 +54,10 @@ interface Props {
     keyPath: string | null;
   };
   hostLabel: string;
+  isLocal?: boolean;
 }
 
-export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
+export function ProcessTable({ sessionId, sshParams, hostLabel, isLocal }: Props) {
   const [processes, setProcesses] = useState<ProcessDetail[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>('cpu');
   const [sortAsc, setSortAsc] = useState(false);
@@ -81,25 +82,33 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
   async function loadProcesses() {
     if (!hasDataRef.current) setLoading(true);
     try {
-      // -O lstart 加启动时间(0.026s),不用 -H 进程树(256 核上 24 秒)
-      // 输出: PID USER LSTART %CPU RSS COMMAND(lstart 展开为 DAY MON DD HH:MM:SS YYYY)
-      const psOutput = await invoke<string>('sftp_exec', {
-        sessionId,
-        command: "ps -eo pid,user,lstart,pcpu,rss,comm --no-headers 2>/dev/null | awk '$8+0>0.1{print}' | head -100",
-      });
-      const list: ProcessDetail[] = [];
-      for (const line of psOutput.split('\n')) {
-        const parts = line.trim().split(/\s+/);
-        // 格式: PID USER DAY MON DD HH:MM:SS YYYY %CPU RSS COMM
-        if (parts.length < 10) continue;
-        const pid = parseInt(parts[0]);
-        if (isNaN(pid)) continue;
-        const startTime = `${parts[3]} ${parts[4]} ${parts[5]}`;
-        const cpu = parseFloat(parts[7]) || 0;
-        const rssKb = parseInt(parts[8]) || 0;
-        const mem = rssKb >= 1048576 ? `${(rssKb/1048576).toFixed(1)}G` : rssKb >= 1024 ? `${(rssKb/1024).toFixed(1)}M` : `${rssKb}K`;
-        const command = parts.slice(9).join(' ');
-        list.push({ pid, user: parts[1], cpu, mem, command, full_command: command, location: startTime });
+      let list: ProcessDetail[] = [];
+      if (isLocal) {
+        // 本地进程(sysinfo,跨平台)
+        const data = await invoke<any[]>('get_local_processes');
+        list = (Array.isArray(data) ? data : []).map((p: any) => ({
+          pid: p.pid, user: p.user || '', cpu: p.cpu || 0, mem: p.mem || '0K',
+          command: p.command || '', full_command: p.full_command || p.command || '',
+          location: p.start_time ? new Date(p.start_time * 1000).toLocaleString() : '',
+        }));
+      } else {
+        // 远端 SSH 进程
+        const psOutput = await invoke<string>('sftp_exec', {
+          sessionId,
+          command: "ps -eo pid,user,lstart,pcpu,rss,comm --no-headers 2>/dev/null | awk '$8+0>0.1{print}' | head -100",
+        });
+        for (const line of psOutput.split('\n')) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length < 10) continue;
+          const pid = parseInt(parts[0]);
+          if (isNaN(pid)) continue;
+          const startTime = `${parts[3]} ${parts[4]} ${parts[5]}`;
+          const cpu = parseFloat(parts[7]) || 0;
+          const rssKb = parseInt(parts[8]) || 0;
+          const mem = rssKb >= 1048576 ? `${(rssKb/1048576).toFixed(1)}G` : rssKb >= 1024 ? `${(rssKb/1024).toFixed(1)}M` : `${rssKb}K`;
+          const command = parts.slice(9).join(' ');
+          list.push({ pid, user: parts[1], cpu, mem, command, full_command: command, location: startTime });
+        }
       }
       list.sort((a, b) => b.cpu - a.cpu);
       setProcesses(list);
@@ -170,7 +179,21 @@ export function ProcessTable({ sessionId, sshParams, hostLabel }: Props) {
     setSelectedPid(pid);
     selectedPidRef.current = pid;
     try {
-      // 一次性获取:status + cmdline + exe + cwd + 环境变量 + 进程树链(向上追溯到 PID 1)
+      if (isLocal) {
+        const d = await invoke<any>('get_local_process_detail', { pid });
+        setDetail({
+          pid, user: d.user || '', cpu: 0, mem: d.mem || '0K',
+          command: d.command || '', full_command: d.full_command || '',
+          location: d.location || '', working_dir: d.working_dir || '',
+          start_time: d.start_time ? new Date(d.start_time * 1000).toLocaleString() : '',
+          environ: (d.environ || []).map((line: string) => {
+            const eq = line.indexOf('=');
+            return eq > 0 ? { key: line.substring(0, eq), value: line.substring(eq + 1) } : { key: line, value: '' };
+          }),
+          ancestors: (d.ancestors || []).map((a: any) => ({ pid: a.pid || 0, name: a.name || '', cmdline: a.cmdline || '' })),
+        });
+        return;
+      }
       const output = await invoke<string>('sftp_exec', {
         sessionId,
         command: `cat /proc/${pid}/status 2>/dev/null; echo '===CMDLINE==='; tr '\\0' ' ' < /proc/${pid}/cmdline 2>/dev/null; echo; echo '===EXE==='; readlink /proc/${pid}/exe 2>/dev/null; echo '===CWD==='; readlink /proc/${pid}/cwd 2>/dev/null; echo '===ENV==='; tr '\\0' '\\n' < /proc/${pid}/environ 2>/dev/null; echo '===LSTART==='; ps -p ${pid} -o lstart= 2>/dev/null; echo '===TREE==='; p=${pid}; i=0; while [ "$p" != "1" ] && [ "$p" != "0" ] && [ -n "$p" ] && [ $i -lt 50 ]; do i=$((i+1)); pp=$(awk '{print $4}' /proc/$p/stat 2>/dev/null); name=$(awk '{gsub(/[()]/, "", $2); print $2}' /proc/$p/stat 2>/dev/null); cmd=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null); echo "$p|$name|$cmd"; p=$pp; done; echo "1|systemd|/sbin/init"`,
