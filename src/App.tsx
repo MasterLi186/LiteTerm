@@ -342,24 +342,43 @@ function App() {
         }
       } catch (e) { console.warn('窗口恢复失败:', e); }
     })();
-    // 关闭前保存(用 Tauri onCloseRequested,不用 beforeunload)
-    const unlisten = appWindow.onCloseRequested(async (event) => {
-      event.preventDefault();
+    // 持续跟踪窗口状态(不依赖关闭时的异步 API)
+    let windowState: { width: number; height: number; x: number; y: number; maximized: boolean } | null = null;
+    const saveWindowState = async () => {
       try {
         const maximized = await appWindow.isMaximized();
-        const scaleFactor = await appWindow.scaleFactor();
-        const physSize = await appWindow.innerSize();
-        const physPos = await appWindow.outerPosition();
-        const size = physSize.toLogical(scaleFactor);
-        const pos = physPos.toLogical(scaleFactor);
-        localStorage.setItem('guishell_window_state', JSON.stringify({
-          width: Math.round(size.width), height: Math.round(size.height),
-          x: Math.round(pos.x), y: Math.round(pos.y), maximized,
-        }));
-      } catch (e) { console.warn('窗口状态保存失败:', e); }
-      await appWindow.destroy();
+        if (maximized) {
+          windowState = { ...(windowState || { width: 1200, height: 800, x: 100, y: 100 }), maximized: true };
+        } else {
+          const scaleFactor = await appWindow.scaleFactor();
+          const physSize = await appWindow.innerSize();
+          const physPos = await appWindow.outerPosition();
+          const size = physSize.toLogical(scaleFactor);
+          const pos = physPos.toLogical(scaleFactor);
+          windowState = {
+            width: Math.round(size.width), height: Math.round(size.height),
+            x: Math.round(pos.x), y: Math.round(pos.y), maximized: false,
+          };
+        }
+      } catch (_) {}
+    };
+    saveWindowState();
+    const unlistenResize = appWindow.onResized(() => saveWindowState());
+    const unlistenMove = appWindow.onMoved(() => saveWindowState());
+    // 关闭时同步写 localStorage(不再需要 async API),超时保底
+    const unlisten = appWindow.onCloseRequested(async (event) => {
+      event.preventDefault();
+      log('窗口', 'onCloseRequested 触发');
+      if (windowState) {
+        try { localStorage.setItem('guishell_window_state', JSON.stringify(windowState)); } catch (_) {}
+      }
+      try { await appWindow.destroy(); } catch (_) { window.close(); }
     });
-    return () => { unlisten.then(fn => fn()); };
+    return () => {
+      unlisten.then(fn => fn());
+      unlistenResize.then(fn => fn());
+      unlistenMove.then(fn => fn());
+    };
   }, []);
 
   // Restore previous sessions or open a default local terminal

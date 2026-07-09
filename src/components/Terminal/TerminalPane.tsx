@@ -606,6 +606,10 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         const cmd = currentLineRef.current.trim();
         appLog('AC', '按键: Enter → recordCommand="' + cmd + '"');
         if (cmd) recordCommand(cmd);
+        // clear/reset: 设置 flag,等 PTY 回传清屏序列后再 refresh(不用固定延迟)
+        if (cmd === 'clear' || cmd === 'reset') {
+          pendingClearRefresh = true;
+        }
         // 检测 shell 切换:用户输入 fish/zsh 时禁用补全,输入 bash/exit 时重新启用
         if (cmd === 'fish' || cmd === 'zsh') {
           isBashRef.current = false;
@@ -681,9 +685,31 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     // Listen for output from Tauri — pass through ZMODEM sentry
     // disposed 标记:同步屏蔽回调,避免 unlisten(异步 Promise)未 resolve 前新旧 listener 短暂共存
     let disposed = false;
+    let firstDataFitDone = false;
+    let pendingClearRefresh = false;
+    let clearRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
       if (disposed) return;
       if (event.payload.id === terminalId) {
+        // 首次收到数据后强制 fit,确保 PTY 尺寸与实际 viewport 一致
+        if (!firstDataFitDone) {
+          firstDataFitDone = true;
+          setTimeout(() => {
+            if (!disposed) forceFit();
+          }, 200);
+        }
+        // clear/reset 后等 PTY 数据到达再 refresh(比固定延迟更可靠)
+        if (pendingClearRefresh) {
+          pendingClearRefresh = false;
+          if (clearRefreshTimer) clearTimeout(clearRefreshTimer);
+          clearRefreshTimer = setTimeout(() => {
+            if (!disposed && termRef.current) {
+              termRef.current.refresh(0, termRef.current.rows - 1);
+              appLog('AC', 'clear/reset: PTY 数据到达后 refresh');
+            }
+            clearRefreshTimer = null;
+          }, 50);
+        }
         const data = new Uint8Array(event.payload.data);
         try {
           sentry.consume(data);
@@ -721,6 +747,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
 
     return () => {
       disposed = true; // 同步屏蔽:新 listener 注册前旧回调即刻失效,不等 unlisten resolve
+      if (clearRefreshTimer) clearTimeout(clearRefreshTimer);
       unlisten.then(fn => fn());
       observer.disconnect();
       window.removeEventListener('resize', doFit);
