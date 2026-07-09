@@ -1,5 +1,4 @@
 import { useRef, useState } from 'react';
-import { log } from '../utils/logger';
 
 export interface QuickCommand {
   label: string;
@@ -9,6 +8,7 @@ export interface QuickCommand {
 
 const STORAGE_KEY = 'guishell_quick_commands';
 const VERSION_KEY = 'guishell_quick_commands_v';
+const TOMBSTONE_KEY = 'guishell_quick_commands_deleted';
 const CURRENT_VERSION = '4';
 
 const SYSTEM_DEFAULTS: QuickCommand[] = [
@@ -18,15 +18,32 @@ const SYSTEM_DEFAULTS: QuickCommand[] = [
   { label: '网络连接', command: 'ss -tlnp', system: true },
 ];
 
+function systemId(cmd: QuickCommand): string {
+  return cmd.label + '::' + cmd.command;
+}
+
+function loadTombstones(): Set<string> {
+  try {
+    const saved = localStorage.getItem(TOMBSTONE_KEY);
+    return saved ? new Set(JSON.parse(saved)) : new Set();
+  } catch { return new Set(); }
+}
+
+function saveTombstones(tombstones: Set<string>) {
+  localStorage.setItem(TOMBSTONE_KEY, JSON.stringify([...tombstones]));
+}
+
 function loadQuickCommands(): QuickCommand[] {
   try {
     const ver = localStorage.getItem(VERSION_KEY);
     const saved = localStorage.getItem(STORAGE_KEY);
     if (ver === CURRENT_VERSION && saved) return JSON.parse(saved);
-    // 升级或首次: 保留用户自定义,替换系统默认
+    // 升级或首次: 保留用户自定义,替换系统默认(排除已删除的)
     const old: QuickCommand[] = saved ? JSON.parse(saved) : [];
     const userCmds = old.filter(c => !c.system);
-    const merged = [...SYSTEM_DEFAULTS, ...userCmds];
+    const tombstones = loadTombstones();
+    const defaults = SYSTEM_DEFAULTS.filter(d => !tombstones.has(systemId(d)));
+    const merged = [...defaults, ...userCmds];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
     localStorage.setItem(VERSION_KEY, CURRENT_VERSION);
     return merged;
@@ -34,8 +51,13 @@ function loadQuickCommands(): QuickCommand[] {
   return SYSTEM_DEFAULTS;
 }
 
-function saveQuickCommands(cmds: QuickCommand[]) {
+function saveQuickCommands(cmds: QuickCommand[], deleted?: QuickCommand) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(cmds));
+  if (deleted?.system) {
+    const tombstones = loadTombstones();
+    tombstones.add(systemId(deleted));
+    saveTombstones(tombstones);
+  }
 }
 
 interface Props {
@@ -46,9 +68,9 @@ export function QuickCommandBar({ sendCommand }: Props) {
   const [commands, setCommands] = useState<QuickCommand[]>(loadQuickCommands);
   const barRef = useRef<HTMLDivElement>(null);
 
-  const updateCommands = (updated: QuickCommand[]) => {
+  const updateCommands = (updated: QuickCommand[], deleted?: QuickCommand) => {
     setCommands(updated);
-    saveQuickCommands(updated);
+    saveQuickCommands(updated, deleted);
   };
 
   const [editForm, setEditForm] = useState<{ label: string; command: string; index: number | null } | null>(null);
@@ -63,12 +85,11 @@ export function QuickCommandBar({ sendCommand }: Props) {
     if (!editForm) return;
     if (!editForm.label.trim()) { setEditError('请输入标签名称'); return; }
     if (!editForm.command.trim()) { setEditError('请输入命令内容'); return; }
-    const newCmd: QuickCommand = { label: editForm.label.trim(), command: editForm.command.trim() };
     if (editForm.index === null) {
-      updateCommands([...commands, newCmd]);
+      updateCommands([...commands, { label: editForm.label.trim(), command: editForm.command.trim() }]);
     } else {
       const updated = [...commands];
-      updated[editForm.index] = newCmd;
+      updated[editForm.index] = { ...commands[editForm.index], label: editForm.label.trim(), command: editForm.command.trim() };
       updateCommands(updated);
     }
     setEditForm(null);
@@ -228,7 +249,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
               >取消</button>
               <button
                 onClick={() => {
-                  updateCommands(commands.filter((_, j) => j !== confirmDelete));
+                  updateCommands(commands.filter((_, j) => j !== confirmDelete), commands[confirmDelete]);
                   setConfirmDelete(null);
                 }}
                 className="px-4 py-1 text-xs bg-accent-red/20 text-accent-red rounded hover:bg-accent-red/30"
@@ -254,7 +275,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
                 value={editForm.label}
                 onChange={(e) => { setEditForm({ ...editForm, label: e.target.value }); setEditError(''); }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSaveEdit();
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleSaveEdit();
                   if (e.key === 'Escape') { setEditForm(null); setEditError(''); }
                 }}
               />
@@ -264,7 +285,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
                 value={editForm.command}
                 onChange={(e) => { setEditForm({ ...editForm, command: e.target.value }); setEditError(''); }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSaveEdit();
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleSaveEdit();
                   if (e.key === 'Escape') { setEditForm(null); setEditError(''); }
                 }}
               />

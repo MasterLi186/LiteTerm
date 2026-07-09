@@ -568,34 +568,133 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     });
 
     // User input -> Tauri
-    // WebKitGTK（Tauri 在 Linux 的 webview）下，xterm 自身的中文输入法(composition)处理
-    // 会产出重复甚至错乱的 onData（实测“看看剧情”被发成“看看剧情剧情”/“剧情看看”）。
-    // 改为：组合期间丢弃 xterm 的 onData，由 compositionend 直接取干净的最终文本(e.data)
-    // 发一次；组合刚结束的极短窗口内丢弃 xterm 产出的 CJK 回声（已发过干净版）。纯 ASCII
-    // 输入(含组合后紧接的英文/回车)始终放行，不会被误丢。
+    // IME 状态机：完整处理 compositionstart/end + 回显消耗
+    // 解决 WebView2 + 搜狗/微软拼音等 IME 的双重输入问题
+    // 核心：compositionend 发送文本后,后续 onData 的回显用缓冲区累积匹配消耗
     const sendInput = (data: string) => {
       const bytes = Array.from(new TextEncoder().encode(data));
       invoke('terminal_write', { id: terminalId, data: bytes });
     };
-    let imeComposing = false;
-    let imeEndedAt = 0;
-    let lastComposed = ''; // compositionend 已发的干净文本，用于识别 xterm 的重复回声
+
+    // IME 状态: idle(正常) → composing(组合中) → consuming(消耗回显)
+    // idle=正常 composing=组合中 consuming=消耗回显 draining=排水(吞掉xterm延迟输出)
+    let imeState: 'idle' | 'composing' | 'consuming' | 'draining' = 'idle';
+    let imeComposedText = '';   // compositionend 发送的文本
+    let imeEchoBuffer = '';     // 累积的 onData 数据,用于匹配回显
+    let imeConsumeTimer: ReturnType<typeof setTimeout> | null = null;
+    let imeDrainUntil = 0;      // draining 阶段截止时间
+
+    const imeReset = () => {
+      if (imeConsumeTimer) { clearTimeout(imeConsumeTimer); imeConsumeTimer = null; }
+      imeState = 'idle';
+      imeComposedText = '';
+      imeEchoBuffer = '';
+      imeDrainUntil = 0;
+    };
+
+    // 回显消耗完毕后进入 drain 阶段,吞掉 xterm setTimeout(0) 的延迟重放
+    const imeDrain = () => {
+      if (imeConsumeTimer) { clearTimeout(imeConsumeTimer); imeConsumeTimer = null; }
+      imeState = 'draining';
+      imeComposedText = '';
+      imeEchoBuffer = '';
+      imeDrainUntil = performance.now() + 50;
+      // failsafe: 50ms 后强制回 idle(即使没有 onData 触发)
+      imeConsumeTimer = setTimeout(() => {
+        if (imeState === 'draining') {
+          imeState = 'idle';
+          appLog('IME', 'drain 超时回 idle');
+        }
+        imeConsumeTimer = null;
+      }, 60);
+      appLog('IME', '进入 drain 阶段 50ms');
+    };
+
     const imeTextarea = term.element?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
     if (imeTextarea) {
-      imeTextarea.addEventListener('compositionstart', () => { imeComposing = true; });
+      imeTextarea.addEventListener('compositionstart', () => {
+        if (imeConsumeTimer) { clearTimeout(imeConsumeTimer); imeConsumeTimer = null; }
+        imeState = 'composing';
+        imeEchoBuffer = '';
+        appLog('IME', 'compositionstart');
+      });
+
       imeTextarea.addEventListener('compositionend', (ev: Event) => {
-        imeComposing = false;
         const text = (ev as CompositionEvent).data;
+        appLog('IME', 'compositionend: “' + text + '”');
         if (text) {
           sendInput(text);
-          lastComposed = text;
-          imeEndedAt = performance.now(); // 仅在发了干净版后才开启丢弃窗口
+          imeComposedText = text;
+          imeEchoBuffer = '';
+          imeState = 'consuming';
+          // 安全超时:500ms 后回显仍未消耗完则重置(防卡死)
+          imeConsumeTimer = setTimeout(() => {
+            appLog('IME', '回显超时重置 (expected=”' + imeComposedText + '”, got=”' + imeEchoBuffer + '”)');
+            imeReset();
+          }, 500);
+        } else {
+          // 空 compositionend(Esc 取消等),走 drain 吞掉可能的延迟重放
+          imeDrain();
         }
       });
+
     }
+
     term.onData((data) => {
-      if (imeComposing) return;
-      if (performance.now() - imeEndedAt < 80 && lastComposed && (/[^\x00-\x7f]/.test(data) || data.includes(lastComposed))) return;
+      // 状态: composing → 丢弃所有 onData(组合期间 xterm 产出的预编辑回显)
+      if (imeState === 'composing') {
+        appLog('IME', '组合中丢弃: “' + data.slice(0, 20) + '”');
+        return;
+      }
+
+      // 状态: draining → 吞掉 xterm setTimeout(0) 的延迟重放(50ms内)
+      if (imeState === 'draining') {
+        if (performance.now() < imeDrainUntil) {
+          appLog('IME', 'drain 丢弃: “' + data.slice(0, 20) + '”');
+          return;
+        }
+        appLog('IME', 'drain 结束,恢复 idle');
+        imeState = 'idle';
+        // 继续到下面正常处理
+      }
+
+      // 状态: consuming → 累积缓冲区匹配回显
+      if (imeState === 'consuming') {
+        imeEchoBuffer += data;
+
+        if (imeEchoBuffer === imeComposedText) {
+          // 完全匹配:回显消耗完毕,进入 drain 吞掉 xterm 延迟重放
+          appLog('IME', '回显完全消耗: “' + imeComposedText + '”');
+          imeDrain();
+          return;
+        }
+
+        if (imeComposedText.startsWith(imeEchoBuffer)) {
+          // 部分匹配:继续累积
+          appLog('IME', '回显部分匹配: “' + imeEchoBuffer + '” / “' + imeComposedText + '”');
+          return;
+        }
+
+        if (imeEchoBuffer.startsWith(imeComposedText)) {
+          // 缓冲区超出回显:消耗回显部分,放行新输入后进入 drain
+          const remainder = imeEchoBuffer.slice(imeComposedText.length);
+          appLog('IME', '回显消耗+放行: echo=”' + imeComposedText + '”, new=”' + remainder + '”');
+          imeDrain();
+          if (remainder) {
+            sendInput(remainder);
+          }
+          return;
+        }
+
+        // 不匹配:回显格式非预期,fail-open 放行(避免吞掉合法输入)
+        appLog('IME', '回显不匹配,放行: expected=”' + imeComposedText + '”, buffer=”' + imeEchoBuffer + '”');
+        const flushed = imeEchoBuffer;
+        imeDrain();
+        sendInput(flushed);
+        return;
+      }
+
+      // 状态: idle → 正常处理
 
       // ---- 自动补全键盘拦截(用 ref 同步读,避免 state 异步延迟) ----
       if (acVisibleRef.current) {
@@ -791,6 +890,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
 
     return () => {
       disposed = true; // 同步屏蔽:新 listener 注册前旧回调即刻失效,不等 unlisten resolve
+      imeReset();
       if (pendingFitTimer) clearTimeout(pendingFitTimer);
       unlisten.then(fn => fn());
       observer.disconnect();
