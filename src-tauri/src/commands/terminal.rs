@@ -510,3 +510,9 @@ pub async fn open_file_path(
 
     Ok(())
 }
+
+#[tauri::command]
+pub fn force_quit() {
+    eprintln!("[force_quit] 强制退出进程");
+    std::process::exit(0);
+}

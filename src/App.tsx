@@ -342,37 +342,50 @@ function App() {
         }
       } catch (e) { console.warn('窗口恢复失败:', e); }
     })();
-    // 持续跟踪窗口状态(不依赖关闭时的异步 API)
-    let windowState: { width: number; height: number; x: number; y: number; maximized: boolean } | null = null;
+    // 每次 resize/move 直接写 localStorage
     const saveWindowState = async () => {
       try {
         const maximized = await appWindow.isMaximized();
+        let state;
         if (maximized) {
-          windowState = { ...(windowState || { width: 1200, height: 800, x: 100, y: 100 }), maximized: true };
+          const prev = localStorage.getItem('guishell_window_state');
+          const old = prev ? JSON.parse(prev) : { width: 1200, height: 800, x: 100, y: 100 };
+          state = { width: old.width, height: old.height, x: old.x, y: old.y, maximized: true };
         } else {
           const scaleFactor = await appWindow.scaleFactor();
           const physSize = await appWindow.innerSize();
           const physPos = await appWindow.outerPosition();
           const size = physSize.toLogical(scaleFactor);
           const pos = physPos.toLogical(scaleFactor);
-          windowState = {
+          state = {
             width: Math.round(size.width), height: Math.round(size.height),
             x: Math.round(pos.x), y: Math.round(pos.y), maximized: false,
           };
         }
+        localStorage.setItem('guishell_window_state', JSON.stringify(state));
       } catch (_) {}
     };
     saveWindowState();
     const unlistenResize = appWindow.onResized(() => saveWindowState());
     const unlistenMove = appWindow.onMoved(() => saveWindowState());
-    // 关闭: preventDefault → 同步写 state → 立即 destroy(中间不做任何 async IPC)
+
+    // 关闭: preventDefault → destroy → 2秒兜底 force_quit
     const unlisten = appWindow.onCloseRequested((event) => {
       event.preventDefault();
-      if (windowState) {
-        try { localStorage.setItem('guishell_window_state', JSON.stringify(windowState)); } catch (_) {}
-      }
-      appWindow.destroy();
+      console.log('[关闭] onCloseRequested 触发');
+      const fallbackTimer = setTimeout(() => {
+        console.log('[关闭] destroy 超时 2s,调用 force_quit');
+        invoke('force_quit').catch(() => {});
+      }, 2000);
+      appWindow.destroy().then(() => {
+        clearTimeout(fallbackTimer);
+      }).catch(() => {
+        clearTimeout(fallbackTimer);
+        console.log('[关闭] destroy 失败,立即 force_quit');
+        invoke('force_quit').catch(() => {});
+      });
     });
+
     return () => {
       unlisten.then(fn => fn());
       unlistenResize.then(fn => fn());

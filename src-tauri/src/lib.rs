@@ -48,6 +48,7 @@ pub fn run() {
             commands::terminal::get_local_process_detail,
             commands::terminal::list_shells,
             commands::terminal::open_shell_terminal,
+            commands::terminal::force_quit,
             commands::serial::list_serial_ports,
             commands::serial::open_serial_terminal,
             commands::ssh::ssh_connect,

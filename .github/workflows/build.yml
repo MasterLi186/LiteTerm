@@ -14,10 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-22.04
-            target: linux
-          - platform: macos-latest
-            target: macos
+          # dev 分支只编译 Windows,加快调试周期
+          # - platform: ubuntu-22.04
+          #   target: linux
+          # - platform: macos-latest
+          #   target: macos
           - platform: windows-latest
             target: windows
 

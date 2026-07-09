@@ -441,26 +441,43 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     window.addEventListener('terminal-settings-changed', onSettingsChanged);
 
     // Force fit: read size from wrapper, write to container, fit, refresh
-    let lastFitCols = 0, lastFitRows = 0;
     const forceFit = (source?: string) => {
       const w = wrapperRef.current;
       const c = containerRef.current;
-      if (!w || !c || !fitRef.current || !termRef.current) return false;
+      const t = termRef.current;
+      if (!w || !c || !fitRef.current || !t) {
+        appLog('PTY', `fit(${source}): SKIP w=${!!w} c=${!!c} fit=${!!fitRef.current} t=${!!t}`);
+        return false;
+      }
       const rect = w.getBoundingClientRect();
-      if (rect.width < 10 || rect.height < 10) return false;
+      if (rect.width < 10 || rect.height < 10) {
+        appLog('PTY', `fit(${source}): SKIP rect=${rect.width.toFixed(1)}x${rect.height.toFixed(1)} 太小`);
+        return false;
+      }
+      const beforeCols = t.cols, beforeRows = t.rows;
       c.style.width = `${Math.floor(rect.width)}px`;
       c.style.height = `${Math.floor(rect.height)}px`;
       try {
         fitRef.current.fit();
-        const cols = termRef.current.cols;
-        const rows = termRef.current.rows;
-        if (cols !== lastFitCols || rows !== lastFitRows) {
-          appLog('PTY', `fit(${source || '?'}): ${lastFitCols}x${lastFitRows} → ${cols}x${rows} wrapper=${Math.floor(rect.width)}x${Math.floor(rect.height)}`);
-          lastFitCols = cols;
-          lastFitRows = rows;
-        }
-        termRef.current.refresh(0, rows - 1);
+      } catch (e) {
+        appLog('PTY', `fit(${source}): fitAddon.fit() 异常: ${e}`);
+        return false;
+      }
+      const afterCols = t.cols, afterRows = t.rows;
+      // 计算 fitAddon 用的字符单元格大小
+      const cellW = afterCols > 0 ? (Math.floor(rect.width) / afterCols) : 0;
+      const cellH = afterRows > 0 ? (Math.floor(rect.height) / afterRows) : 0;
+      // 读取 xterm 内部渲染器的实际测量值(如果可访问)
+      let measuredCellW = 0, measuredCellH = 0;
+      try {
+        const dims = (t as any)._core._renderService.dimensions;
+        measuredCellW = dims?.css?.cell?.width || 0;
+        measuredCellH = dims?.css?.cell?.height || 0;
       } catch (_) {}
+      const font = t.options.fontFamily || '?';
+      const fontSize = t.options.fontSize || 0;
+      appLog('PTY', `fit(${source}): ${beforeCols}x${beforeRows} → ${afterCols}x${afterRows} | wrapper=${Math.floor(rect.width)}x${Math.floor(rect.height)} | cellCalc=${cellW.toFixed(2)}x${cellH.toFixed(2)} cellReal=${measuredCellW.toFixed(2)}x${measuredCellH.toFixed(2)} | font="${font}" size=${fontSize}`);
+      try { t.refresh(0, afterRows - 1); } catch (_) {}
       return true;
     };
 
@@ -614,10 +631,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
         const cmd = currentLineRef.current.trim();
         appLog('AC', '按键: Enter → recordCommand="' + cmd + '"');
         if (cmd) recordCommand(cmd);
-        // clear/reset: 设置 flag,等 PTY 回传清屏序列后再 refresh(不用固定延迟)
-        if (cmd === 'clear' || cmd === 'reset') {
-          pendingClearRefresh = true;
-        }
+        // 每次命令执行后,等 PTY 回传数据后 forceFit 纠正尺寸
+        pendingFit = true;
         // 检测 shell 切换:用户输入 fish/zsh 时禁用补全,输入 bash/exit 时重新启用
         if (cmd === 'fish' || cmd === 'zsh') {
           isBashRef.current = false;
@@ -694,21 +709,18 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     // Listen for output from Tauri — pass through ZMODEM sentry
     // disposed 标记:同步屏蔽回调,避免 unlisten(异步 Promise)未 resolve 前新旧 listener 短暂共存
     let disposed = false;
-    let pendingClearRefresh = false;
-    let clearRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingFit = false;
+    let pendingFitTimer: ReturnType<typeof setTimeout> | null = null;
     const unlisten = listen<{ id: string; data: number[] }>('terminal-output', (event) => {
       if (disposed) return;
       if (event.payload.id === terminalId) {
-        // clear/reset 后等 PTY 数据到达再 refresh(比固定延迟更可靠)
-        if (pendingClearRefresh) {
-          pendingClearRefresh = false;
-          if (clearRefreshTimer) clearTimeout(clearRefreshTimer);
-          clearRefreshTimer = setTimeout(() => {
-            if (!disposed && termRef.current) {
-              termRef.current.refresh(0, termRef.current.rows - 1);
-              appLog('AC', 'clear/reset: PTY 数据到达后 refresh');
-            }
-            clearRefreshTimer = null;
+        // 命令执行后等 PTY 数据到达,重新计算 rows + 同步尺寸
+        if (pendingFit) {
+          pendingFit = false;
+          if (pendingFitTimer) clearTimeout(pendingFitTimer);
+          pendingFitTimer = setTimeout(() => {
+            if (!disposed) forceFit('cmd');
+            pendingFitTimer = null;
           }, 50);
         }
         const data = new Uint8Array(event.payload.data);
@@ -725,30 +737,33 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
 
     // Resize handler: multi-stage fit to handle window animation
     let resizeTimers: ReturnType<typeof setTimeout>[] = [];
-    const doFit = () => {
+    const doFit = (triggerSource?: string) => {
       closeAutocomplete();
       resizeTimers.forEach(t => clearTimeout(t));
       resizeTimers = [];
+      const src = triggerSource || 'resize';
+      appLog('PTY', `doFit 触发(${src}), 将在 50/150/400ms 后 forceFit`);
       for (const delay of [50, 150, 400]) {
         const t = setTimeout(() => {
-          requestAnimationFrame(() => forceFit('resize'));
+          requestAnimationFrame(() => forceFit(`${src}@${delay}ms`));
         }, delay);
         resizeTimers.push(t);
       }
     };
 
-    const observer = new ResizeObserver(doFit);
+    const observer = new ResizeObserver(() => doFit('ResizeObserver'));
     if (wrapperRef.current) {
       observer.observe(wrapperRef.current);
     }
-    window.addEventListener('resize', doFit);
+    const onWindowResize = () => doFit('window.resize');
+    window.addEventListener('resize', onWindowResize);
 
     return () => {
       disposed = true; // 同步屏蔽:新 listener 注册前旧回调即刻失效,不等 unlisten resolve
-      if (clearRefreshTimer) clearTimeout(clearRefreshTimer);
+      if (pendingFitTimer) clearTimeout(pendingFitTimer);
       unlisten.then(fn => fn());
       observer.disconnect();
-      window.removeEventListener('resize', doFit);
+      window.removeEventListener('resize', onWindowResize);
       resizeTimers.forEach(t => clearTimeout(t));
       themeChangeListeners.delete(onThemeChange);
       window.removeEventListener('terminal-settings-changed', onSettingsChanged);
