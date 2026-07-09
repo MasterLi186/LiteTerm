@@ -23,11 +23,27 @@ import { log, getLogText } from './utils/logger';
 import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay } from './components/Icons';
 import { SettingsPanel } from './components/Settings';
 
+// 从 DOM 直接测量终端区域的实际 cols/rows
 function getTerminalSize() {
-  return {
-    cols: Math.floor((window.innerWidth - 280) / 8),
-    rows: Math.floor((window.innerHeight - 200) / 17),
-  };
+  // 终端容器
+  const container = document.querySelector('[data-terminal-area]') as HTMLElement | null;
+  if (!container) { log('PTY', 'getTerminalSize: container 未找到, 用默认 80x24'); return { cols: 80, rows: 24 }; }
+  const rect = container.getBoundingClientRect();
+  if (rect.width < 10 || rect.height < 10) return { cols: 80, rows: 24 };
+  // 用临时元素测量实际字符单元格大小
+  const fontSize = parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15;
+  const fontFamily = localStorage.getItem('guishell_terminal_font') || "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace";
+  const span = document.createElement('span');
+  span.style.cssText = `position:absolute;visibility:hidden;font-family:${fontFamily};font-size:${fontSize}px;`;
+  span.textContent = 'W';
+  document.body.appendChild(span);
+  const cellW = span.getBoundingClientRect().width || fontSize * 0.6;
+  const cellH = (span.getBoundingClientRect().height || fontSize) * 1.0;
+  document.body.removeChild(span);
+  const cols = Math.max(40, Math.floor(rect.width / cellW));
+  const rows = Math.max(10, Math.floor(rect.height / cellH));
+  log('PTY', `getTerminalSize: container=${Math.floor(rect.width)}x${Math.floor(rect.height)} cell=${cellW.toFixed(1)}x${cellH.toFixed(1)} → ${cols}x${rows}`);
+  return { cols, rows };
 }
 
 async function sshConnect(params: Record<string, unknown>): Promise<string> {
@@ -1717,7 +1733,7 @@ function App() {
         )}
 
         {/* Terminal area — isolated from flex to prevent xterm canvas from blowing layout */}
-        <div className="flex-1 bg-surface relative" style={{ minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
+        <div data-terminal-area className="flex-1 bg-surface relative" style={{ minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
           {tabs.length === 0 ? (
             <div className="p-4 text-gray-500 font-mono text-sm">
               暂无终端。点击 + 新建一个。

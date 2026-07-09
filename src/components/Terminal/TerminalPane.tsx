@@ -695,6 +695,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       }
 
       // 状态: idle → 正常处理
+      // 调试:记录发送到 PTY 的每个数据包
+      if (data.length <= 4) {
+        const hex = Array.from(new TextEncoder().encode(data)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        appLog('INPUT', 'send: "' + data.replace(/[\x00-\x1f]/g, c => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0')) + '" (0x' + hex + ')');
+      }
 
       // ---- 自动补全键盘拦截(用 ref 同步读,避免 state 异步延迟) ----
       if (acVisibleRef.current) {
@@ -737,7 +742,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       // ---- 追踪当前输入行(重建命令行) ----
       if (data === '\r' || data === '\n') {
         const cmd = currentLineRef.current.trim();
-        appLog('AC', '按键: Enter → recordCommand="' + cmd + '"');
+        const hex = Array.from(new TextEncoder().encode(data)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        appLog('AC', '按键: Enter(0x' + hex + ') → recordCommand="' + cmd + '"');
         if (cmd) recordCommand(cmd);
         // 每次命令执行后,等 PTY 回传数据后 forceFit 纠正尺寸
         pendingFit = true;

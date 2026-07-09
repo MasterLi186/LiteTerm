@@ -265,10 +265,26 @@ pub async fn ssh_connect(
         };
         let pty_cols = cols.unwrap_or(120);
         let pty_rows = rows.unwrap_or(36);
-        // PTY 申请时关闭输入回显（ECHO=0），使随后注入的 bash/zsh OSC7 钩子命令不
-        // 回显到终端；注入完成后由独立的 stty echo 恢复回显。
+        // 标准 PTY 终端模式(对齐 OpenSSH 行为,解决 fish/zsh 切换时 ^J/⏎ 残留)
+        // ECHO=false 使随后注入的 bash/zsh OSC7 钩子不回显;注入完成后 stty echo 恢复
         let mut pty_modes = ssh2::PtyModes::new();
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHO, false);
+        // 输入模式
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ICRNL, true);  // CR→NL(输入)
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::IXON, true);   // 输出流控
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::IXANY, true);  // 任意键恢复输出
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::IMAXBEL, true); // 输入队列满时响铃
+        // 输出模式
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::OPOST, true);  // 启用输出处理
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ONLCR, true);  // NL→CR-NL(输出)
+        // 本地模式
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ISIG, true);   // 信号(Ctrl+C等)
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ICANON, true); // 规范输入
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHO, false);  // 注入期间不回显
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOE, true);  // 退格可视擦除
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOK, true);  // kill 后回显 NL
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOCTL, true); // 控制字符显示为 ^X
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOKE, true); // kill 可视擦除
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::IEXTEN, true); // 扩展输入处理
         if let Err(e) = channel.request_pty("xterm-256color", Some(pty_modes), Some((pty_cols, pty_rows, 0, 0))) {
             let _ = status_tx.send(Err(format!("PTY request failed: {}", e)));
             return;
@@ -292,14 +308,11 @@ pub async fn ssh_connect(
         // 提示符上半部分仍可能残留）。fish 等子 shell 不走这里（由 rc/config.fish 上报）。
         // host 用占位 h，解析器接受任意 host。
         {
-            let hook = " if [ -n \"$BASH_VERSION\" ]; then PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi; printf '\\r\\033[2K'\r";
+            // 注入 OSC7 钩子(ECHO=false 不可见)。stty echo 延迟到首次 resize 时一起注入
+            let hook = " if [ -n \"$BASH_VERSION\" ]; then shopt -s checkwinsize; PROMPT_COMMAND='printf \"\\033]7;file://h%s\\007\\r\" \"$PWD\"'\"${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; elif [ -n \"$ZSH_VERSION\" ]; then __lt_cwd(){ printf '\\033]7;file://h%s\\007\\r' \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(__lt_cwd); fi; printf '\\r\\033[2K\\r'\r";
             let _ = channel.write_all(hook.as_bytes());
             let _ = channel.flush();
-            // 独立恢复回显并自清行（即使钩子行在某些 shell 解析失败，回显也能恢复）。
-            // 先对 stdin(fd0，交互 shell 即 PTY) 再回退 /dev/tty，提高恢复成功率，
-            // 避免 /dev/tty 不可用时把用户留在盲打状态。
-            let _ = channel.write_all(b" stty echo 2>/dev/null; command stty echo < /dev/tty 2>/dev/null; printf '\\r\\033[2K'\r");
-            let _ = channel.flush();
+            app_log!("SSH-HOOK", "注入 hook(ECHO 延迟到首次 resize)");
         }
         session.set_blocking(false);
         let id_for_read = id_clone.clone();
@@ -307,6 +320,7 @@ pub async fn ssh_connect(
         // OSC7 cwd 解析器（接受任意 host，含 shell 原生 OSC7，如 fish）
         let mut osc7_parser = crate::core::osc7::Osc7Parser::new();
         let mut last_keepalive = std::time::Instant::now();
+        let mut need_stty_echo = true; // ECHO=false 状态,等首次 resize 时恢复
         loop {
             // ZMODEM 上传：收到信号时在本线程内联运行整个协议（本线程独占
             // channel）。单线程、单解码器、按网络速度推进。
@@ -400,13 +414,28 @@ pub async fn ssh_connect(
 
             // 写入键盘输入（非阻塞）
             while let Ok(data) = input_rx.try_recv() {
+                if data.len() <= 10 {
+                    app_log!("SSH-IO", "WRITE {} bytes: {:02x?}", data.len(), &data);
+                }
                 let _ = channel.write_all(&data);
                 let _ = channel.flush();
             }
 
             // 处理窗口大小变化
             while let Ok((cols, rows)) = resize_rx.try_recv() {
+                session.set_blocking(true);
                 let _ = channel.request_pty_size(cols, rows, None, None);
+                // 首次 resize: 注入 stty 强制更新 $COLUMNS(request_pty_size 的 SIGWINCH 在部分服务器不更新)
+                // 用 \033[A 上移光标 + \033[2K 擦除行 隐藏 stty 回显
+                // ECHO=false 期间注入 stty cols/rows + echo(全部不可见)
+                if need_stty_echo {
+                    need_stty_echo = false;
+                    let stty = format!(" stty cols {} rows {} echo 2>/dev/null; command stty cols {} rows {} echo < /dev/tty 2>/dev/null; printf '\\r\\033[2K\\r'\r", cols, rows, cols, rows);
+                    let _ = channel.write_all(stty.as_bytes());
+                    let _ = channel.flush();
+                    app_log!("SSH", "resize 时注入 stty cols={} rows={} + echo (ECHO=false 不可见)", cols, rows);
+                }
+                session.set_blocking(false);
             }
 
             // 每 15 秒发送 SSH keepalive 防止服务端超时断连
