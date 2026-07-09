@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { LogicalSize, LogicalPosition } from '@tauri-apps/api/dpi';
 import { TerminalPane } from './components/Terminal/TerminalPane';
 import { SplitContainer } from './components/Terminal/SplitContainer';
 import { ConnectionDialog } from './components/ConnectionDialog';
@@ -318,6 +320,46 @@ function App() {
   // Load connections on mount
   useEffect(() => {
     loadConnections();
+  }, []);
+
+  // 恢复上次关闭时的窗口大小和位置
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    // 恢复
+    (async () => {
+      try {
+        const saved = localStorage.getItem('guishell_window_state');
+        if (saved) {
+          const s = JSON.parse(saved);
+          if (s.maximized) {
+            await appWindow.maximize();
+          } else if (s.width && s.height) {
+            await appWindow.setSize(new LogicalSize(s.width, s.height));
+            if (s.x !== undefined && s.y !== undefined) {
+              await appWindow.setPosition(new LogicalPosition(s.x, s.y));
+            }
+          }
+        }
+      } catch (e) { console.warn('窗口恢复失败:', e); }
+    })();
+    // 关闭前保存(用 Tauri onCloseRequested,不用 beforeunload)
+    const unlisten = appWindow.onCloseRequested(async (event) => {
+      event.preventDefault();
+      try {
+        const maximized = await appWindow.isMaximized();
+        const scaleFactor = await appWindow.scaleFactor();
+        const physSize = await appWindow.innerSize();
+        const physPos = await appWindow.outerPosition();
+        const size = physSize.toLogical(scaleFactor);
+        const pos = physPos.toLogical(scaleFactor);
+        localStorage.setItem('guishell_window_state', JSON.stringify({
+          width: Math.round(size.width), height: Math.round(size.height),
+          x: Math.round(pos.x), y: Math.round(pos.y), maximized,
+        }));
+      } catch (e) { console.warn('窗口状态保存失败:', e); }
+      await appWindow.destroy();
+    });
+    return () => { unlisten.then(fn => fn()); };
   }, []);
 
   // Restore previous sessions or open a default local terminal

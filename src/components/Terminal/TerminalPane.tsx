@@ -456,7 +456,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       return true;
     };
 
-    // Retry initial fit until layout is ready
+    // 等字体加载完再 fit(字体没加载完时 fitAddon 的字符宽高测量不准 → cols/rows 错)
+    document.fonts.ready.then(() => {
+      requestAnimationFrame(forceFit);
+    });
+    // 兜底:字体加载事件不触发时(某些 WebView),重试直到布局就绪
     let initAttempt = 0;
     const tryInitFit = () => {
       initAttempt++;
