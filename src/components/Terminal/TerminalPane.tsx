@@ -441,7 +441,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     window.addEventListener('terminal-settings-changed', onSettingsChanged);
 
     // Force fit: read size from wrapper, write to container, fit, refresh
-    const forceFit = () => {
+    let lastFitCols = 0, lastFitRows = 0;
+    const forceFit = (source?: string) => {
       const w = wrapperRef.current;
       const c = containerRef.current;
       if (!w || !c || !fitRef.current || !termRef.current) return false;
@@ -451,29 +452,31 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       c.style.height = `${Math.floor(rect.height)}px`;
       try {
         fitRef.current.fit();
-        termRef.current.refresh(0, termRef.current.rows - 1);
+        const cols = termRef.current.cols;
+        const rows = termRef.current.rows;
+        if (cols !== lastFitCols || rows !== lastFitRows) {
+          appLog('PTY', `fit(${source || '?'}): ${lastFitCols}x${lastFitRows} → ${cols}x${rows} wrapper=${Math.floor(rect.width)}x${Math.floor(rect.height)}`);
+          lastFitCols = cols;
+          lastFitRows = rows;
+        }
+        termRef.current.refresh(0, rows - 1);
       } catch (_) {}
       return true;
     };
 
     // 等字体加载完再 fit(字体没加载完时 fitAddon 的字符宽高测量不准 → cols/rows 错)
     document.fonts.ready.then(() => {
-      requestAnimationFrame(forceFit);
+      requestAnimationFrame(() => forceFit('fonts.ready'));
     });
     // 兜底:字体加载事件不触发时(某些 WebView),重试直到布局就绪
     let initAttempt = 0;
     const tryInitFit = () => {
       initAttempt++;
-      if (!forceFit() && initAttempt < 30) {
+      if (!forceFit('init#' + initAttempt) && initAttempt < 30) {
         setTimeout(tryInitFit, 100);
       }
     };
     requestAnimationFrame(tryInitFit);
-    // Windows WebView2 初始化慢:UI 元素(标签栏/底部面板)渲染完成后 wrapper 高度会变,
-    // 需要在更长延迟点补 fit,确保 PTY 拿到最终正确的 rows
-    for (const delay of [500, 1000, 2000]) {
-      setTimeout(() => { if (!disposed) forceFit(); }, delay);
-    }
 
     // Ctrl+Shift+F to toggle search bar
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -661,6 +664,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
 
     // Resize -> Tauri
     term.onResize(({ cols, rows }) => {
+      appLog('PTY', `onResize → terminal_resize: ${cols}x${rows}`);
       invoke('terminal_resize', { id: terminalId, cols, rows });
     });
 
@@ -720,17 +724,14 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     });
 
     // Resize handler: multi-stage fit to handle window animation
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     let resizeTimers: ReturnType<typeof setTimeout>[] = [];
     const doFit = () => {
       closeAutocomplete();
-      // Clear any pending fits
       resizeTimers.forEach(t => clearTimeout(t));
       resizeTimers = [];
-      // Fit at multiple delays to catch window animation completion
       for (const delay of [50, 150, 400]) {
         const t = setTimeout(() => {
-          requestAnimationFrame(forceFit);
+          requestAnimationFrame(() => forceFit('resize'));
         }, delay);
         resizeTimers.push(t);
       }
