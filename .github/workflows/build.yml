@@ -141,6 +141,10 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
+      - name: Build frontend for clippy
+        if: matrix.target == 'linux'
+        run: npm run build
+
       - name: Rust clippy
         if: matrix.target == 'linux'
         working-directory: src-tauri
