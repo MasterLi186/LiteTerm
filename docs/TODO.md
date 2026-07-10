@@ -39,6 +39,20 @@
   - 来源:竞品分析(SecureCRT/MobaXterm 有)
   - 工作量:1-2 天
 
+- [ ] **HTTP API: 增量读取 UTF-8/ANSI 边界切分** — `GET /tabs/:id/read` 的增量游标可能切在多字节 UTF-8 字符或 ANSI 转义序列中间,导致该次返回的纯文本出现乱码或残留转义字节。需要在缓冲区或读取层面保留跨调用的部分序列状态,或至少在 API 文档中声明该限制。
+  - 来源:代码审查
+  - 工作量:0.5 天
+  - 涉及:`src-tauri/src/commands/api_server.rs` 的 `read_tab` handler
+
+- [ ] **HTTP API: do_ssh_connect 阻塞 tokio 线程** — `do_ssh_connect` 内部用 `std::sync::mpsc::Receiver::recv()`(阻塞调用)等待 SSH 握手完成,通过 axum handler 触发时会占用共享 tokio 运行时工作线程,多个并发 SSH 连接请求可能耗尽线程池。需要改用 `spawn_blocking` 或有界并发限制。
+  - 来源:代码审查(预先存在的模式,非本次引入)
+  - 工作量:0.5 天
+  - 涉及:`src-tauri/src/commands/ssh.rs` 的 `do_ssh_connect`
+
+- [ ] **HTTP API: 测试计划与实现不一致** — `docs/testing/http-api-test-plan.md` 承诺的 ANSI-01~04、AUTH-01~04 单元测试(应在 `api_server.rs` 的 `#[cfg(test)]`)未实现,需要补齐或更新测试计划文档。
+  - 来源:代码审查
+  - 工作量:2 小时
+
 - [ ] **SSH 配置导入** — 读取 `~/.ssh/config` 自动生成连接书签
   - 来源:竞品分析(Tabby/iTerm2 有)
   - 工作量:0.5 天
