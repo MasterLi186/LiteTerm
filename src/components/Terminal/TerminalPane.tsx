@@ -860,6 +860,17 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           }, 100);
         }
         const data = new Uint8Array(event.payload.data);
+        // 检测清屏/alternate screen 相关控制序列，用于排查 /new 后界面不干净的问题
+        const raw = new TextDecoder('utf-8', { fatal: false }).decode(data);
+        if (raw.includes('\x1b[2J') || raw.includes('\x1b[3J')) {
+          appLog('CSI', `清屏序列: ${raw.includes('\x1b[2J') ? 'ED(2)' : ''}${raw.includes('\x1b[3J') ? ' ED(3)' : ''} len=${data.length} cols=${termRef.current?.cols} rows=${termRef.current?.rows}`);
+        }
+        if (raw.includes('\x1b[?1049h') || raw.includes('\x1b[?1049l')) {
+          appLog('CSI', `alternate screen: ${raw.includes('\x1b[?1049h') ? 'ENTER' : ''}${raw.includes('\x1b[?1049l') ? 'LEAVE' : ''} len=${data.length}`);
+        }
+        if (raw.includes('\x1b[H') || raw.includes('\x1b[;H')) {
+          appLog('CSI', `cursor home: len=${data.length}`);
+        }
         try {
           sentry.consume(data);
         } catch (e: any) {

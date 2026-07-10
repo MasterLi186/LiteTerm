@@ -38,12 +38,50 @@ fn check_auth(headers: &HeaderMap, token: &str) -> Result<(), (StatusCode, Json<
 }
 
 /// 启动 HTTP API 服务器，绑定 127.0.0.1:19526
+const DEFAULT_PORT: u16 = 19526;
+const MAX_PORT_TRIES: u16 = 10;
+
 pub async fn start_api_server(app_handle: AppHandle) {
-    // 先绑定端口，成功后再写 token 文件，防止多实例竞争导致 token 文件与实际监听的服务器不一致
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:19526").await {
-        Ok(l) => l,
-        Err(e) => {
-            app_log!("API", "WARNING: HTTP API 服务器启动失败(端口可能被占用): {}", e);
+    // 端口选择：环境变量 > 自动探测(19526 起，最多试 10 个)
+    let base_port = std::env::var("LITETERM_API_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+
+    let mut listener = None;
+    let mut actual_port = base_port;
+
+    if std::env::var("LITETERM_API_PORT").is_ok() {
+        // 指定了端口，只尝试该端口
+        match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", base_port)).await {
+            Ok(l) => { listener = Some(l); }
+            Err(e) => {
+                app_log!("API", "WARNING: 指定端口 {} 绑定失败: {}", base_port, e);
+                return;
+            }
+        }
+    } else {
+        // 自动探测：从默认端口开始，被占用则递增
+        for offset in 0..MAX_PORT_TRIES {
+            let port = base_port + offset;
+            match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
+                Ok(l) => {
+                    listener = Some(l);
+                    actual_port = port;
+                    if offset > 0 {
+                        app_log!("API", "默认端口 {} 被占用，使用 {}", base_port, port);
+                    }
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    let listener = match listener {
+        Some(l) => l,
+        None => {
+            app_log!("API", "WARNING: 端口 {}-{} 全部被占用，HTTP API 不可用", base_port, base_port + MAX_PORT_TRIES - 1);
             return;
         }
     };
@@ -56,22 +94,34 @@ pub async fn start_api_server(app_handle: AppHandle) {
         hex::encode(bytes)
     };
 
-    // 写入 token 文件(权限 0600)
+    // 写入 token + 端口信息(绑定成功后才写，保证文件与实际服务一致)
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("guishell");
     std::fs::create_dir_all(&config_dir).ok();
+
     let token_path = config_dir.join("api_token");
     if let Err(e) = std::fs::write(&token_path, &token) {
         app_log!("API", "WARNING: 写入 api_token 失败: {}", e);
     }
+
+    // api_port 文件写入 JSON: {"port": N, "pid": N}
+    let pid = std::process::id();
+    let port_info = serde_json::json!({"port": actual_port, "pid": pid});
+    let port_path = config_dir.join("api_port");
+    if let Err(e) = std::fs::write(&port_path, port_info.to_string()) {
+        app_log!("API", "WARNING: 写入 api_port 失败: {}", e);
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).ok();
+        std::fs::set_permissions(&port_path, std::fs::Permissions::from_mode(0o600)).ok();
     }
 
     app_log!("API", "API token 已写入: {}", token_path.display());
+    app_log!("API", "API port 已写入: {} (port={}, pid={})", port_path.display(), actual_port, pid);
 
     let api_state = Arc::new(ApiState {
         app_handle,
@@ -88,7 +138,7 @@ pub async fn start_api_server(app_handle: AppHandle) {
         .route("/api/v1/tabs/{id}", delete(close_tab))
         .with_state(api_state);
 
-    app_log!("API", "HTTP API 服务器已启动: http://127.0.0.1:19526");
+    app_log!("API", "HTTP API 服务器已启动: http://127.0.0.1:{}", actual_port);
     if let Err(e) = axum::serve(listener, app).await {
         app_log!("API", "HTTP API 服务器异常退出: {}", e);
     }
