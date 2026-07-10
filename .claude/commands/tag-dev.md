@@ -9,7 +9,7 @@
 ```bash
 git status
 git log --oneline -5
-git tag --sort=-v:refname | head -3
+git tag --sort=-v:refname | grep dev | head -3
 grep '"version"' src-tauri/tauri.conf.json
 ```
 
@@ -23,26 +23,28 @@ grep '"version"' src-tauri/tauri.conf.json
 
 ### 3. 迭代版本号
 
-读取 `src-tauri/tauri.conf.json` 的 `version` 字段（格式 `X.Y.Z-dev`），将最后一位 +1。
+查看最新 dev tag（`git tag --sort=-v:refname | grep dev | head -1`），取最后一位 +1。
 
-```
-0.8.16-dev → 0.8.17-dev
-```
+tag 格式为 `dev-0.8.X`，tauri.conf.json version 格式为 `0.8.X-dev`。
 
-修改后提交：
+例如最新 tag 是 `dev-0.8.24`：
+- tauri.conf.json version 改为 `0.8.25-dev`
+- tag 打 `dev-0.8.25`
+
+修改 tauri.conf.json 后提交：
 ```bash
-git commit -m "chore: 版本号 X.Y.Z-dev → X.Y.(Z+1)-dev"
+git commit -m "chore: 版本号 → 0.8.25-dev"
 ```
 
 ### 4. Push + Tag
 
 ```bash
 git push origin dev
-git tag vX.Y.(Z+1)-dev
-git push origin vX.Y.(Z+1)-dev
+git tag dev-0.8.25
+git push origin dev-0.8.25
 ```
 
-tag 格式与 version 字段一致，加 `v` 前缀。CI 由 `v*` tag 触发。
+CI 由 `dev-*` tag 触发，只编译不创建 Release。
 
 ### 5. 确认 CI
 
@@ -51,6 +53,7 @@ tag 格式与 version 字段一致，加 `v` 前缀。CI 由 `v*` tag 触发。
 ## 约束
 
 - **禁止在 main 分支打 tag**
-- **版本号必须与 tauri.conf.json 一致**（memory: sync-version-before-tag）
+- **tag 格式必须是 `dev-0.8.X`（不是 `v0.8.X-dev`）**
+- **tauri.conf.json version 必须与 tag 一致（`0.8.X-dev`）**
 - **每次 tag 授权是一次性的**（memory: no-tag-without-permission）
 - **构建用 `./build.sh`，不要手动 cargo build / npm run build**
