@@ -152,6 +152,7 @@ jobs:
 
       - name: Rust tests
         if: matrix.target == 'linux'
+        working-directory: src-tauri
         run: cargo test
 
       - name: Build Tauri app
