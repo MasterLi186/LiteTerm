@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/refs/heads/v2/crates/tauri-cli/schema.json",
   "productName": "LiteTerm",
-  "version": "0.8.16-dev",
+  "version": "0.8.17-dev",
   "identifier": "com.liteterm.app",
   "build": {
     "frontendDist": "../dist",
