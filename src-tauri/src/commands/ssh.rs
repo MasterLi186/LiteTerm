@@ -479,8 +479,11 @@ pub async fn do_ssh_connect(
         }
     });
 
-    // Wait for connection result
-    match status_rx.recv() {
+    // 在独立线程等待连接结果，避免阻塞 tokio 工作线程(axum handler 共享 runtime)
+    let recv_result = tokio::task::spawn_blocking(move || status_rx.recv())
+        .await
+        .map_err(|e| format!("spawn_blocking 失败: {}", e))?;
+    match recv_result {
         Ok(Ok(())) => {
             // 连接成功后才初始化输出缓冲区（避免失败路径泄漏 1MB）
             state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));

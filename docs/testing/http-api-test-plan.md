@@ -104,5 +104,8 @@
 
 | 文件 | 内容 |
 |------|------|
-| `src-tauri/src/commands/api_server.rs` 内 `#[cfg(test)]` | 单元测试（缓冲区、ANSI、认证） |
-| `tests/test_http_api.sh` | 集成 + 端到端测试脚本 |
+| `src-tauri/src/state.rs` 内 `#[cfg(test)]` | 单元测试（环形缓冲区 BUF-01~06） |
+| `tests/test_http_api.sh` | 集成 + 端到端测试脚本（AUTH、TAB、RW、E2E） |
+
+> ANSI 过滤依赖 `strip-ansi-escapes` crate 自身的正确性，不额外测试。
+> Token 认证在集成测试脚本中通过 HTTP 请求覆盖（AUTH-01~04）。

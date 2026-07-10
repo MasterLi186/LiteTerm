@@ -431,12 +431,16 @@ async fn read_tab(
         ob.read_from(cursor)
     };
 
+    // 跳过开头不完整的 UTF-8 序列（cursor 切在多字节字符中间时产生）
+    let skip = data.iter().take_while(|&&b| (b & 0xC0) == 0x80).count();
+    let clean = &data[skip..];
+
     // 默认过滤 ANSI 转义码，raw=true 时保留
     let raw = params.raw.unwrap_or(false);
     let text = if raw {
-        String::from_utf8_lossy(&data).to_string()
+        String::from_utf8_lossy(clean).to_string()
     } else {
-        let stripped = strip_ansi_escapes::strip(&data);
+        let stripped = strip_ansi_escapes::strip(clean);
         String::from_utf8_lossy(&stripped).to_string()
     };
 
