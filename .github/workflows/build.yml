@@ -138,8 +138,8 @@ jobs:
         with:
           # dev tag 只编译不发 Release(产物从 Actions Artifacts 下载)
           # 正式 v* tag 才创建 Release
-          tagName: ${{ startsWith(github.ref_name, 'v') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref_name, 'v') && format('LiteTerm {0}', github.ref_name) || '' }}
+          tagName: ${{ startsWith(github.ref_name, 'v') && !contains(github.ref_name, '-dev') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref_name, 'v') && !contains(github.ref_name, '-dev') && format('LiteTerm {0}', github.ref_name) || '' }}
           releaseBody: ${{ steps.changelog.outputs.body || '' }}
           releaseDraft: false
           prerelease: false
