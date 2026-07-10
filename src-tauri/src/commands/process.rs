@@ -304,10 +304,8 @@ pub async fn get_process_detail(
                         environ_lines.push(trimmed.to_string());
                     }
                 }
-                "ps" => {
-                    if !trimmed.is_empty() {
-                        ps_line = trimmed.to_string();
-                    }
+                "ps" if !trimmed.is_empty() => {
+                    ps_line = trimmed.to_string();
                 }
                 _ => {}
             }

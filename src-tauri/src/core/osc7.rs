@@ -96,9 +96,9 @@ fn parse_file_url(payload: &[u8]) -> Option<String> {
     }
     let path_part = if let Some(rest) = s.strip_prefix("file://") {
         // rest = host/path —— 从 host 之后的第一个 '/' 开始才是路径
-        match rest.find('/') {
-            Some(idx) => &rest[idx..],
-            None => return None,
+        {
+            let idx = rest.find('/')?;
+            &rest[idx..]
         }
     } else if s.starts_with('/') {
         s
