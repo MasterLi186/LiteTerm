@@ -332,7 +332,18 @@ pub async fn do_ssh_connect(
         let mut osc7_parser = crate::core::osc7::Osc7Parser::new();
         let mut last_keepalive = std::time::Instant::now();
         let mut need_stty_echo = true; // ECHO=false 状态,等首次 resize 时恢复
+        let stty_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
+            // 超时兜底：3 秒内没收到 resize 就主动注入 stty echo，防止用户已进入子 shell 后才注入
+            if need_stty_echo && std::time::Instant::now() >= stty_deadline {
+                need_stty_echo = false;
+                session.set_blocking(true);
+                let stty = " stty echo 2>/dev/null; command stty echo < /dev/tty 2>/dev/null; printf '\\r\\033[2K\\r'\r";
+                let _ = channel.write_all(stty.as_bytes());
+                let _ = channel.flush();
+                session.set_blocking(false);
+                app_log!("SSH", "stty echo 超时兜底注入(3s 内未收到 resize)");
+            }
             // ZMODEM 上传：收到信号时在本线程内联运行整个协议（本线程独占
             // channel）。单线程、单解码器、按网络速度推进。
             // ZMODEM 上传（feature 门控，默认不编译）

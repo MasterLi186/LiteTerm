@@ -1,6 +1,6 @@
 [package]
 name = "guishell"
-version = "0.1.0"
+version = "0.8.17"
 edition = "2021"
 description = "Lightweight native Linux SSH client"
 
