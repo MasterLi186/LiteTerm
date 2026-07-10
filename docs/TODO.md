@@ -4,6 +4,16 @@
 
 ## 🔴 P0 — 必须做(影响基本使用)
 
+- [ ] **SSH stty 注入时序问题** — 首次 resize 时注入的 `stty cols/rows echo` 可能延迟到用户已进入子 shell（如 adb shell）后才触发，导致 stty 命令被当作普通输入执行。需要给注入加超时兜底：连接后 5 秒内没收到 resize 就直接注入 stty echo 恢复回显。
+  - 来源:实际使用（BMC → adb shell 场景）
+  - 工作量:0.5 天
+  - 涉及:`src-tauri/src/commands/ssh.rs` 的 `need_stty_echo` 逻辑
+
+- [ ] **Claude Code `/new` 后终端显示异常** — 在 LiteTerm 中运行 Claude Code 后执行 `/new` 清空上下文，终端出现大片空白区域，渲染不正确。可能是 xterm.js 未正确处理 Claude Code 发送的清屏/光标重定位序列。
+  - 来源:实际使用
+  - 工作量:1 天
+  - 涉及:`src/components/Terminal/TerminalPane.tsx`、xterm.js 配置
+
 - [ ] **clippy 20 个 warning 清零** — 代码质量门应该严格,目前 `|| true` 绕过
   - 来源:CI 审查
   - 工作量:1 小时

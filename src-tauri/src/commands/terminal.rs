@@ -37,12 +37,12 @@ pub struct ShellInfo {
     pub path: String,
 }
 
-#[tauri::command]
-pub async fn open_local_terminal(
-    state: State<'_, AppState>,
-    app: AppHandle,
-) -> Result<String, String> {
+/// 本地终端核心逻辑(供 Tauri 命令和 HTTP API 共用)
+pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<String>) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
+
+    // 初始化输出缓冲区供 HTTP API 增量拉取
+    state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
 
     let pty_system = portable_pty::native_pty_system();
     let pair = pty_system
@@ -57,8 +57,8 @@ pub async fn open_local_terminal(
             e.to_string()
         })?;
 
-    let shell = default_shell();
-    let cmd = CommandBuilder::new(shell.clone());
+    let shell = shell_path.unwrap_or_else(|| default_shell());
+    let cmd = CommandBuilder::new(&shell);
     let _child = pair.slave.spawn_command(cmd).map_err(|e| {
         app_log!("TERM", "ERROR: spawn shell failed: {} (shell={})", e, shell);
         e.to_string()
@@ -77,28 +77,34 @@ pub async fn open_local_terminal(
         e.to_string()
     })?;
 
-    // Input channel: frontend -> writer thread
+    // 输入通道: 前端/API -> writer 线程
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
 
-    // Reader thread: PTY output -> Tauri event (ZMODEM handled on frontend)
-    // Delay start to let frontend register event listener first
+    // Reader 线程: PTY 输出 -> Tauri 事件 + 输出缓冲区
     let id_clone = id.clone();
     let app_clone = app.clone();
+    let output_bufs = state.output_buffers.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(500));
         let mut reader = reader;
-        let mut buf = [0u8; 4096];
+        let mut read_buf = [0u8; 4096];
         loop {
-            match reader.read(&mut buf) {
+            match reader.read(&mut read_buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let _ = app_clone.emit(
                         "terminal-output",
                         serde_json::json!({
                             "id": id_clone,
-                            "data": &buf[..n],
+                            "data": &read_buf[..n],
                         }),
                     );
+                    // 写入输出缓冲区供 HTTP API 读取
+                    if let Ok(mut bufs) = output_bufs.lock() {
+                        if let Some(ob) = bufs.get_mut(&id_clone) {
+                            ob.write(&read_buf[..n]);
+                        }
+                    }
                 }
                 Err(_) => break,
             }
@@ -112,7 +118,7 @@ pub async fn open_local_terminal(
         }
     });
 
-    // Resize channel
+    // Resize 通道
     let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u32, u32)>();
     let master = pair.master;
     std::thread::spawn(move || {
@@ -138,6 +144,14 @@ pub async fn open_local_terminal(
         });
 
     Ok(id)
+}
+
+#[tauri::command]
+pub async fn open_local_terminal(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<String, String> {
+    do_open_terminal(&state, &app, None)
 }
 
 #[tauri::command]
@@ -216,91 +230,7 @@ pub async fn open_shell_terminal(
     app: AppHandle,
     shell_path: String,
 ) -> Result<String, String> {
-    let id = uuid::Uuid::new_v4().to_string();
-
-    let pty_system = portable_pty::native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| {
-            app_log!("TERM", "ERROR: PTY open failed: {}", e);
-            e.to_string()
-        })?;
-
-    let cmd = CommandBuilder::new(&shell_path);
-    let _child = pair.slave.spawn_command(cmd).map_err(|e| {
-        app_log!("TERM", "ERROR: spawn shell failed: {} (shell={})", e, shell_path);
-        e.to_string()
-    })?;
-    drop(pair.slave);
-
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-
-    let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-
-    let id_clone = id.clone();
-    let app_clone = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let mut reader = reader;
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let _ = app_clone.emit(
-                        "terminal-output",
-                        serde_json::json!({
-                            "id": id_clone,
-                            "data": &buf[..n],
-                        }),
-                    );
-                }
-                Err(_) => break,
-            }
-        }
-    });
-    std::thread::spawn(move || {
-        let mut writer = writer;
-        while let Ok(data) = input_rx.recv() {
-            let _ = writer.write_all(&data);
-            let _ = writer.flush();
-        }
-    });
-
-    let (resize_tx, resize_rx) = std::sync::mpsc::channel::<(u32, u32)>();
-    let master = pair.master;
-    std::thread::spawn(move || {
-        while let Ok((cols, rows)) = resize_rx.recv() {
-            let _ = master.resize(PtySize {
-                rows: rows as u16,
-                cols: cols as u16,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
-        }
-    });
-
-    state
-        .local_terminals
-        .lock()
-        .unwrap()
-        .insert(id.clone(), LocalTerminal {
-            id: id.clone(),
-            input_tx,
-            resize_tx,
-            stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        });
-
-    Ok(id)
+    do_open_terminal(&state, &app, Some(shell_path))
 }
 
 #[tauri::command]
@@ -346,10 +276,11 @@ pub async fn terminal_resize(
 #[tauri::command]
 pub async fn close_terminal(state: State<'_, AppState>, id: String) -> Result<(), String> {
     if let Some(term) = state.local_terminals.lock().unwrap().remove(&id) {
-        // Signal reader/writer threads to stop, releasing serial port fd
         term.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        // Drop input_tx to unblock writer thread's recv()
+        // drop input_tx 解除 writer 线程阻塞，drop resize_tx 解除 resize 线程阻塞
+        // resize 线程持有 PTY master，释放后 reader 线程会收到 EOF 退出
         drop(term.input_tx);
+        drop(term.resize_tx);
     }
     if let Some(session) = state.sessions.lock().unwrap().remove(&id) {
         session
@@ -360,6 +291,9 @@ pub async fn close_terminal(state: State<'_, AppState>, id: String) -> Result<()
     // remove —— 每次关闭/掉线重连都会泄漏一条活的 SFTP 连接(TcpStream + libssh2 Session
     // + 30s keepalive + 1 个 fd),长跑会单调耗尽文件描述符/连接数。
     state.sftp_sessions.lock().unwrap().remove(&id);
+    // 清理 HTTP API 相关资源
+    state.output_buffers.lock().unwrap().remove(&id);
+    state.tab_registry.lock().unwrap().remove(&id);
     Ok(())
 }
 
@@ -508,6 +442,20 @@ pub async fn open_file_path(
         .spawn()
         .map_err(|e| format!("打开失败: {}", e))?;
 
+    Ok(())
+}
+
+/// HTTP API 标签页注册(前端打开标签时调用)
+#[tauri::command]
+pub async fn register_tab(state: State<'_, AppState>, id: String, label: String, tab_type: String) -> Result<(), String> {
+    state.tab_registry.lock().unwrap().insert(id.clone(), crate::state::TabInfo { id, label, tab_type });
+    Ok(())
+}
+
+/// HTTP API 标签页注销(前端关闭标签时调用)
+#[tauri::command]
+pub async fn unregister_tab(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.tab_registry.lock().unwrap().remove(&id);
     Ok(())
 }
 

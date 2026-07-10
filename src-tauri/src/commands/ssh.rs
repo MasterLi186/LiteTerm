@@ -8,11 +8,11 @@ use tauri::{AppHandle, Emitter, State};
 use crate::app_log;
 use crate::state::{AppState, LocalTerminal, ManagedSession, SftpRequest};
 
-#[tauri::command]
+/// SSH 连接核心逻辑(供 Tauri 命令和 HTTP API 共用)
 #[allow(clippy::too_many_arguments)]
-pub async fn ssh_connect(
-    state: State<'_, AppState>,
-    app: AppHandle,
+pub async fn do_ssh_connect(
+    state: &AppState,
+    app: &AppHandle,
     host: String,
     port: u16,
     user: String,
@@ -25,6 +25,8 @@ pub async fn ssh_connect(
     rows: Option<u32>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
+    // 初始化输出缓冲区供 HTTP API 增量拉取
+    state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
     let timeout = state.settings.lock().unwrap().ssh.connect_timeout_secs;
 
     // ProxyJump path: use system SSH client via PTY
@@ -69,12 +71,13 @@ pub async fn ssh_connect(
 
             let id_clone = id.clone();
             let app_clone = app.clone();
+            let output_bufs = state.output_buffers.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 let mut reader = reader;
-                let mut buf = [0u8; 4096];
+                let mut read_buf = [0u8; 4096];
                 loop {
-                    match reader.read(&mut buf) {
+                    match reader.read(&mut read_buf) {
                         Ok(0) => {
                             let _ = app_clone.emit(
                                 "terminal-closed",
@@ -85,8 +88,14 @@ pub async fn ssh_connect(
                         Ok(n) => {
                             let _ = app_clone.emit(
                                 "terminal-output",
-                                serde_json::json!({"id": id_clone, "data": &buf[..n]}),
+                                serde_json::json!({"id": id_clone, "data": &read_buf[..n]}),
                             );
+                            // 写入输出缓冲区供 HTTP API 读取
+                            if let Ok(mut bufs) = output_bufs.lock() {
+                                if let Some(ob) = bufs.get_mut(&id_clone) {
+                                    ob.write(&read_buf[..n]);
+                                }
+                            }
                         }
                         Err(_) => {
                             let _ = app_clone.emit(
@@ -148,6 +157,7 @@ pub async fn ssh_connect(
     let zmodem_request: Arc<Mutex<Option<crate::state::ZmodemSendRequest>>> = Arc::new(Mutex::new(None));
     let zmodem_active_clone = zmodem_active.clone();
     let zmodem_request_clone = zmodem_request.clone();
+    let output_bufs = state.output_buffers.clone();
 
     std::thread::spawn(move || {
         app_log!("SSH", "SSH CONNECT START: {}:{} user={} auth={}", host, port, user, auth_method);
@@ -396,6 +406,12 @@ pub async fn ssh_connect(
                             "data": &buf[..n],
                         }),
                     );
+                    // 写入输出缓冲区供 HTTP API 读取
+                    if let Ok(mut bufs) = output_bufs.lock() {
+                        if let Some(ob) = bufs.get_mut(&id_for_read) {
+                            ob.write(&buf[..n]);
+                        }
+                    }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(ref e) => {
@@ -475,6 +491,25 @@ pub async fn ssh_connect(
         Ok(Err(e)) => Err(e),
         Err(_) => Err("Connection thread died".to_string()),
     }
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn ssh_connect(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    host: String,
+    port: u16,
+    user: String,
+    password: Option<String>,
+    auth_method: String,
+    key_path: Option<String>,
+    label: String,
+    proxy_jump: Option<String>,
+    cols: Option<u32>,
+    rows: Option<u32>,
+) -> Result<String, String> {
+    do_ssh_connect(&state, &app, host, port, user, password, auth_method, key_path, label, proxy_jump, cols, rows).await
 }
 
 /// 返回客户端支持的 SSH 加密算法列表，用于连接失败时诊断

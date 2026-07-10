@@ -1,3 +1,4 @@
+pub mod api_server;
 pub mod config_io;
 pub mod connection;
 pub mod keyring;

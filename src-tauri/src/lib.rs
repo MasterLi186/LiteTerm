@@ -6,7 +6,7 @@ pub mod plugin;
 pub mod state;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 
@@ -34,6 +34,8 @@ pub fn run() {
             tunnels: Mutex::new(HashMap::new()),
             recordings: Mutex::new(HashMap::new()),
             transfer_cancel: Mutex::new(HashMap::new()),
+            output_buffers: Arc::new(Mutex::new(HashMap::new())),
+            tab_registry: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::terminal::open_local_terminal,
@@ -89,6 +91,8 @@ pub fn run() {
             commands::recording::stop_recording,
             commands::recording::record_event,
             commands::recording::is_recording,
+            commands::terminal::register_tab,
+            commands::terminal::unregister_tab,
         ])
         .setup(|app| {
             // Inject JS to suppress the native webview right-click menu.
@@ -98,6 +102,13 @@ pub fn run() {
             window.eval(
                 "document.addEventListener('contextmenu',function(e){e.preventDefault();},true);"
             ).ok();
+
+            // 启动 HTTP API 服务器(后台异步,不阻塞 Tauri 启动)
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                crate::commands::api_server::start_api_server(app_handle).await;
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

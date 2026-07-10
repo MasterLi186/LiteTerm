@@ -33,6 +33,9 @@ hostname = "0.4"
 sysinfo = "0.34"
 whoami = "1"
 hex = "0.4"
+axum = "0.8"
+strip-ansi-escapes = "0.2"
+rand = "0.8"
 
 
 [target.'cfg(target_os = "linux")'.dependencies]

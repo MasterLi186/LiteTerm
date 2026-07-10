@@ -462,6 +462,44 @@ function App() {
     openLocalTerminal();
   }
 
+  // HTTP API 事件监听：API 操作标签页时同步 React state
+  useEffect(() => {
+    const unlisten1 = listen<{id: string; label: string; type: string; sshParams?: any}>('api-tab-opened', (event) => {
+      const { id, label, type: tabType, sshParams } = event.payload;
+      const tab: Tab = { id, label, type: tabType as Tab['type'], sshParams };
+      setTabs(prev => [...prev, tab]);
+      setActiveTabId(id);
+      setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
+      setFocusedTerminalId(id);
+      setTimeout(() => {
+        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
+      }, 300);
+    });
+
+    const unlisten2 = listen<{id: string}>('api-tab-closed', (event) => {
+      const { id } = event.payload;
+      setTabs(prev => prev.filter(t => t.id !== id));
+      setSplitTrees(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setActiveTabId(prev => prev === id ? null : prev);
+    });
+
+    const unlisten3 = listen<{id: string}>('api-tab-focus', (event) => {
+      const { id } = event.payload;
+      setActiveTabId(id);
+      setFocusedTerminalId(id);
+    });
+
+    return () => {
+      unlisten1.then(f => f());
+      unlisten2.then(f => f());
+      unlisten3.then(f => f());
+    };
+  }, []);
+
   // Listen for terminal-closed events — 不自动重连,显示"连接已断开"
   useEffect(() => {
     const unlisten = listen<{ id: string }>('terminal-closed', (event) => {
@@ -538,6 +576,7 @@ function App() {
       const localCount = tabs.filter((t) => t.type === 'local').length + 1;
       const tab: Tab = { id, label: `终端 ${localCount}`, type: 'local' };
       setTabs((prev) => [...prev, tab]);
+      invoke('register_tab', { id, label: `终端 ${localCount}`, tabType: 'local' }).catch(() => {});
       setActiveTabId(id);
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
@@ -555,6 +594,7 @@ function App() {
       const id = await invoke<string>('open_shell_terminal', { shellPath });
       const tab: Tab = { id, label: shellName, type: 'local', shellPath };
       setTabs((prev) => [...prev, tab]);
+      invoke('register_tab', { id, label: shellName, tabType: 'local' }).catch(() => {});
       setActiveTabId(id);
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
@@ -571,6 +611,7 @@ function App() {
       const id = await invoke<string>('open_serial_terminal', { device, baudRate });
       const tab: Tab = { id, label: `串口: ${name}`, type: 'serial', serialParams: { device, baudRate } };
       setTabs((prev) => [...prev, tab]);
+      invoke('register_tab', { id, label: `串口: ${name}`, tabType: 'serial' }).catch(() => {});
       setActiveTabId(id);
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
@@ -658,6 +699,8 @@ function App() {
       // 回收旧会话残留的后端资源:旧终端已断,但其监控线程与 SFTP 句柄仍在(否则每次
       // 掉线重连都会泄漏一条 SFTP 连接 + fd)。close_terminal 会清 sessions/监控/SFTP。
       invoke('close_terminal', { id: tab.id }).catch(() => {});
+      invoke('unregister_tab', { id: tab.id }).catch(() => {});
+      invoke('register_tab', { id: newId, label: tab.label, tabType: 'ssh' }).catch(() => {});
 
       // Success: update the tab with new terminal ID
       setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, id: newId } : t));
@@ -775,6 +818,7 @@ function App() {
         },
       };
       setTabs((prev) => [...prev, tab]);
+      invoke('register_tab', { id, label: params.label, tabType: 'ssh' }).catch(() => {});
       setActiveTabId(id);
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
@@ -967,6 +1011,7 @@ function App() {
         invoke('close_terminal', { id }).catch((e: any) => log('终端', 'close_terminal 失败: ' + String(e)));
       }
     }
+    invoke('unregister_tab', { id }).catch(() => {});
     setSplitTrees(prev => {
       const next = { ...prev };
       delete next[id];
