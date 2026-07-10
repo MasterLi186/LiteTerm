@@ -611,7 +611,7 @@ function App() {
       const id = await invoke<string>('open_serial_terminal', { device, baudRate });
       const tab: Tab = { id, label: `串口: ${name}`, type: 'serial', serialParams: { device, baudRate } };
       setTabs((prev) => [...prev, tab]);
-      invoke('register_tab', { id, label: `串口: ${name}`, tabType: 'serial' }).catch(() => {});
+      // 串口标签暂不注册到 HTTP API（第一期不支持串口操作）
       setActiveTabId(id);
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);

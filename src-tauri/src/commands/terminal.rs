@@ -41,9 +41,6 @@ pub struct ShellInfo {
 pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<String>) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
 
-    // 初始化输出缓冲区供 HTTP API 增量拉取
-    state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
-
     let pty_system = portable_pty::native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -57,7 +54,7 @@ pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<St
             e.to_string()
         })?;
 
-    let shell = shell_path.unwrap_or_else(|| default_shell());
+    let shell = shell_path.unwrap_or_else(default_shell);
     let cmd = CommandBuilder::new(&shell);
     let _child = pair.slave.spawn_command(cmd).map_err(|e| {
         app_log!("TERM", "ERROR: spawn shell failed: {} (shell={})", e, shell);
@@ -79,6 +76,9 @@ pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<St
 
     // 输入通道: 前端/API -> writer 线程
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+    // PTY + shell 创建成功后才初始化输出缓冲区（避免失败路径泄漏 1MB）
+    state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
 
     // Reader 线程: PTY 输出 -> Tauri 事件 + 输出缓冲区
     let id_clone = id.clone();

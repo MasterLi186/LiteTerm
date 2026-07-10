@@ -25,8 +25,6 @@ pub async fn do_ssh_connect(
     rows: Option<u32>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
-    // 初始化输出缓冲区供 HTTP API 增量拉取
-    state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
     let timeout = state.settings.lock().unwrap().ssh.connect_timeout_secs;
 
     // ProxyJump path: use system SSH client via PTY
@@ -128,6 +126,9 @@ pub async fn do_ssh_connect(
                     });
                 }
             });
+
+            // 连接成功后才初始化输出缓冲区（避免失败路径泄漏 1MB）
+            state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
 
             state.local_terminals.lock().unwrap().insert(
                 id.clone(),
@@ -470,6 +471,9 @@ pub async fn do_ssh_connect(
     // Wait for connection result
     match status_rx.recv() {
         Ok(Ok(())) => {
+            // 连接成功后才初始化输出缓冲区（避免失败路径泄漏 1MB）
+            state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
+
             let monitor_stop = Arc::new(AtomicBool::new(false));
             let (sftp_tx, _sftp_rx) = std::sync::mpsc::channel::<SftpRequest>();
             state.sessions.lock().unwrap().insert(
