@@ -139,11 +139,10 @@ impl ZmodemSender {
                     _ => {}
                 }
             }
-            State::WaitZfinReply => {
-                if frame.frame_type == FrameType::ZFIN {
+            State::WaitZfinReply
+                if frame.frame_type == FrameType::ZFIN => {
                     self.state = State::Done;
                     return SenderAction::Send(over_and_out());
-                }
             }
             _ => {}
         }
