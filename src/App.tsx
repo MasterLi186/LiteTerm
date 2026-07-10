@@ -15,13 +15,14 @@ import { ProcessTable } from './components/ProcessManager/ProcessTable';
 import { NewTabSelector } from './components/NewTabSelector';
 import { SshKeyManager } from './components/SshKeyManager';
 import { BatchCommand } from './components/BatchCommand';
-import { ShortcutSettings, loadShortcuts, matchShortcut } from './components/ShortcutSettings';
+import { loadShortcuts, matchShortcut } from './components/ShortcutSettings';
 import { TunnelManager } from './components/TunnelManager';
 import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 import { log, getLogText } from './utils/logger';
 import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay } from './components/Icons';
 import { SettingsPanel } from './components/Settings';
+import { SettingsTab } from './components/settings/SettingsTab';
 
 // 从 DOM 直接测量终端区域的实际 cols/rows
 function getTerminalSize() {
@@ -739,6 +740,18 @@ function App() {
     setActiveTabId(id);
   }
 
+  function openSettingsTab() {
+    const existing = tabs.find(t => t.type === 'settings');
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+    const id = `settings-${Date.now()}`;
+    const tab: Tab = { id, label: '设置', type: 'settings' };
+    setTabs(prev => [...prev, tab]);
+    setActiveTabId(id);
+  }
+
   async function handleConnect(params: {
     groupId: string;
     groupLabel: string;
@@ -1001,7 +1014,7 @@ function App() {
       return prev;
     });
     const tab = tabs.find((t) => t.id === id);
-    if (tab && tab.type !== 'process' && tab.type !== 'recording') {
+    if (tab && tab.type !== 'process' && tab.type !== 'recording' && tab.type !== 'settings') {
       // Close all terminals in the split tree
       const tree = splitTrees[id];
       if (tree) {
@@ -1036,7 +1049,7 @@ function App() {
 
   function closeOtherTabs(keepId: string) {
     tabs.forEach((t) => {
-      if (t.id !== keepId && t.type !== 'process') {
+      if (t.id !== keepId && t.type !== 'process' && t.type !== 'recording' && t.type !== 'settings') {
         const tree = splitTrees[t.id];
         if (tree) {
           collectTerminalIds(tree).forEach(tid => invoke('close_terminal', { id: tid }).catch((e: any) => log('终端', 'close_terminal 失败: ' + String(e))));
@@ -1182,11 +1195,8 @@ function App() {
 
   const [showSshKeyManager, setShowSshKeyManager] = useState(false);
   const [showBatchCommand, setShowBatchCommand] = useState(false);
-  const [showShortcutSettings, setShowShortcutSettings] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showTunnelManager, setShowTunnelManager] = useState(false);
-  const [showAbout, setShowAbout] = useState(false);
-  const [aboutInfo, setAboutInfo] = useState<Record<string, string> | null>(null);
   const [sidebarConnectionsOpen, setSidebarConnectionsOpen] = useState(true);
   // 文件管理器:本地终端默认隐藏,SSH 看 tab.fileBrowserHidden(每个标签独立记忆)
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
@@ -1544,6 +1554,7 @@ function App() {
               {tab.type === 'recording' && (
                 <span className="text-accent-cyan text-xs">{'▶'}</span>
               )}
+              {tab.type === 'settings' && <IconSettings size={12} />}
               {tab.label}
               <span
                 onClick={(e) => {
@@ -1567,52 +1578,32 @@ function App() {
           <div className="flex-1" />
           <button
             onClick={() => setShowBatchCommand(true)}
-            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
+            className="px-2 py-1.5 text-gray-500 hover:text-accent-cyan flex-shrink-0"
             title="批量命令"
           >
-            <IconBatchCmd size={14} />
+            <IconBatchCmd size={16} />
           </button>
           <button
             onClick={() => setShowTunnelManager(true)}
-            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
+            className="px-2 py-1.5 text-gray-500 hover:text-accent-cyan flex-shrink-0"
             title="SSH 隧道"
           >
-            <IconTunnel size={14} />
+            <IconTunnel size={16} />
           </button>
           <button
-            onClick={() => setShowShortcutSettings(true)}
-            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
-            title="快捷键设置"
+            onClick={openSettingsTab}
+            className="px-2 py-1.5 text-gray-500 hover:text-accent-cyan flex-shrink-0"
+            title="设置"
           >
-            <IconSettings size={14} />
-          </button>
-          <button
-            onClick={() => setShowSettings(true)}
-            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
-            title="系统设置"
-          >
-            <span style={{ fontSize: '13px' }}>⚙</span>
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                const info: any = await invoke('get_system_info');
-                setAboutInfo(info);
-              } catch { setAboutInfo({}); }
-              setShowAbout(true);
-            }}
-            className="px-1.5 py-1 text-gray-500 hover:text-accent-cyan flex-shrink-0"
-            title="关于"
-          >
-            <span style={{ fontSize: '13px' }}>?</span>
+            <IconSettings size={16} />
           </button>
           {import.meta.env.DEV && (
             <button
               onClick={() => setShowLogPanel(prev => !prev)}
-              className={`px-1.5 py-1 flex-shrink-0 ${showLogPanel ? 'text-accent-cyan' : 'text-gray-500 hover:text-accent-cyan'}`}
+              className={`px-2 py-1.5 flex-shrink-0 ${showLogPanel ? 'text-accent-cyan' : 'text-gray-500 hover:text-accent-cyan'}`}
               title="调试日志"
             >
-              <IconLog size={14} />
+              <IconLog size={16} />
             </button>
           )}
         </div>
@@ -1816,6 +1807,18 @@ function App() {
                     filePath={tab.recordingPath!}
                     onClose={() => closeTab(tab.id)}
                   />
+                </div>
+              ) : tab.type === 'settings' ? (
+                <div
+                  key={tab.id}
+                  style={{
+                    display: tab.id === activeTabId ? 'flex' : 'none',
+                    position: 'absolute',
+                    inset: 0,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <SettingsTab onApply={() => window.dispatchEvent(new Event('terminal-settings-changed'))} />
                 </div>
               ) : splitTrees[tab.id] ? (
                 <div
@@ -2139,17 +2142,11 @@ function App() {
         <BatchCommand onClose={() => setShowBatchCommand(false)} tabs={tabs} />
       )}
 
-      {/* Shortcut Settings */}
-      {showShortcutSettings && (
-        <ShortcutSettings onClose={() => setShowShortcutSettings(false)} />
-      )}
-
-      {/* System Settings */}
+      {/* System Settings (旧弹窗保留兼容，齿轮按钮已改为打开设置标签页) */}
       {showSettings && (
         <SettingsPanel
           onClose={() => setShowSettings(false)}
           onApply={() => {
-            // 通知所有终端刷新字体/字号/主题
             window.dispatchEvent(new Event('terminal-settings-changed'));
           }}
         />
@@ -2160,35 +2157,6 @@ function App() {
         <TunnelManager onClose={() => setShowTunnelManager(false)} connections={connections} />
       )}
 
-      {/* 关于对话框 */}
-      {showAbout && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowAbout(false)}>
-          <div className="bg-surface-light border border-surface-border rounded-lg p-6 w-96 shadow-xl" onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <h2 style={{ color: '#00d4ff', fontSize: '18px', fontWeight: 700, margin: 0 }}>LiteTerm</h2>
-              <span onClick={() => setShowAbout(false)} style={{ color: '#8b949e', cursor: 'pointer', fontSize: '18px' }}>×</span>
-            </div>
-            <div style={{ fontSize: '13px', color: '#e6edf3', lineHeight: 1.8 }}>
-              <div><span style={{ color: '#8b949e', display: 'inline-block', width: '80px' }}>版本</span>v{aboutInfo?.app_version || '?'}</div>
-              {aboutInfo && (
-                <>
-                  <div><span style={{ color: '#8b949e', display: 'inline-block', width: '80px' }}>操作系统</span>{aboutInfo.os || '?'} ({aboutInfo.arch || '?'})</div>
-                  <div><span style={{ color: '#8b949e', display: 'inline-block', width: '80px' }}>主机名</span>{aboutInfo.hostname || '?'}</div>
-                  <div><span style={{ color: '#8b949e', display: 'inline-block', width: '80px' }}>用户</span>{aboutInfo.username || '?'}</div>
-                </>
-              )}
-              <div style={{ borderTop: '1px solid #30363d', marginTop: '12px', paddingTop: '12px', color: '#8b949e', fontSize: '11px' }}>
-                轻量级跨平台 SSH 客户端<br />
-                Tauri 2 + React + xterm.js<br />
-                <a href="https://github.com/MasterLi186/LiteTerm" style={{ color: '#58a6ff', textDecoration: 'none' }}
-                   onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(m => m.open('https://github.com/MasterLi186/LiteTerm')); }}>
-                  github.com/MasterLi186/LiteTerm
-                </a>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* 右上角传输进度浮窗 */}
       {activeTransfers.length > 0 && (

@@ -93,6 +93,8 @@ pub fn run() {
             commands::recording::is_recording,
             commands::terminal::register_tab,
             commands::terminal::unregister_tab,
+            commands::terminal::get_settings,
+            commands::terminal::update_settings,
         ])
         .setup(|app| {
             // Inject JS to suppress the native webview right-click menu.

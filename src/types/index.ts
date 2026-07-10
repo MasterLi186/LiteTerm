@@ -28,7 +28,7 @@ export interface ConnectionStore {
 export interface Tab {
   id: string;
   label: string;
-  type: 'local' | 'ssh' | 'process' | 'serial' | 'recording';
+  type: 'local' | 'ssh' | 'process' | 'serial' | 'recording' | 'settings';
   sshParams?: {
     host: string;
     port: number;

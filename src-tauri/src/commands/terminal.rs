@@ -464,3 +464,34 @@ pub fn force_quit() {
     crate::log_util::app_log("关闭", "force_quit: destroy 超时或失败,强制退出进程");
     std::process::exit(0);
 }
+
+#[tauri::command]
+pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let settings = state.settings.lock().unwrap();
+    serde_json::to_value(&*settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_settings(state: State<'_, AppState>, patch: serde_json::Value) -> Result<(), String> {
+    let mut settings = state.settings.lock().unwrap();
+    let mut current = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
+    if let (Some(cur_obj), Some(patch_obj)) = (current.as_object_mut(), patch.as_object()) {
+        for (key, val) in patch_obj {
+            if let Some(existing) = cur_obj.get_mut(key) {
+                if let (Some(e), Some(v)) = (existing.as_object_mut(), val.as_object()) {
+                    for (k2, v2) in v {
+                        e.insert(k2.clone(), v2.clone());
+                    }
+                } else {
+                    cur_obj.insert(key.clone(), val.clone());
+                }
+            } else {
+                cur_obj.insert(key.clone(), val.clone());
+            }
+        }
+    }
+    let updated: crate::config::settings::Settings = serde_json::from_value(current).map_err(|e| e.to_string())?;
+    updated.save().map_err(|e| e.to_string())?;
+    *settings = updated;
+    Ok(())
+}
