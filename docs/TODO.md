@@ -4,7 +4,7 @@
 
 ## 🔴 P0 — 必须做(影响基本使用)
 
-- [ ] **SSH stty 注入时序问题** — 首次 resize 时注入的 `stty cols/rows echo` 可能延迟到用户已进入子 shell（如 adb shell）后才触发，导致 stty 命令被当作普通输入执行。需要给注入加超时兜底：连接后 5 秒内没收到 resize 就直接注入 stty echo 恢复回显。
+- [x] ~~SSH stty 注入时序问题~~ (已加 3 秒超时兜底) — 首次 resize 时注入的 `stty cols/rows echo` 可能延迟到用户已进入子 shell（如 adb shell）后才触发，导致 stty 命令被当作普通输入执行。需要给注入加超时兜底：连接后 5 秒内没收到 resize 就直接注入 stty echo 恢复回显。
   - 来源:实际使用（BMC → adb shell 场景）
   - 工作量:0.5 天
   - 涉及:`src-tauri/src/commands/ssh.rs` 的 `need_stty_echo` 逻辑
@@ -14,7 +14,7 @@
   - 工作量:1 天
   - 涉及:`src/components/Terminal/TerminalPane.tsx`、xterm.js 配置
 
-- [ ] **clippy 20 个 warning 清零** — 代码质量门应该严格,目前 `|| true` 绕过
+- [x] ~~clippy 20 个 warning 清零~~ (已清零 + CI 去掉 || true) — 代码质量门应该严格,目前 `|| true` 绕过
   - 来源:CI 审查
   - 工作量:1 小时
   - 涉及:`src-tauri/src/` 多个文件
@@ -24,7 +24,7 @@
   - 操作:GitHub → Settings → Branches → Add rule
   - 需要:Require PR + status checks pass + no force push
 
-- [ ] **Cargo.toml version 同步** — 一直是 `0.1.0`,应与 tauri.conf.json 一致
+- [x] ~~Cargo.toml version 同步~~ (已同步为 0.8.17)
   - 来源:CI 审查
   - 工作量:5 分钟
 
@@ -44,12 +44,12 @@
   - 工作量:0.5 天
   - 涉及:`src-tauri/src/commands/api_server.rs` 的 `read_tab` handler
 
-- [ ] **HTTP API: do_ssh_connect 阻塞 tokio 线程** — `do_ssh_connect` 内部用 `std::sync::mpsc::Receiver::recv()`(阻塞调用)等待 SSH 握手完成,通过 axum handler 触发时会占用共享 tokio 运行时工作线程,多个并发 SSH 连接请求可能耗尽线程池。需要改用 `spawn_blocking` 或有界并发限制。
+- [x] ~~HTTP API: do_ssh_connect 阻塞 tokio 线程~~ (已改用 spawn_blocking) — `do_ssh_connect` 内部用 `std::sync::mpsc::Receiver::recv()`(阻塞调用)等待 SSH 握手完成,通过 axum handler 触发时会占用共享 tokio 运行时工作线程,多个并发 SSH 连接请求可能耗尽线程池。需要改用 `spawn_blocking` 或有界并发限制。
   - 来源:代码审查(预先存在的模式,非本次引入)
   - 工作量:0.5 天
   - 涉及:`src-tauri/src/commands/ssh.rs` 的 `do_ssh_connect`
 
-- [ ] **HTTP API: 测试计划与实现不一致** — `docs/testing/http-api-test-plan.md` 承诺的 ANSI-01~04、AUTH-01~04 单元测试(应在 `api_server.rs` 的 `#[cfg(test)]`)未实现,需要补齐或更新测试计划文档。
+- [x] ~~HTTP API: 测试计划与实现不一致~~ (文档已更新) — `docs/testing/http-api-test-plan.md` 承诺的 ANSI-01~04、AUTH-01~04 单元测试(应在 `api_server.rs` 的 `#[cfg(test)]`)未实现,需要补齐或更新测试计划文档。
   - 来源:代码审查
   - 工作量:2 小时
 
@@ -75,10 +75,7 @@
   - 工作量:2 小时
 
 - [x] ~~系统设置面板~~ (已完成基础版:弹窗式字体/字号/配色选择)
-- [ ] **设置标签页(对标 Tabby)** — 设置从弹窗改为独立标签页,左侧分类导航(字体/配色/快捷键/SSH/外观),右侧详细配置。配色方案带预览缩略图(类似 Tabby),滚轮浏览即可预览效果,不需要逐个点击。
-  - 来源:对标 Tabby 设置页面
-  - 工作量:2-3 天
-  - 依赖:190 个 Tabby 配色方案(已导入 src/themes.ts)
+- [x] ~~设置标签页(对标 Tabby)~~ (已完成：7 分类 + 配色预览列表 + Tauri 命令读写 settings.toml)
 
 - [ ] **串口 ttyUSB 设备绑定** — 当前按 /dev/ttyUSB0 等路径打开,设备上下电后映射关系会变。需要按 USB VID:PID 或序列号绑定,而非路径。调研 GitHub 上完善的串口框架(如 serial-monitor-rust、espmonitor 等)。
   - 来源:实际使用问题
