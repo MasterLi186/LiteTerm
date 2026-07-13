@@ -6,13 +6,24 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import { open as shellOpen } from '@tauri-apps/plugin-shell';
 import * as Zmodem from 'zmodem.js';
 import '@xterm/xterm/css/xterm.css';
 import type { ITheme } from '@xterm/xterm';
 import { log as appLog, getLogText } from '../../utils/logger';
 import { TERMINAL_THEMES } from '../../themes';
 import { getTerminalFontFamily } from '../Settings';
+
+/**
+ * 双击选词的分隔符。
+ * xterm 默认含英文 ()[]{} 等，但不含中文全角括号；
+ * 否则双击 `（密码: grok2api）` 中的 grok2api 会连同 `）` 一起选中。
+ * 分隔符内的字符不会被纳入“单词”选区。
+ */
+const WORD_SEPARATORS =
+  ' ()[]{}\'",`' +           // xterm 默认 + 补齐英文括号类
+  '（）【】「」『』《》〈〉［］｛｝〔〕' + // 中文/全角括号
+  '<>' +                      // 尖括号
+  '：；，。、';                 // 常见中文标点（避免粘连密码/键值）
 
 /** Get the current theme name from localStorage */
 function getTerminalThemeName(): string {
@@ -396,6 +407,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     const term = new Terminal({
       cursorBlink: true,
       rightClickSelectsWord: true,
+      // 双击选词：中英文括号/常见标点作为词边界，不选入词内
+      wordSeparator: WORD_SEPARATORS,
       fontSize: (() => { try { return parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15; } catch { return 15; } })(),
       scrollback: 10000,
       fontFamily: getTerminalFontFamily(),
@@ -404,8 +417,16 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
 
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
+    // 点击 http(s)/mailto 等链接 → 后端用系统默认程序打开（浏览器等）
+    // 不再用 plugin-shell 的 open：默认校验/静默失败会导致“有下划线但点不动”
+    const openExternal = (target: string, kind: 'url' | 'path') => {
+      appLog('OPEN', `点击${kind === 'url' ? '链接' : '路径'}: ${target}`);
+      invoke('open_with_default_app', { target, id: terminalId }).catch((err) => {
+        appLog('OPEN', `打开失败 (${kind}): ${target} → ${err}`);
+      });
+    };
     const webLinksAddon = new WebLinksAddon((_event, uri) => {
-      shellOpen(uri).catch(() => {});
+      openExternal(uri, 'url');
     });
     term.loadAddon(fitAddon);
     term.loadAddon(searchAddon);
@@ -487,6 +508,12 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       const fontSize = t.options.fontSize || 0;
       appLog('PTY', `fit(${source}): ${beforeCols}x${beforeRows} → ${afterCols}x${afterRows} | wrapper=${Math.floor(rect.width)}x${Math.floor(rect.height)} | cellCalc=${cellW.toFixed(2)}x${cellH.toFixed(2)} cellReal=${measuredCellW.toFixed(2)}x${measuredCellH.toFixed(2)} | font="${font}" size=${fontSize}`);
       try { t.refresh(0, afterRows - 1); } catch (_) {}
+      // 始终把 xterm 实际尺寸推给后端。
+      // 仅依赖 onResize 不够：App 侧 getTerminalSize 曾用错误 cellH 覆盖 PTY，
+      // 而 xterm 自身 cols/rows 未变时 onResize 不会再触发，导致 $LINES 长期错误。
+      if (afterCols > 0 && afterRows > 0) {
+        invoke('terminal_resize', { id: terminalId, cols: afterCols, rows: afterRows }).catch(() => {});
+      }
       return true;
     };
 
@@ -541,25 +568,36 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       closeAutocomplete();
     });
 
-    // 文件路径链接检测:注册 xterm link provider,悬停时高亮+手型光标,点击用默认程序打开
+    // 文件路径链接检测:悬停高亮+手型光标,点击用系统默认程序打开
+    // 注意：必须跳过 http(s):// 内的 /path，否则会抢走 WebLinks 的点击且打开失败
     const pathRegex = /(?:~\/|\.\/|\.\.\/|\/)[^\s'"\[\](){}|<>;,`]+/g;
     term.registerLinkProvider({
-      provideLinks(lineNumber: number, callback: (links: Array<{ range: { start: { x: number; y: number }; end: { x: number; y: number } }; text: string; activate: () => void }> | undefined) => void) {
+      provideLinks(lineNumber: number, callback: (links: Array<{ range: { start: { x: number; y: number }; end: { x: number; y: number } }; text: string; activate: (event: MouseEvent) => void }> | undefined) => void) {
         const bufLine = term.buffer.active.getLine(lineNumber);
         if (!bufLine) { callback(undefined); return; }
         const text = bufLine.translateToString(true);
-        const links: Array<{ range: { start: { x: number; y: number }; end: { x: number; y: number } }; text: string; activate: () => void }> = [];
+        const links: Array<{ range: { start: { x: number; y: number }; end: { x: number; y: number } }; text: string; activate: (event: MouseEvent) => void }> = [];
         let m;
         pathRegex.lastIndex = 0;
         while ((m = pathRegex.exec(text)) !== null) {
-          let path = m[0].replace(/:\d+(?::\d+)?$/, ''); // 去尾部 :行号:列号
+          // 跳过 URL 协议后的路径片段，例如 http://host/path 中的 //host/path
+          const before = text.slice(0, m.index);
+          if (/[a-zA-Z][a-zA-Z0-9+.-]*:$/.test(before) || /[a-zA-Z][a-zA-Z0-9+.-]*:\/$/.test(before)) {
+            continue;
+          }
+          // protocol-relative 或误匹配的 //host
+          if (m[0].startsWith('//')) {
+            continue;
+          }
+          const path = m[0].replace(/:\d+(?::\d+)?$/, ''); // 去尾部 :行号:列号
+          if (!path || path === '/' || path === './' || path === '../') continue;
           const startX = m.index + 1; // xterm link 坐标从 1 开始
           const endX = m.index + path.length;
           links.push({
             range: { start: { x: startX, y: lineNumber + 1 }, end: { x: endX, y: lineNumber + 1 } },
             text: path,
             activate: () => {
-              invoke('open_file_path', { id: terminalId, path }).catch(() => {});
+              openExternal(path, 'path');
             },
           });
         }
@@ -865,10 +903,39 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           appLog('CSI', `清屏序列: ${raw.includes('\x1b[2J') ? 'ED(2)' : ''}${raw.includes('\x1b[3J') ? ' ED(3)' : ''} len=${data.length} cols=${termRef.current?.cols} rows=${termRef.current?.rows}`);
         }
         if (raw.includes('\x1b[?1049h') || raw.includes('\x1b[?1049l')) {
-          appLog('CSI', `alternate screen: ${raw.includes('\x1b[?1049h') ? 'ENTER' : ''}${raw.includes('\x1b[?1049l') ? 'LEAVE' : ''} len=${data.length}`);
+          const entering = raw.includes('\x1b[?1049h');
+          const leaving = raw.includes('\x1b[?1049l');
+          appLog('CSI', `alternate screen: ${entering ? 'ENTER' : ''}${leaving ? 'LEAVE' : ''} len=${data.length}`);
+          if (leaving && termRef.current) {
+            setTimeout(() => {
+              if (!termRef.current) return;
+              const t = termRef.current;
+              appLog('CSI', `alternate screen LEAVE 后强制刷新: refresh + clearTextureAtlas`);
+              try { t.clearTextureAtlas(); } catch (_) {}
+              t.refresh(0, t.rows - 1);
+              forceFit('alt-screen-leave');
+            }, 50);
+          }
         }
         if (raw.includes('\x1b[H') || raw.includes('\x1b[;H')) {
-          appLog('CSI', `cursor home: len=${data.length}`);
+          const t = termRef.current;
+          const cursorY = t ? t.buffer.active.cursorY : -1;
+          const cursorX = t ? t.buffer.active.cursorX : -1;
+          const baseY = t ? t.buffer.active.baseY : -1;
+          const viewportY = t ? t.buffer.active.viewportY : -1;
+          const bufLen = t ? t.buffer.active.length : -1;
+          appLog('CSI', `cursor home: len=${data.length} cursor=(${cursorX},${cursorY}) baseY=${baseY} viewportY=${viewportY} bufLen=${bufLen} rows=${t?.rows}`);
+        }
+        // 检测滚动区域设置(DECSTBM)和光标保存/恢复
+        if (raw.includes('\x1b[?47h') || raw.includes('\x1b[?47l')) {
+          appLog('CSI', `alt buffer(47): ${raw.includes('\x1b[?47h') ? 'ENTER' : 'LEAVE'} len=${data.length}`);
+        }
+        const scrollMatch = raw.match(/\x1b\[(\d+);(\d+)r/);
+        if (scrollMatch) {
+          appLog('CSI', `DECSTBM scroll region: top=${scrollMatch[1]} bottom=${scrollMatch[2]} len=${data.length}`);
+        }
+        if (raw.includes('\x1b[J') || raw.includes('\x1b[0J') || raw.includes('\x1b[1J')) {
+          appLog('CSI', `erase display: ED(0/1) len=${data.length}`);
         }
         try {
           sentry.consume(data);
@@ -928,29 +995,31 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     }
   }, [searchVisible]);
 
-  // Refit when tab becomes active
+  // Refit when tab becomes active，并强制同步 PTY 尺寸
   useEffect(() => {
     if (isActive && fitRef.current && termRef.current) {
       const syncAndFit = () => {
         const w = wrapperRef.current;
         const c = containerRef.current;
-        if (w && c && fitRef.current && termRef.current) {
+        const t = termRef.current;
+        if (w && c && fitRef.current && t) {
           const { width, height } = w.getBoundingClientRect();
           if (width > 10 && height > 10) {
             c.style.width = `${Math.floor(width)}px`;
             c.style.height = `${Math.floor(height)}px`;
             try {
               fitRef.current.fit();
-              termRef.current.refresh(0, termRef.current.rows - 1);
+              t.refresh(0, t.rows - 1);
+              invoke('terminal_resize', { id: terminalId, cols: t.cols, rows: t.rows }).catch(() => {});
             } catch (_) {}
           }
         }
       };
       requestAnimationFrame(syncAndFit);
-      const t = setTimeout(syncAndFit, 200);
-      return () => clearTimeout(t);
+      const timer = setTimeout(syncAndFit, 200);
+      return () => clearTimeout(timer);
     }
-  }, [isActive]);
+  }, [isActive, terminalId]);
 
 
   function handleContextMenu(e: React.MouseEvent) {

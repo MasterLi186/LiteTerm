@@ -406,43 +406,175 @@ pub async fn frontend_log(category: String, message: String) -> Result<(), Strin
     Ok(())
 }
 
-/// Ctrl+Click 打开终端里的文件路径。解析相对路径(基于 OSC7 cwd 或 HOME),
-/// 验证文件存在后用系统默认程序打开。
+/// 判断目标是否为带 scheme 的 URI（http/https/mailto/tel/file 等）。
+/// 用于终端链接：URI 直接交给系统默认程序，路径则先解析再打开。
+pub fn is_external_uri(target: &str) -> bool {
+    let t = target.trim();
+    if t.is_empty() || t.starts_with('/') || t.starts_with('.') || t.starts_with('~') {
+        return false;
+    }
+    // scheme: 以字母开头，后接字母/数字/+/-. ，再跟 :
+    let bytes = t.as_bytes();
+    if !bytes[0].is_ascii_alphabetic() {
+        return false;
+    }
+    let mut i = 1;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b':' {
+            // 至少形如 "a:"，且常见为 "http:" / "mailto:" 等
+            return i >= 2;
+        }
+        if !(c.is_ascii_alphanumeric() || c == b'+' || c == b'-' || c == b'.') {
+            return false;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 用系统默认程序打开 URL 或本地路径（按后缀/协议关联）。
+/// Linux: xdg-open；macOS: open；Windows: cmd start。
+fn open_with_system_default(target: &str) -> Result<(), String> {
+    app_log!("OPEN", "系统默认程序打开: {}", target);
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("打开失败 (xdg-open): {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(target)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("打开失败 (open): {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // start 的第一个引号参数是窗口标题，必须传空串，否则 URL/路径会被当成标题
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("打开失败 (start): {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Err(format!("当前平台不支持用默认程序打开: {}", target))
+    }
+}
+
+/// 解析终端中的本地文件路径（~、相对路径基于 OSC7 cwd 或 HOME）。
+fn resolve_local_path(state: &AppState, terminal_id: Option<&str>, path: &str) -> String {
+    let expanded = shellexpand::tilde(path).to_string();
+
+    if std::path::Path::new(&expanded).is_absolute() {
+        return expanded;
+    }
+
+    let cwd = terminal_id.and_then(|id| {
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|s| s.osc7_cwd.lock().unwrap().clone())
+    });
+
+    if let Some(cwd) = cwd {
+        std::path::Path::new(&cwd)
+            .join(&expanded)
+            .to_string_lossy()
+            .to_string()
+    } else {
+        let home = dirs::home_dir().unwrap_or_default();
+        home.join(&expanded).to_string_lossy().to_string()
+    }
+}
+
+/// 核心逻辑：用系统默认程序打开 URI 或本地文件路径。
+fn do_open_with_default_app(
+    state: &AppState,
+    target: &str,
+    terminal_id: Option<&str>,
+) -> Result<(), String> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("打开目标为空".into());
+    }
+
+    if is_external_uri(target) {
+        return open_with_system_default(target);
+    }
+
+    let resolved = resolve_local_path(state, terminal_id, target);
+    if !std::path::Path::new(&resolved).exists() {
+        return Err(format!("文件不存在: {}", resolved));
+    }
+    open_with_system_default(&resolved)
+}
+
+/// 用系统默认程序打开终端里的 URL 或本地文件。
+/// - URL（http/https/mailto/…）：直接交给系统协议处理器（浏览器等）
+/// - 文件路径：解析相对路径后按后缀用默认应用打开
+#[tauri::command]
+pub async fn open_with_default_app(
+    state: State<'_, AppState>,
+    target: String,
+    id: Option<String>,
+) -> Result<(), String> {
+    do_open_with_default_app(&state, &target, id.as_deref())
+}
+
+/// 打开终端里的文件路径（兼容旧接口）。
 #[tauri::command]
 pub async fn open_file_path(
     state: State<'_, AppState>,
     id: String,
     path: String,
 ) -> Result<(), String> {
-    let expanded = shellexpand::tilde(&path).to_string();
+    do_open_with_default_app(&state, &path, Some(&id))
+}
 
-    let resolved = if std::path::Path::new(&expanded).is_absolute() {
-        expanded
-    } else {
-        // 尝试从 OSC7 cwd 解析相对路径
-        let cwd = state.sessions.lock().unwrap()
-            .get(&id)
-            .and_then(|s| s.osc7_cwd.lock().unwrap().clone());
-        if let Some(cwd) = cwd {
-            let full = std::path::Path::new(&cwd).join(&expanded);
-            full.to_string_lossy().to_string()
-        } else {
-            // 回退到 HOME
-            let home = dirs::home_dir().unwrap_or_default();
-            home.join(&expanded).to_string_lossy().to_string()
-        }
-    };
+#[cfg(test)]
+mod open_uri_tests {
+    use super::is_external_uri;
 
-    if !std::path::Path::new(&resolved).exists() {
-        return Err(format!("文件不存在: {}", resolved));
+    #[test]
+    fn detects_http_urls() {
+        assert!(is_external_uri("http://192.168.110.14:8000/admin/login"));
+        assert!(is_external_uri("https://example.com/a?b=1"));
+        assert!(is_external_uri("  HTTP://HOST/path  "));
+        assert!(is_external_uri("mailto:user@example.com"));
+        assert!(is_external_uri("file:///tmp/a.txt"));
     }
 
-    std::process::Command::new("xdg-open")
-        .arg(&resolved)
-        .spawn()
-        .map_err(|e| format!("打开失败: {}", e))?;
-
-    Ok(())
+    #[test]
+    fn rejects_file_paths() {
+        assert!(!is_external_uri("/tmp/a.txt"));
+        assert!(!is_external_uri("./rel/path"));
+        assert!(!is_external_uri("../up"));
+        assert!(!is_external_uri("~/Downloads/x.pdf"));
+        assert!(!is_external_uri("readme.md"));
+        assert!(!is_external_uri(""));
+    }
 }
 
 /// HTTP API 标签页注册(前端打开标签时调用)
@@ -495,3 +627,4 @@ pub async fn update_settings(state: State<'_, AppState>, patch: serde_json::Valu
     *settings = updated;
     Ok(())
 }
+

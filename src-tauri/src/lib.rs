@@ -43,6 +43,7 @@ pub fn run() {
             commands::terminal::terminal_resize,
             commands::terminal::close_terminal,
             commands::terminal::open_file_path,
+            commands::terminal::open_with_default_app,
             commands::terminal::frontend_log,
             commands::terminal::get_default_shell,
             commands::terminal::get_system_info,
