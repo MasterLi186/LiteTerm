@@ -24,15 +24,24 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
     refreshSerialPorts();
   }, []);
 
+  /** 生成设备标识符：USB 设备用 VID:PID:SERIAL，非 USB 用路径 */
+  function deviceId(port: SerialPortInfo): string {
+    if (port.vid != null && port.pid != null) {
+      const vp = `${port.vid.toString(16).padStart(4, '0')}:${port.pid.toString(16).padStart(4, '0')}`;
+      return port.serial_number ? `${vp}:${port.serial_number}` : vp;
+    }
+    return port.path;
+  }
+
   function refreshSerialPorts() {
     setLoadingSerial(true);
     invoke<SerialPortInfo[]>('list_serial_ports')
       .then((ports) => {
         setSerialPorts(ports);
-        // Init default baud rate for new ports
         const defaults: Record<string, number> = { ...baudRates };
         ports.forEach((p) => {
-          if (!defaults[p.path]) defaults[p.path] = 115200;
+          const key = deviceId(p);
+          if (!defaults[key]) defaults[key] = 115200;
         });
         setBaudRates(defaults);
       })
@@ -138,37 +147,69 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
               <div className="text-xs text-gray-500">未检测到串口设备</div>
             ) : (
               <div className="space-y-2">
-                {serialPorts.map((port) => (
-                  <div
-                    key={port.path}
-                    className="flex items-center gap-2 bg-surface border border-surface-border rounded px-3 py-2"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm text-gray-200 truncate">{port.path}</div>
-                      <div className="text-[10px] text-gray-500">{port.port_type}</div>
+                {serialPorts.map((port) => {
+                  const did = deviceId(port);
+                  const vidPid = port.vid != null && port.pid != null
+                    ? `${port.vid.toString(16).padStart(4, '0')}:${port.pid.toString(16).padStart(4, '0')}`
+                    : null;
+                  const displayName = port.vendor_full || port.name;
+                  const label = port.serial_number
+                    ? `${displayName} [${port.serial_number}]`
+                    : displayName;
+                  const details = [
+                    port.path,
+                    port.devpath ? `端口 ${port.devpath}` : null,
+                    port.usb_speed,
+                  ].filter(Boolean).join(' | ');
+                  const adbInfo = port.adb_siblings.length > 0
+                    ? port.adb_siblings.map(s => {
+                        const tag = s.manufacturer || s.product;
+                        const portTag = s.port ? `.${s.port}` : '';
+                        return `${s.serial}${portTag}${tag ? ` (${tag})` : ''}`;
+                      }).join(', ')
+                    : null;
+                  return (
+                    <div
+                      key={did}
+                      className="flex items-center gap-2 bg-surface border border-surface-border rounded px-3 py-2"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-gray-200 truncate">
+                          {label}
+                          {vidPid && <span className="text-gray-500 ml-1.5 text-xs">({vidPid})</span>}
+                        </div>
+                        <div className="text-[10px] text-gray-500 truncate">
+                          {details}
+                        </div>
+                        {adbInfo && (
+                          <div className="text-[10px] text-accent-green truncate">
+                            ADB: {adbInfo}
+                          </div>
+                        )}
+                      </div>
+                      <select
+                        value={baudRates[did] || 115200}
+                        onChange={(e) => setBaudRates({ ...baudRates, [did]: Number(e.target.value) })}
+                        className="bg-surface-light border border-surface-border rounded px-2 py-1 text-xs text-gray-300 outline-none focus:border-accent-cyan"
+                      >
+                        {BAUD_RATES.map((rate) => (
+                          <option key={rate} value={rate}>
+                            {rate}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => {
+                          onOpenSerial(did, baudRates[did] || 115200, label);
+                          onClose();
+                        }}
+                        className="px-2 py-1 text-xs bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30 transition-colors flex-shrink-0"
+                      >
+                        连接
+                      </button>
                     </div>
-                    <select
-                      value={baudRates[port.path] || 115200}
-                      onChange={(e) => setBaudRates({ ...baudRates, [port.path]: Number(e.target.value) })}
-                      className="bg-surface-light border border-surface-border rounded px-2 py-1 text-xs text-gray-300 outline-none focus:border-accent-cyan"
-                    >
-                      {BAUD_RATES.map((rate) => (
-                        <option key={rate} value={rate}>
-                          {rate}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={() => {
-                        onOpenSerial(port.path, baudRates[port.path] || 115200, port.name);
-                        onClose();
-                      }}
-                      className="px-2 py-1 text-xs bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30 transition-colors flex-shrink-0"
-                    >
-                      连接
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

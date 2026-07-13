@@ -122,8 +122,25 @@ export interface ShellInfo {
   path: string;
 }
 
+export interface AdbSibling {
+  serial: string;
+  product: string;
+  manufacturer: string;
+  port: string | null;
+}
+
 export interface SerialPortInfo {
   name: string;
   path: string;
   port_type: string;
+  vid: number | null;
+  pid: number | null;
+  serial_number: string | null;
+  manufacturer: string | null;
+  product: string | null;
+  usb_path: string | null;
+  usb_speed: string | null;
+  devpath: string | null;
+  vendor_full: string | null;
+  adb_siblings: AdbSibling[];
 }
