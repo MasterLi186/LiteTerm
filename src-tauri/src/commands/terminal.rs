@@ -628,3 +628,13 @@ pub async fn update_settings(state: State<'_, AppState>, patch: serde_json::Valu
     Ok(())
 }
 
+#[tauri::command]
+pub async fn run_shell_command(command: String) -> Result<String, String> {
+    let output = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .output()
+        .await
+        .map_err(|e| format!("执行命令失败: {}", e))?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}

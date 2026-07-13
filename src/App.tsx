@@ -18,29 +18,58 @@ import { BatchCommand } from './components/BatchCommand';
 import { loadShortcuts, matchShortcut } from './components/ShortcutSettings';
 import { TunnelManager } from './components/TunnelManager';
 import { RecordingPlayer } from './components/RecordingPlayer';
+import { NetworkDetail } from './components/NetworkDetail';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 import { log, getLogText } from './utils/logger';
 import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay } from './components/Icons';
-import { SettingsPanel } from './components/Settings';
+import { SettingsPanel, getTerminalFontFamily, getTerminalFontSize } from './components/Settings';
 import { SettingsTab } from './components/settings/SettingsTab';
 
-// 从 DOM 直接测量终端区域的实际 cols/rows
+/**
+ * 从 DOM 估算终端区域 cols/rows（用于 SSH/本地 shell 创建时的初始 PTY 尺寸）。
+ *
+ * 注意：必须与 xterm 单元格度量一致。xterm 默认 lineHeight=1，cellH≈fontSize；
+ * 若用 span 的默认 line-height:normal 量高度，会偏大（曾出现 41 vs 实际 26），
+ * 导致 rows 算小，随后 terminal_resize 把已正确 fit 的 PTY 覆盖成错误 LINES。
+ */
 function getTerminalSize() {
-  // 终端容器
   const container = document.querySelector('[data-terminal-area]') as HTMLElement | null;
-  if (!container) { log('PTY', 'getTerminalSize: container 未找到, 用默认 80x24'); return { cols: 80, rows: 24 }; }
+  if (!container) {
+    log('PTY', 'getTerminalSize: container 未找到, 用默认 80x24');
+    return { cols: 80, rows: 24 };
+  }
   const rect = container.getBoundingClientRect();
   if (rect.width < 10 || rect.height < 10) return { cols: 80, rows: 24 };
-  // 用临时元素测量实际字符单元格大小
-  const fontSize = parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15;
-  const fontFamily = localStorage.getItem('guishell_terminal_font') || "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace";
-  const span = document.createElement('span');
-  span.style.cssText = `position:absolute;visibility:hidden;font-family:${fontFamily};font-size:${fontSize}px;`;
-  span.textContent = 'W';
-  document.body.appendChild(span);
-  const cellW = span.getBoundingClientRect().width || fontSize * 0.6;
-  const cellH = (span.getBoundingClientRect().height || fontSize) * 1.0;
-  document.body.removeChild(span);
+
+  // 优先用已挂载 xterm 的实测单元格（最准）
+  let cellW = 0;
+  let cellH = 0;
+  try {
+    const measure = document.querySelector('.xterm-char-measure-element') as HTMLElement | null;
+    if (measure) {
+      const mr = measure.getBoundingClientRect();
+      if (mr.width > 1 && mr.height > 1) {
+        cellW = mr.width;
+        cellH = mr.height;
+      }
+    }
+  } catch { /* ignore */ }
+
+  const fontSize = getTerminalFontSize();
+  const fontFamily = getTerminalFontFamily();
+  if (cellW < 1 || cellH < 1) {
+    const span = document.createElement('span');
+    // line-height:1 对齐 xterm 默认；white-space:pre 避免折叠
+    span.style.cssText = `position:absolute;left:-9999px;top:0;visibility:hidden;padding:0;margin:0;border:0;line-height:1;white-space:pre;font-family:${fontFamily};font-size:${fontSize}px;`;
+    span.textContent = 'W';
+    document.body.appendChild(span);
+    const sr = span.getBoundingClientRect();
+    cellW = sr.width || fontSize * 0.6;
+    // 高度不要用 span 的 layout height（受 font metrics 影响仍可能偏大），与 xterm 一致用 fontSize
+    cellH = fontSize;
+    document.body.removeChild(span);
+  }
+
   const cols = Math.max(40, Math.floor(rect.width / cellW));
   const rows = Math.max(10, Math.floor(rect.height / cellH));
   log('PTY', `getTerminalSize: container=${Math.floor(rect.width)}x${Math.floor(rect.height)} cell=${cellW.toFixed(1)}x${cellH.toFixed(1)} → ${cols}x${rows}`);
@@ -1014,7 +1043,7 @@ function App() {
       return prev;
     });
     const tab = tabs.find((t) => t.id === id);
-    if (tab && tab.type !== 'process' && tab.type !== 'recording' && tab.type !== 'settings') {
+    if (tab && tab.type !== 'process' && tab.type !== 'recording' && tab.type !== 'settings' && tab.type !== 'network') {
       // Close all terminals in the split tree
       const tree = splitTrees[id];
       if (tree) {
@@ -1137,6 +1166,25 @@ function App() {
       label: activeTab.sshParams ? `进程 - ${activeTab.label}` : '进程 - 本机',
       type: 'process',
       sshParams: activeTab.sshParams,
+    };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(id);
+  }
+
+  function openNetworkDetail(iface?: string) {
+    if (!activeTab) return;
+    const id = `network-${activeTab.id}`;
+    const existing = tabs.find((t) => t.id === id);
+    if (existing) {
+      setActiveTabId(id);
+      return;
+    }
+    const tab: Tab = {
+      id,
+      label: activeTab.sshParams ? `网络 - ${activeTab.label}` : '网络 - 本机',
+      type: 'network',
+      sshParams: activeTab.sshParams,
+      networkIface: iface,
     };
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(id);
@@ -1438,6 +1486,7 @@ function App() {
           sessionId={activeTab?.sshParams ? `${activeTab.sshParams.user}@${activeTab.sshParams.host}:${activeTab.sshParams.port}` : 'local'}
           hostIp={activeSshSessionId ? activeTab?.sshParams?.host : '本机'}
           onOpenProcessManager={openProcessManager}
+          onOpenNetworkDetail={openNetworkDetail}
         />
       </aside>
 
@@ -1553,6 +1602,9 @@ function App() {
               )}
               {tab.type === 'recording' && (
                 <span className="text-accent-cyan text-xs">{'▶'}</span>
+              )}
+              {tab.type === 'network' && (
+                <span className="text-accent-green text-xs">{'◈'}</span>
               )}
               {tab.type === 'settings' && <IconSettings size={12} />}
               {tab.label}
@@ -1791,6 +1843,24 @@ function App() {
                     sshParams={tab.sshParams}
                     hostLabel={tab.label}
                     isLocal={!tab.sshParams}
+                  />
+                </div>
+              ) : tab.type === 'network' ? (
+                <div
+                  key={tab.id}
+                  style={{
+                    display: tab.id === activeTabId ? 'flex' : 'none',
+                    position: 'absolute',
+                    inset: 0,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <NetworkDetail
+                    sessionId={tab.sshParams ? tab.id.replace('network-', '') : undefined}
+                    sshParams={tab.sshParams}
+                    hostLabel={tab.label}
+                    isLocal={!tab.sshParams}
+                    initialIface={tab.networkIface}
                   />
                 </div>
               ) : tab.type === 'recording' ? (

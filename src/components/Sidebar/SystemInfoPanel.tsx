@@ -81,12 +81,13 @@ interface Props {
   sessionId: string;
   hostIp?: string;
   onOpenProcessManager?: () => void;
+  onOpenNetworkDetail?: (iface?: string) => void;
 }
 
 // 按 sessionId 缓存监控数据,切换标签时立刻显示上次的快照(零延迟)
 const monitorCache = new Map<string, MonitorData>();
 
-export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Props) {
+export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager, onOpenNetworkDetail }: Props) {
   const [data, setData] = useState<MonitorData | null>(() => monitorCache.get(sessionId) || null);
   const [processTab, setProcessTab] = useState<ProcessTab>('cpu');
   const [selectedIface, setSelectedIface] = useState<string | null>(null);
@@ -262,7 +263,11 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
               </>);
             })()}
           </div>
-          <div style={{ background: '#0d1117', borderRadius: '4px', overflow: 'hidden', padding: '4px 0' }}>
+          <div
+            onClick={() => onOpenNetworkDetail?.(selectedIface || data.net_interface)}
+            style={{ background: '#0d1117', borderRadius: '4px', overflow: 'hidden', padding: '4px 0', cursor: 'pointer' }}
+            title="点击查看网络详情"
+          >
             <MiniChart data={netTxHistory.current} color="#3fb950" height={28} />
             <MiniChart data={netRxHistory.current} color="#58a6ff" height={28} />
           </div>
