@@ -686,11 +686,10 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           return;
         }
 
-        // 不匹配:回显格式非预期,fail-open 放行(避免吞掉合法输入)
-        appLog('IME', '回显不匹配,放行: expected=”' + imeComposedText + '”, buffer=”' + imeEchoBuffer + '”');
-        const flushed = imeEchoBuffer;
+        // 不匹配:WebView2 + 搜狗/微软拼音等 IME 的 onData 可能重放整个 textarea 累积内容
+        // compositionend 已通过 sendInput 发送了实际输入,此处的 onData 是 xterm 内部回显,应丢弃
+        appLog('IME', '回显不匹配,丢弃: expected=”' + imeComposedText + '”, buffer=”' + imeEchoBuffer + '”');
         imeDrain();
-        sendInput(flushed);
         return;
       }
 
