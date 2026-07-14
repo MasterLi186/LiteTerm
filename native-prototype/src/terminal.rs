@@ -123,6 +123,9 @@ pub fn read_loop<F>(terminal: Arc<Mutex<TerminalState>>, request_redraw: F)
 where
     F: Fn() + Send + 'static,
 {
+    use std::io::ErrorKind;
+    use std::time::{Duration, Instant};
+
     let mut reader = {
         let mut term = terminal.lock().unwrap();
         match term.take_reader() {
@@ -131,24 +134,52 @@ where
         }
     };
 
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 8192];
     let mut parser = alacritty_terminal::vte::ansi::Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new();
 
+    // 合并重绘：攒数据最多 8ms 或 64KB 后统一刷新
+    const BATCH_TIMEOUT: Duration = Duration::from_millis(8);
+    const BATCH_MAX_BYTES: usize = 65536;
+
     loop {
-        match reader.read(&mut buf) {
+        // 阻塞等待第一块数据
+        let n = match reader.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) => {
-                let mut term_state = terminal.lock().unwrap();
-                if let Some(t) = &mut term_state.term {
-                    parser.advance(t, &buf[..n]);
-                }
-                drop(term_state);
-                request_redraw();
-            }
-            Err(e) => {
-                log::error!("PTY 读取错误: {}", e);
+            Ok(n) => n,
+            Err(e) if e.kind() == ErrorKind::TimedOut => continue,
+            Err(e) => { log::error!("PTY 读取错误: {}", e); break; }
+        };
+
+        let mut term_state = terminal.lock().unwrap();
+        if let Some(t) = &mut term_state.term {
+            parser.advance(t, &buf[..n]);
+        }
+
+        // 在超时内继续尝试读（非阻塞），尽可能攒批
+        let batch_start = Instant::now();
+        let mut total = n;
+
+        loop {
+            if total >= BATCH_MAX_BYTES || batch_start.elapsed() >= BATCH_TIMEOUT {
                 break;
             }
+            // portable-pty 的 reader 是阻塞的，用短 sleep 模拟非阻塞
+            // 如果 8ms 内没有更多数据，就停止攒批
+            std::thread::sleep(Duration::from_micros(500));
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n2) => {
+                    if let Some(t) = &mut term_state.term {
+                        parser.advance(t, &buf[..n2]);
+                    }
+                    total += n2;
+                }
+                Err(e) if e.kind() == ErrorKind::TimedOut || e.kind() == ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
         }
+
+        drop(term_state);
+        request_redraw();
     }
 }
