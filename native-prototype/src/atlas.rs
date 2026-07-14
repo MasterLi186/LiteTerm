@@ -15,29 +15,8 @@ pub struct GlyphEntry {
     pub advance_width: f32, // 字符实际推进宽度（CJK = cell_width * 2）
 }
 
-/// 判断字符是否为宽字符（CJK 等，占 2 列）
 pub fn is_wide_char(c: char) -> bool {
-    let cp = c as u32;
-    // CJK Unified Ideographs 及扩展
-    (0x4E00..=0x9FFF).contains(&cp)
-    || (0x3400..=0x4DBF).contains(&cp)
-    || (0x20000..=0x2A6DF).contains(&cp)
-    || (0x2A700..=0x2B73F).contains(&cp)
-    || (0x2B740..=0x2B81F).contains(&cp)
-    || (0x2B820..=0x2CEAF).contains(&cp)
-    || (0xF900..=0xFAFF).contains(&cp)
-    // CJK 兼容象形文字
-    || (0x2F800..=0x2FA1F).contains(&cp)
-    // 全角字符
-    || (0xFF01..=0xFF60).contains(&cp)
-    || (0xFFE0..=0xFFE6).contains(&cp)
-    // 韩文
-    || (0xAC00..=0xD7AF).contains(&cp)
-    // 日文假名
-    || (0x3040..=0x309F).contains(&cp)
-    || (0x30A0..=0x30FF).contains(&cp)
-    // CJK 符号和标点
-    || (0x3000..=0x303F).contains(&cp)
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) >= 2
 }
 
 /// CPU 侧的字形纹理图集

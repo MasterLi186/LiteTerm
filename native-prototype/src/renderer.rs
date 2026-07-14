@@ -336,7 +336,25 @@ impl Renderer {
         [rgba[0] as f32 / 255.0, rgba[1] as f32 / 255.0, rgba[2] as f32 / 255.0, rgba[3] as f32 / 255.0]
     }
 
-    pub fn render(&mut self, terminal: &TerminalState, cursor_visible: bool) {
+    pub fn cell_size(&self) -> (f32, f32) {
+        (self.atlas.cell_width, self.atlas.cell_height)
+    }
+
+    fn is_selected(col: usize, row: usize, sel_start: Option<(usize, usize)>, sel_end: Option<(usize, usize)>) -> bool {
+        let (start, end) = match (sel_start, sel_end) {
+            (Some(s), Some(e)) => {
+                if (s.1, s.0) <= (e.1, e.0) { (s, e) } else { (e, s) }
+            }
+            _ => return false,
+        };
+        if row < start.1 || row > end.1 { return false; }
+        if row == start.1 && row == end.1 { return col >= start.0 && col <= end.0; }
+        if row == start.1 { return col >= start.0; }
+        if row == end.1 { return col <= end.0; }
+        true
+    }
+
+    pub fn render(&mut self, terminal: &TerminalState, cursor_visible: bool, sel_start: Option<(usize, usize)>, sel_end: Option<(usize, usize)>) {
         let term = match terminal.term() {
             Some(t) => t,
             None => return,
@@ -353,13 +371,21 @@ impl Renderer {
 
         for indexed in content.display_iter {
             let cell = &indexed.cell;
-            let col = indexed.point.column.0 as f32;
-            let row = indexed.point.line.0 as f32;
+            let col_idx = indexed.point.column.0;
+            let row_idx = indexed.point.line.0 as usize;
+            let col = col_idx as f32;
+            let row = row_idx as f32;
             let px = col * cw;
             let py = row * ch;
 
-            let fg = Self::color_to_f32(content.colors, cell.fg, FG_DEFAULT);
-            let bg = Self::color_to_f32(content.colors, cell.bg, BG_DEFAULT);
+            let mut fg = Self::color_to_f32(content.colors, cell.fg, FG_DEFAULT);
+            let mut bg = Self::color_to_f32(content.colors, cell.bg, BG_DEFAULT);
+
+            // 选区高亮：交换前景/背景
+            if Self::is_selected(col_idx, row_idx, sel_start, sel_end) {
+                std::mem::swap(&mut fg, &mut bg);
+                if bg == bg_default_f { bg = [0.2, 0.4, 0.6, 1.0]; }
+            }
 
             let ch_char = cell.c;
             if ch_char == ' ' || ch_char == '\0' {
