@@ -3,7 +3,7 @@ use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
@@ -15,27 +15,46 @@ mod atlas;
 use terminal::TerminalState;
 use renderer::Renderer;
 
+#[derive(Debug)]
+enum UserEvent {
+    Redraw,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     terminal: Arc<Mutex<TerminalState>>,
     cursor_visible: bool,
     cursor_timer: Instant,
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
         Self {
             window: None,
             renderer: None,
             terminal: Arc::new(Mutex::new(TerminalState::new())),
             cursor_visible: true,
             cursor_timer: Instant::now(),
+            proxy,
+        }
+    }
+
+    fn do_render(&mut self) {
+        let elapsed = self.cursor_timer.elapsed().as_millis();
+        if elapsed >= 530 {
+            self.cursor_visible = !self.cursor_visible;
+            self.cursor_timer = Instant::now();
+        }
+        if let Some(renderer) = &mut self.renderer {
+            let term = self.terminal.lock().unwrap();
+            renderer.render(&term, self.cursor_visible);
         }
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -46,34 +65,38 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
 
         let renderer = pollster::block_on(Renderer::new(window.clone()));
-
-        // 根据实际窗口大小计算初始 grid
         let (cols, rows) = renderer.calculate_grid_size();
         {
             let mut term = self.terminal.lock().unwrap();
             term.spawn_shell(cols, rows);
         }
-
         self.renderer = Some(renderer);
 
+        // PTY 读取线程 → 通过 proxy 唤醒事件循环
         let terminal = self.terminal.clone();
-        let window_ref = window.clone();
+        let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             terminal::read_loop(terminal, move || {
-                window_ref.request_redraw();
+                let _ = proxy.send_event(UserEvent::Redraw);
             });
         });
 
-        // 光标闪烁定时器
-        let window_blink = window.clone();
+        // 光标闪烁线程
+        let proxy2 = self.proxy.clone();
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(530));
-                window_blink.request_redraw();
+                if proxy2.send_event(UserEvent::Redraw).is_err() {
+                    break;
+                }
             }
         });
 
         self.window = Some(window);
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: UserEvent) {
+        self.do_render();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -89,6 +112,7 @@ impl ApplicationHandler for App {
                     let mut term = self.terminal.lock().unwrap();
                     term.resize(cols, rows);
                 }
+                self.do_render();
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
@@ -108,7 +132,7 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
-                if let Some(w) = &self.window { w.request_redraw(); }
+                self.do_render();
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
@@ -118,9 +142,6 @@ impl ApplicationHandler for App {
                 self.cursor_visible = true;
                 self.cursor_timer = Instant::now();
 
-                let modifiers = event.physical_key;
-
-                // 特殊键转义序列
                 let esc = match event.logical_key {
                     Key::Named(NamedKey::Enter)     => Some("\r"),
                     Key::Named(NamedKey::Backspace)  => Some("\x7f"),
@@ -143,12 +164,9 @@ impl ApplicationHandler for App {
                 if let Some(seq) = esc {
                     term.write_input(seq);
                 } else if let Key::Character(ref ch) = event.logical_key {
-                    // Ctrl+字母：winit 的 logical_key 仍是字母，需要手动转控制字符
-                    // 检查 text 是否为控制字符（winit 在 Ctrl 按下时 text 为 \x01-\x1a）
                     if let Some(text) = &event.text {
                         let bytes = text.as_str().as_bytes();
                         if bytes.len() == 1 && bytes[0] <= 0x1a {
-                            // Ctrl+A=0x01 ... Ctrl+Z=0x1a
                             term.write_input(text.as_str());
                             return;
                         }
@@ -159,21 +177,12 @@ impl ApplicationHandler for App {
                         term.write_input(text.as_str());
                     }
                 }
-                let _ = modifiers; // suppress warning
+                drop(term);
+                self.do_render();
             }
 
             WindowEvent::RedrawRequested => {
-                // 光标闪烁
-                let elapsed = self.cursor_timer.elapsed().as_millis();
-                if elapsed >= 530 {
-                    self.cursor_visible = !self.cursor_visible;
-                    self.cursor_timer = Instant::now();
-                }
-
-                if let Some(renderer) = &mut self.renderer {
-                    let term = self.terminal.lock().unwrap();
-                    renderer.render(&term, self.cursor_visible);
-                }
+                self.do_render();
             }
 
             _ => {}
@@ -183,7 +192,8 @@ impl ApplicationHandler for App {
 
 fn main() {
     env_logger::init();
-    let event_loop = EventLoop::new().unwrap();
-    let mut app = App::new();
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+    let proxy = event_loop.create_proxy();
+    let mut app = App::new(proxy);
     event_loop.run_app(&mut app).unwrap();
 }
