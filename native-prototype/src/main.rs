@@ -277,12 +277,14 @@ impl App {
 
         // Deferred tab actions (after gpu borrow ends)
         if let Some(idx) = deferred_close {
+            eprintln!("[MAIN] deferred close tab {}", idx);
             self.tab_manager.close(idx);
             if self.tab_manager.is_empty() {
                 self.new_local_tab();
             }
         }
         if deferred_new {
+            eprintln!("[MAIN] deferred new tab");
             self.new_local_tab();
         }
     }

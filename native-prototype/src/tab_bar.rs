@@ -7,7 +7,6 @@ pub struct TabBarAction {
     pub new_tab: bool,
 }
 
-/// Tab bar height in logical pixels
 pub const TAB_BAR_HEIGHT: f32 = 28.0;
 
 pub fn render_tab_bar(ctx: &egui::Context, tab_manager: &TabManager) -> TabBarAction {
@@ -28,10 +27,16 @@ pub fn render_tab_bar(ctx: &egui::Context, tab_manager: &TabManager) -> TabBarAc
 
                 for (i, tab) in tab_manager.tabs.iter().enumerate() {
                     let is_active = i == tab_manager.active_idx;
+
+                    let dot_color = match &tab.tab_type {
+                        TabType::Local { .. } => egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
+                        TabType::Ssh { .. } => egui::Color32::from_rgb(0x00, 0xd4, 0xff),
+                    };
+
                     let bg = if is_active {
                         egui::Color32::from_rgb(0x21, 0x26, 0x2d)
                     } else {
-                        egui::Color32::TRANSPARENT
+                        egui::Color32::from_rgb(0x16, 0x1b, 0x22)
                     };
                     let text_color = if is_active {
                         egui::Color32::from_rgb(0xe6, 0xed, 0xf3)
@@ -39,57 +44,80 @@ pub fn render_tab_bar(ctx: &egui::Context, tab_manager: &TabManager) -> TabBarAc
                         egui::Color32::from_rgb(0x8b, 0x94, 0x9e)
                     };
 
-                    // Type indicator color
-                    let dot_color = match &tab.tab_type {
-                        TabType::Local { .. } => egui::Color32::from_rgb(0x3f, 0xb9, 0x50), // green
-                        TabType::Ssh { .. } => egui::Color32::from_rgb(0x00, 0xd4, 0xff), // cyan
+                    // 整个标签区域
+                    let (tab_rect, tab_resp) = ui.allocate_exact_size(
+                        egui::vec2(140.0, TAB_BAR_HEIGHT - 4.0),
+                        egui::Sense::click(),
+                    );
+
+                    // 背景
+                    ui.painter().rect_filled(tab_rect, 4.0, bg);
+                    if tab_resp.hovered() && !is_active {
+                        ui.painter().rect_filled(tab_rect, 4.0,
+                            egui::Color32::from_rgba_premultiplied(0x30, 0x36, 0x3d, 0x60));
+                    }
+
+                    // 类型圆点
+                    let dot_center = egui::pos2(tab_rect.left() + 12.0, tab_rect.center().y);
+                    ui.painter().circle_filled(dot_center, 3.0, dot_color);
+
+                    // 标签名
+                    let text_pos = egui::pos2(tab_rect.left() + 22.0, tab_rect.center().y);
+                    ui.painter().text(
+                        text_pos,
+                        egui::Align2::LEFT_CENTER,
+                        &tab.label,
+                        egui::FontId::proportional(11.0),
+                        text_color,
+                    );
+
+                    // × 关闭按钮区域（右侧 20px）
+                    let close_rect = egui::Rect::from_min_size(
+                        egui::pos2(tab_rect.right() - 20.0, tab_rect.top()),
+                        egui::vec2(20.0, tab_rect.height()),
+                    );
+                    let close_resp = ui.interact(close_rect, egui::Id::new(("tab_close", i)), egui::Sense::click());
+
+                    // × 文字
+                    let close_color = if close_resp.hovered() {
+                        egui::Color32::from_rgb(0xf8, 0x51, 0x49)
+                    } else {
+                        egui::Color32::from_rgb(0x48, 0x4f, 0x58)
                     };
+                    ui.painter().text(
+                        close_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "×",
+                        egui::FontId::proportional(14.0),
+                        close_color,
+                    );
 
-                    let tab_frame = egui::Frame::new()
-                        .fill(bg)
-                        .rounding(4.0)
-                        .inner_margin(egui::Margin::symmetric(8, 4));
-
-                    let resp = tab_frame.show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            // Dot
-                            let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
-                            ui.painter().circle_filled(dot_rect.center(), 3.0, dot_color);
-
-                            // Label
-                            ui.label(egui::RichText::new(&tab.label).size(11.0).color(text_color));
-
-                            // Close button
-                            let close_resp = ui.add(
-                                egui::Button::new(egui::RichText::new("×").size(12.0).color(
-                                    egui::Color32::from_rgb(0x48, 0x4f, 0x58)
-                                ))
-                                .frame(false)
-                            );
-                            if close_resp.clicked() {
-                                action.close = Some(i);
-                            }
-                        });
-                    });
-
-                    // 只在 × 没被点时，外层 click 才切换标签
-                    if action.close.is_none() {
-                        let full_resp = resp.response.interact(egui::Sense::click());
-                        if full_resp.clicked() {
-                            action.switch_to = Some(i);
-                        }
-                        if full_resp.middle_clicked() {
-                            action.close = Some(i);
-                        }
+                    // 事件处理：× 优先
+                    if close_resp.clicked() {
+                        action.close = Some(i);
+                    } else if tab_resp.clicked() {
+                        action.switch_to = Some(i);
+                    }
+                    if tab_resp.middle_clicked() {
+                        action.close = Some(i);
                     }
                 }
 
-                // [+] button
-                let plus_resp = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("+").size(14.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e))
-                    )
-                    .frame(false)
+                // [+] 按钮
+                let (plus_rect, plus_resp) = ui.allocate_exact_size(
+                    egui::vec2(24.0, TAB_BAR_HEIGHT - 4.0),
+                    egui::Sense::click(),
+                );
+                if plus_resp.hovered() {
+                    ui.painter().rect_filled(plus_rect, 4.0,
+                        egui::Color32::from_rgba_premultiplied(0x30, 0x36, 0x3d, 0x80));
+                }
+                ui.painter().text(
+                    plus_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "+",
+                    egui::FontId::proportional(16.0),
+                    egui::Color32::from_rgb(0x8b, 0x94, 0x9e),
                 );
                 if plus_resp.clicked() {
                     action.new_tab = true;
