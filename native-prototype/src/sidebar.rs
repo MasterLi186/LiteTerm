@@ -189,11 +189,9 @@ impl Sidebar {
                             response
                         });
 
-                        if response.inner.double_clicked() {
+                        if response.inner.clicked() {
+                            self.selected = Some(i);
                             self.on_connect = Some(conn.clone());
-                            self.selected = Some(i);
-                        } else if response.inner.clicked() {
-                            self.selected = Some(i);
                         }
                     }
 

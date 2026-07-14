@@ -610,10 +610,10 @@ impl ApplicationHandler<UserEvent> for App {
                     for _ in 0..lines.unsigned_abs() { self.send_mouse_event(btn, cell.0, cell.1, true); }
                 } else if let Some(terminal) = self.active_terminal() {
                     let mut term = terminal.lock().unwrap();
-                    term.scroll(-lines);
                     if let Some(t) = term.term_mut() {
                         use alacritty_terminal::grid::Scroll;
-                        t.scroll_display(Scroll::Delta(-lines));
+                        // y>0 = 滚轮往上 = 看历史（正 delta）
+                        t.scroll_display(Scroll::Delta(lines));
                     }
                 }
                 self.do_render();
