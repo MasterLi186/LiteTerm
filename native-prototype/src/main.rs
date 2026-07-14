@@ -1,8 +1,10 @@
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
 
@@ -16,6 +18,8 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     terminal: Arc<Mutex<TerminalState>>,
+    cursor_visible: bool,
+    cursor_timer: Instant,
 }
 
 impl App {
@@ -24,6 +28,8 @@ impl App {
             window: None,
             renderer: None,
             terminal: Arc::new(Mutex::new(TerminalState::new())),
+            cursor_visible: true,
+            cursor_timer: Instant::now(),
         }
     }
 }
@@ -38,23 +44,32 @@ impl ApplicationHandler for App {
             .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 768.0));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
 
-        // 初始化 GPU 渲染器
         let renderer = pollster::block_on(Renderer::new(window.clone()));
-        self.renderer = Some(renderer);
 
-        // 启动本地 shell
+        // 根据实际窗口大小计算初始 grid
+        let (cols, rows) = renderer.calculate_grid_size();
         {
             let mut term = self.terminal.lock().unwrap();
-            term.spawn_shell(80, 24);
+            term.spawn_shell(cols, rows);
         }
 
-        // 启动 PTY 读取线程
+        self.renderer = Some(renderer);
+
         let terminal = self.terminal.clone();
         let window_ref = window.clone();
         std::thread::spawn(move || {
             terminal::read_loop(terminal, move || {
                 window_ref.request_redraw();
             });
+        });
+
+        // 光标闪烁定时器
+        let window_blink = window.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(530));
+                window_blink.request_redraw();
+            }
         });
 
         self.window = Some(window);
@@ -69,26 +84,90 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
-                    // 同步终端尺寸
                     let (cols, rows) = renderer.calculate_grid_size();
                     let mut term = self.terminal.lock().unwrap();
                     term.resize(cols, rows);
                 }
             }
 
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y as i32,
+                    MouseScrollDelta::PixelDelta(pos) => (pos.y / 18.0) as i32,
+                };
+                if lines != 0 {
+                    let mut term = self.terminal.lock().unwrap();
+                    term.scroll(-lines);
+                    if let Some(t) = term.term_mut() {
+                        use alacritty_terminal::grid::Scroll;
+                        if lines < 0 {
+                            t.scroll_display(Scroll::Delta((-lines) as i32));
+                        } else {
+                            t.scroll_display(Scroll::Delta(-(lines) as i32));
+                        }
+                    }
+                }
+                if let Some(w) = &self.window { w.request_redraw(); }
+            }
+
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == winit::event::ElementState::Pressed {
-                    if let Some(text) = &event.text {
-                        let mut term = self.terminal.lock().unwrap();
-                        term.write_input(text.as_str());
+                if event.state != ElementState::Pressed {
+                    return;
+                }
+                // 重置光标闪烁
+                self.cursor_visible = true;
+                self.cursor_timer = Instant::now();
+
+                // 特殊键转义序列
+                let esc = match event.logical_key {
+                    Key::Named(NamedKey::Enter)     => Some("\r"),
+                    Key::Named(NamedKey::Backspace)  => Some("\x7f"),
+                    Key::Named(NamedKey::Tab)        => Some("\t"),
+                    Key::Named(NamedKey::Escape)     => Some("\x1b"),
+                    Key::Named(NamedKey::ArrowUp)    => Some("\x1b[A"),
+                    Key::Named(NamedKey::ArrowDown)  => Some("\x1b[B"),
+                    Key::Named(NamedKey::ArrowRight) => Some("\x1b[C"),
+                    Key::Named(NamedKey::ArrowLeft)  => Some("\x1b[D"),
+                    Key::Named(NamedKey::Home)       => Some("\x1b[H"),
+                    Key::Named(NamedKey::End)        => Some("\x1b[F"),
+                    Key::Named(NamedKey::PageUp)     => Some("\x1b[5~"),
+                    Key::Named(NamedKey::PageDown)   => Some("\x1b[6~"),
+                    Key::Named(NamedKey::Delete)     => Some("\x1b[3~"),
+                    Key::Named(NamedKey::Insert)     => Some("\x1b[2~"),
+                    _ => None,
+                };
+
+                let mut term = self.terminal.lock().unwrap();
+                if let Some(seq) = esc {
+                    term.write_input(seq);
+                } else if let Some(text) = &event.text {
+                    let s = text.as_str();
+                    if !s.is_empty() {
+                        // Ctrl+字母 → 转为控制字符
+                        if event.state == ElementState::Pressed && s.len() == 1 {
+                            let ch = s.as_bytes()[0];
+                            if ch <= 26 && ch > 0 {
+                                // 已经是控制字符（winit 在 Ctrl 按下时返回 0x01-0x1a）
+                                term.write_input(s);
+                                return;
+                            }
+                        }
+                        term.write_input(s);
                     }
                 }
             }
 
             WindowEvent::RedrawRequested => {
+                // 光标闪烁
+                let elapsed = self.cursor_timer.elapsed().as_millis();
+                if elapsed >= 530 {
+                    self.cursor_visible = !self.cursor_visible;
+                    self.cursor_timer = Instant::now();
+                }
+
                 if let Some(renderer) = &mut self.renderer {
                     let term = self.terminal.lock().unwrap();
-                    renderer.render(&term);
+                    renderer.render(&term, self.cursor_visible);
                 }
             }
 

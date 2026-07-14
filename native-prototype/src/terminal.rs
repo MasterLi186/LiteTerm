@@ -5,9 +5,8 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::Config as TermConfig;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system, MasterPty};
 
-/// alacritty_terminal 的 Dimensions trait 实现
 struct TermDimensions {
     cols: usize,
     rows: usize,
@@ -19,7 +18,6 @@ impl Dimensions for TermDimensions {
     fn columns(&self) -> usize { self.cols }
 }
 
-/// 事件监听器（alacritty_terminal 需要）
 #[derive(Clone)]
 pub struct Listener;
 
@@ -31,8 +29,10 @@ pub struct TerminalState {
     term: Option<Term<Listener>>,
     pty_writer: Option<Box<dyn Write + Send>>,
     pty_reader: Option<Box<dyn Read + Send>>,
+    pty_master: Option<Box<dyn MasterPty + Send>>,
     cols: u16,
     rows: u16,
+    pub scroll_offset: i32,
 }
 
 impl TerminalState {
@@ -41,8 +41,10 @@ impl TerminalState {
             term: None,
             pty_writer: None,
             pty_reader: None,
+            pty_master: None,
             cols: 80,
             rows: 24,
+            scroll_offset: 0,
         }
     }
 
@@ -57,12 +59,7 @@ impl TerminalState {
 
         let pty_system = native_pty_system();
         let pty_pair = pty_system
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
+            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .expect("打开 PTY 失败");
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
@@ -75,6 +72,7 @@ impl TerminalState {
 
         self.pty_reader = Some(reader);
         self.pty_writer = Some(writer);
+        self.pty_master = Some(pty_pair.master);
     }
 
     pub fn write_input(&mut self, text: &str) {
@@ -85,26 +83,42 @@ impl TerminalState {
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        if cols == self.cols && rows == self.rows { return; }
         self.cols = cols;
         self.rows = rows;
+        if let Some(t) = &mut self.term {
+            let dims = TermDimensions { cols: cols as usize, rows: rows as usize };
+            t.resize(dims);
+        }
+        if let Some(master) = &self.pty_master {
+            let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        }
     }
 
-    #[allow(dead_code)]
+    pub fn scroll(&mut self, delta: i32) {
+        if let Some(t) = &self.term {
+            let max = t.grid().history_size() as i32;
+            self.scroll_offset = (self.scroll_offset + delta).clamp(0, max);
+            // alacritty_terminal 的 display_offset 需要通过 scroll_display 设置
+        }
+    }
+
     pub fn term(&self) -> Option<&Term<Listener>> {
         self.term.as_ref()
+    }
+
+    pub fn term_mut(&mut self) -> Option<&mut Term<Listener>> {
+        self.term.as_mut()
     }
 
     pub fn take_reader(&mut self) -> Option<Box<dyn Read + Send>> {
         self.pty_reader.take()
     }
 
-    #[allow(dead_code)]
     pub fn cols(&self) -> u16 { self.cols }
-    #[allow(dead_code)]
     pub fn rows(&self) -> u16 { self.rows }
 }
 
-/// PTY 读取循环：从 PTY 读数据，触发重绘
 pub fn read_loop<F>(terminal: Arc<Mutex<TerminalState>>, request_redraw: F)
 where
     F: Fn() + Send + 'static,
