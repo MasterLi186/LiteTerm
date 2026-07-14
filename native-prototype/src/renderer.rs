@@ -7,18 +7,21 @@ use cosmic_text::{FontSystem, SwashCache};
 use crate::atlas::GlyphAtlas;
 use crate::terminal::TerminalState;
 
-/// 每个 cell 的实例数据（传给 GPU）
+/// Per-cell instance data sent to GPU.
+/// `flags`: bit 0 = underline, bit 1 = strikethrough
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CellInstance {
-    pos: [f32; 2],       // cell 左上角像素坐标
-    size: [f32; 2],      // cell 宽高
-    uv_pos: [f32; 2],    // 字形在 atlas 中的 UV 左上角
-    uv_size: [f32; 2],   // 字形 UV 宽高
-    glyph_offset: [f32; 2], // 字形相对于 cell 的偏移
-    glyph_size: [f32; 2],   // 字形像素大小
+    pos: [f32; 2],
+    size: [f32; 2],
+    uv_pos: [f32; 2],
+    uv_size: [f32; 2],
+    glyph_offset: [f32; 2],
+    glyph_size: [f32; 2],
     fg: [f32; 4],
     bg: [f32; 4],
+    flags: u32,
+    _pad: [u32; 3],
 }
 
 #[repr(C)]
@@ -46,6 +49,7 @@ struct CellInstance {
     @location(5) glyph_size: vec2<f32>,
     @location(6) fg: vec4<f32>,
     @location(7) bg: vec4<f32>,
+    @location(8) flags: u32,
 };
 
 struct VertexOutput {
@@ -59,6 +63,7 @@ struct VertexOutput {
     @location(6) cell_size: vec2<f32>,
     @location(7) uv_origin: vec2<f32>,
     @location(8) uv_extent: vec2<f32>,
+    @location(9) flags: u32,
 };
 
 @vertex
@@ -85,6 +90,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, cell: CellInstance) -> VertexOutput {
     out.cell_size = cell.size;
     out.uv_origin = cell.uv_pos / u.atlas_size;
     out.uv_extent = cell.uv_size / u.atlas_size;
+    out.flags = cell.flags;
     return out;
 }
 
@@ -92,6 +98,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, cell: CellInstance) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = in.bg;
 
+    // Glyph rendering
     let glyph_local = in.local_pos - in.glyph_offset;
     if glyph_local.x >= 0.0 && glyph_local.y >= 0.0 &&
        glyph_local.x < in.glyph_size.x && glyph_local.y < in.glyph_size.y &&
@@ -101,11 +108,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = mix(color, in.fg, vec4(alpha, alpha, alpha, alpha));
     }
 
+    // Underline (bit 0): 1px line at bottom - 2px
+    if (in.flags & 1u) != 0u {
+        let underline_y = in.cell_size.y - 2.0;
+        if in.local_pos.y >= underline_y && in.local_pos.y < underline_y + 1.0 {
+            color = in.fg;
+        }
+    }
+
+    // Strikethrough (bit 1): 1px line at middle
+    if (in.flags & 2u) != 0u {
+        let strike_y = in.cell_size.y * 0.5;
+        if in.local_pos.y >= strike_y && in.local_pos.y < strike_y + 1.0 {
+            color = in.fg;
+        }
+    }
+
     return color;
 }
 "#;
 
-// ANSI 16 色
 const ANSI_COLORS: [[u8; 3]; 16] = [
     [0,0,0],[205,49,49],[13,188,121],[229,229,16],
     [36,114,200],[188,63,188],[17,168,205],[229,229,229],
@@ -177,7 +199,6 @@ impl Renderer {
         let font_size = 15.0;
         let atlas = GlyphAtlas::new(&mut font_system, &mut swash_cache, font_size);
 
-        // 创建 atlas 纹理
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Glyph Atlas"),
             size: wgpu::Extent3d { width: atlas.atlas_width, height: atlas.atlas_height, depth_or_array_layers: 1 },
@@ -245,14 +266,15 @@ impl Renderer {
             array_stride: std::mem::size_of::<CellInstance>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x2 }, // pos
-                wgpu::VertexAttribute { offset: 8,  shader_location: 1, format: wgpu::VertexFormat::Float32x2 }, // size
-                wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 }, // uv_pos
-                wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32x2 }, // uv_size
-                wgpu::VertexAttribute { offset: 32, shader_location: 4, format: wgpu::VertexFormat::Float32x2 }, // glyph_offset
-                wgpu::VertexAttribute { offset: 40, shader_location: 5, format: wgpu::VertexFormat::Float32x2 }, // glyph_size
-                wgpu::VertexAttribute { offset: 48, shader_location: 6, format: wgpu::VertexFormat::Float32x4 }, // fg
-                wgpu::VertexAttribute { offset: 64, shader_location: 7, format: wgpu::VertexFormat::Float32x4 }, // bg
+                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x2 },  // pos
+                wgpu::VertexAttribute { offset: 8,  shader_location: 1, format: wgpu::VertexFormat::Float32x2 },  // size
+                wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },  // uv_pos
+                wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },  // uv_size
+                wgpu::VertexAttribute { offset: 32, shader_location: 4, format: wgpu::VertexFormat::Float32x2 },  // glyph_offset
+                wgpu::VertexAttribute { offset: 40, shader_location: 5, format: wgpu::VertexFormat::Float32x2 },  // glyph_size
+                wgpu::VertexAttribute { offset: 48, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },  // fg
+                wgpu::VertexAttribute { offset: 64, shader_location: 7, format: wgpu::VertexFormat::Float32x4 },  // bg
+                wgpu::VertexAttribute { offset: 80, shader_location: 8, format: wgpu::VertexFormat::Uint32 },     // flags
             ],
         };
 
@@ -309,6 +331,10 @@ impl Renderer {
         (cols.max(1), rows.max(1))
     }
 
+    pub fn cell_size(&self) -> (f32, f32) {
+        (self.atlas.cell_width, self.atlas.cell_height)
+    }
+
     fn color_to_f32(colors: &alacritty_terminal::term::color::Colors, c: alacritty_terminal::vte::ansi::Color, default: [u8; 4]) -> [f32; 4] {
         use alacritty_terminal::vte::ansi::Color as AC;
         let rgba = match c {
@@ -336,11 +362,7 @@ impl Renderer {
         [rgba[0] as f32 / 255.0, rgba[1] as f32 / 255.0, rgba[2] as f32 / 255.0, rgba[3] as f32 / 255.0]
     }
 
-    pub fn cell_size(&self) -> (f32, f32) {
-        (self.atlas.cell_width, self.atlas.cell_height)
-    }
-
-    fn is_selected(col: usize, row: usize, sel_start: Option<(usize, usize)>, sel_end: Option<(usize, usize)>) -> bool {
+    pub fn is_selected(col: usize, row: usize, sel_start: Option<(usize, usize)>, sel_end: Option<(usize, usize)>) -> bool {
         let (start, end) = match (sel_start, sel_end) {
             (Some(s), Some(e)) => {
                 if (s.1, s.0) <= (e.1, e.0) { (s, e) } else { (e, s) }
@@ -354,7 +376,24 @@ impl Renderer {
         true
     }
 
-    pub fn render(&mut self, terminal: &TerminalState, cursor_visible: bool, sel_start: Option<(usize, usize)>, sel_end: Option<(usize, usize)>) {
+    /// Check if terminal has mouse reporting mode enabled
+    pub fn is_mouse_mode(terminal: &TerminalState) -> bool {
+        if let Some(t) = terminal.term() {
+            let mode = *t.mode();
+            use alacritty_terminal::term::TermMode;
+            mode.intersects(TermMode::MOUSE_MODE)
+        } else {
+            false
+        }
+    }
+
+    pub fn render(
+        &mut self,
+        terminal: &TerminalState,
+        cursor_visible: bool,
+        sel_start: Option<(usize, usize)>,
+        sel_end: Option<(usize, usize)>,
+    ) {
         let term = match terminal.term() {
             Some(t) => t,
             None => return,
@@ -364,44 +403,69 @@ impl Renderer {
         let cw = self.atlas.cell_width;
         let ch = self.atlas.cell_height;
         let bg_default_f = [BG_DEFAULT[0] as f32 / 255.0, BG_DEFAULT[1] as f32 / 255.0, BG_DEFAULT[2] as f32 / 255.0, 1.0];
-        let fg_default_f = [FG_DEFAULT[0] as f32 / 255.0, FG_DEFAULT[1] as f32 / 255.0, FG_DEFAULT[2] as f32 / 255.0, 1.0];
 
         let mut instances: Vec<CellInstance> = Vec::with_capacity(8192);
         let cursor = content.cursor;
+
+        use alacritty_terminal::term::cell::Flags as CellFlags;
 
         for indexed in content.display_iter {
             let cell = &indexed.cell;
             let col_idx = indexed.point.column.0;
             let row_idx = indexed.point.line.0 as usize;
-            let col = col_idx as f32;
-            let row = row_idx as f32;
-            let px = col * cw;
-            let py = row * ch;
+            let px = col_idx as f32 * cw;
+            let py = row_idx as f32 * ch;
+
+            let flags = cell.flags;
+
+            // HIDDEN: don't render character
+            if flags.contains(CellFlags::HIDDEN) {
+                continue;
+            }
 
             let mut fg = Self::color_to_f32(content.colors, cell.fg, FG_DEFAULT);
             let mut bg = Self::color_to_f32(content.colors, cell.bg, BG_DEFAULT);
 
-            // 选区高亮：交换前景/背景
+            // INVERSE: swap fg/bg
+            if flags.contains(CellFlags::INVERSE) {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+
+            // DIM: reduce fg alpha
+            if flags.contains(CellFlags::DIM) {
+                fg[0] *= 0.5;
+                fg[1] *= 0.5;
+                fg[2] *= 0.5;
+            }
+
+            // Selection highlight
             if Self::is_selected(col_idx, row_idx, sel_start, sel_end) {
                 std::mem::swap(&mut fg, &mut bg);
                 if bg == bg_default_f { bg = [0.2, 0.4, 0.6, 1.0]; }
             }
 
+            // Build GPU flags
+            let mut gpu_flags: u32 = 0;
+            if flags.intersects(CellFlags::ALL_UNDERLINES) { gpu_flags |= 1; }
+            if flags.contains(CellFlags::STRIKEOUT) { gpu_flags |= 2; }
+
+            let bold = flags.contains(CellFlags::BOLD);
+            let italic = flags.contains(CellFlags::ITALIC);
+
             let ch_char = cell.c;
             if ch_char == ' ' || ch_char == '\0' {
-                // 只画背景（如果非默认）
-                if bg != bg_default_f {
+                if bg != bg_default_f || gpu_flags != 0 {
                     instances.push(CellInstance {
                         pos: [px, py], size: [cw, ch],
                         uv_pos: [0.0, 0.0], uv_size: [0.0, 0.0],
                         glyph_offset: [0.0, 0.0], glyph_size: [0.0, 0.0],
-                        fg, bg,
+                        fg, bg, flags: gpu_flags, _pad: [0; 3],
                     });
                 }
                 continue;
             }
 
-            let glyph = self.atlas.ensure_glyph(&mut self.font_system, &mut self.swash_cache, ch_char);
+            let glyph = self.atlas.ensure_glyph(&mut self.font_system, &mut self.swash_cache, ch_char, bold, italic);
 
             let cell_w = if crate::atlas::is_wide_char(ch_char) { cw * 2.0 } else { cw };
             let (uv_pos, uv_size, g_offset, g_size) = if let Some(g) = glyph {
@@ -419,11 +483,11 @@ impl Renderer {
                 pos: [px, py], size: [cell_w, ch],
                 uv_pos, uv_size,
                 glyph_offset: g_offset, glyph_size: g_size,
-                fg, bg,
+                fg, bg, flags: gpu_flags, _pad: [0; 3],
             });
         }
 
-        // 光标
+        // Cursor
         if cursor_visible {
             let cx = cursor.point.column.0 as f32 * cw;
             let cy = cursor.point.line.0 as f32 * ch;
@@ -431,14 +495,14 @@ impl Renderer {
                 pos: [cx, cy], size: [2.0, ch],
                 uv_pos: [0.0, 0.0], uv_size: [0.0, 0.0],
                 glyph_offset: [0.0, 0.0], glyph_size: [0.0, 0.0],
-                fg: [0.0, 0.83, 1.0, 1.0], // cyan
+                fg: [0.0, 0.83, 1.0, 1.0],
                 bg: [0.0, 0.83, 1.0, 1.0],
+                flags: 0, _pad: [0; 3],
             });
         }
 
         if instances.is_empty() { return; }
 
-        // 如果 atlas 有更新，重新上传纹理
         if self.atlas.dirty {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &self.atlas_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
@@ -449,7 +513,6 @@ impl Renderer {
             self.atlas.dirty = false;
         }
 
-        // 创建实例缓冲区
         let instance_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Cell Instances"),
             contents: bytemuck::cast_slice(&instances),
