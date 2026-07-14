@@ -345,8 +345,10 @@ impl Renderer {
         self.viewport_x = x;
         self.viewport_width = width;
         self.viewport_height = height;
+        // shader 的 screen_size 用 viewport 宽高（不是整个窗口），
+        // 这样 NDC 坐标在 viewport 内部是 [-1,1]
         gpu.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[Uniforms {
-            screen_size: [gpu.width as f32, gpu.height as f32],
+            screen_size: [width, height],
             atlas_size: [self.atlas.atlas_width as f32, self.atlas.atlas_height as f32],
         }]));
     }
@@ -432,7 +434,8 @@ impl Renderer {
         let content = term.renderable_content();
         let cw = self.atlas.cell_width;
         let ch = self.atlas.cell_height;
-        let offset_x = self.viewport_x;
+        // cell 位置不需要加 offset_x — viewport 已经偏移了
+        let offset_x = 0.0f32;
         let bg_default_f = [BG_DEFAULT[0] as f32 / 255.0, BG_DEFAULT[1] as f32 / 255.0, BG_DEFAULT[2] as f32 / 255.0, 1.0];
 
         let mut instances: Vec<CellInstance> = Vec::with_capacity(8192);

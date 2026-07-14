@@ -385,7 +385,9 @@ impl App {
     }
 
     fn sync_terminal_size(&mut self) {
-        if let Some(renderer) = &self.renderer {
+        if let (Some(renderer), Some(gpu)) = (&mut self.renderer, &self.gpu) {
+            let term_width = (gpu.width as f32 - self.sidebar_width).max(1.0);
+            renderer.set_viewport(self.sidebar_width, term_width, gpu.height as f32, gpu);
             let (cols, rows) = renderer.calculate_grid_size();
             let mut term = self.terminal.lock().unwrap();
             term.resize(cols, rows);
@@ -700,8 +702,6 @@ impl ApplicationHandler<UserEvent> for App {
                 let mut term = self.terminal.lock().unwrap();
                 if let Some(seq) = esc {
                     term.write_input(seq);
-                } else if let Key::Character(ref ch) = event.logical_key {
-                    term.write_input(ch.as_str());
                 } else if let Some(text) = &event.text {
                     if !text.as_str().is_empty() {
                         term.write_input(text.as_str());
