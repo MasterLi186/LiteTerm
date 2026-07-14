@@ -186,7 +186,7 @@ impl Renderer {
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps.formats.iter()
-            .find(|f| f.is_srgb()).copied()
+            .find(|f| !f.is_srgb()).copied()
             .unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
