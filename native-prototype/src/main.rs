@@ -192,21 +192,15 @@ impl App {
             pixels_per_point: window.scale_factor() as f32,
         };
 
-        // 2. Handle tab bar actions
+        // 2. Handle tab bar actions (non-mutating ones only here)
         if let Some(idx) = tab_action.switch_to {
             self.tab_manager.switch_to(idx);
             self.selection_start = None;
             self.selection_end = None;
         }
-        if let Some(idx) = tab_action.close {
-            self.tab_manager.close(idx);
-            if self.tab_manager.is_empty() {
-                self.new_local_tab();
-            }
-        }
-        if tab_action.new_tab {
-            self.new_local_tab();
-        }
+        // defer close/new_tab to after render (needs &mut self without gpu borrow)
+        let deferred_close = tab_action.close;
+        let deferred_new = tab_action.new_tab;
 
         // 3. Get surface texture
         let output = match gpu.surface.get_current_texture() {
@@ -280,6 +274,17 @@ impl App {
 
         gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        // Deferred tab actions (after gpu borrow ends)
+        if let Some(idx) = deferred_close {
+            self.tab_manager.close(idx);
+            if self.tab_manager.is_empty() {
+                self.new_local_tab();
+            }
+        }
+        if deferred_new {
+            self.new_local_tab();
+        }
     }
 
     fn pixel_to_cell(&self, x: f64, y: f64) -> (usize, usize) {

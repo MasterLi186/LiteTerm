@@ -21,7 +21,7 @@ pub fn render_tab_bar(ctx: &egui::Context, tab_manager: &TabManager) -> TabBarAc
         .exact_height(TAB_BAR_HEIGHT)
         .frame(egui::Frame::new()
             .fill(egui::Color32::from_rgb(0x16, 0x1b, 0x22))
-            .inner_margin(egui::Margin::symmetric(4.0, 0.0)))
+            .inner_margin(egui::Margin::symmetric(4, 0)))
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
@@ -47,8 +47,8 @@ pub fn render_tab_bar(ctx: &egui::Context, tab_manager: &TabManager) -> TabBarAc
 
                     let tab_frame = egui::Frame::new()
                         .fill(bg)
-                        .rounding(egui::Rounding::same(4.0))
-                        .inner_margin(egui::Margin::symmetric(8.0, 4.0));
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin::symmetric(8, 4));
 
                     let resp = tab_frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
