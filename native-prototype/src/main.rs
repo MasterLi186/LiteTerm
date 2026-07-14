@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, MouseScrollDelta, WindowEvent},
+    event::{ElementState, Modifiers, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
-    keyboard::{Key, NamedKey},
+    keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
     window::{Window, WindowId},
 };
 
@@ -27,6 +27,7 @@ struct App {
     cursor_visible: bool,
     cursor_timer: Instant,
     proxy: EventLoopProxy<UserEvent>,
+    modifiers: Modifiers,
 }
 
 impl App {
@@ -38,6 +39,7 @@ impl App {
             cursor_visible: true,
             cursor_timer: Instant::now(),
             proxy,
+            modifiers: Modifiers::default(),
         }
     }
 
@@ -135,6 +137,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.do_render();
             }
 
+            WindowEvent::ModifiersChanged(mods) => {
+                self.modifiers = mods;
+            }
+
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed {
                     return;
@@ -142,6 +148,51 @@ impl ApplicationHandler<UserEvent> for App {
                 self.cursor_visible = true;
                 self.cursor_timer = Instant::now();
 
+                let ctrl = self.modifiers.state().control_key();
+
+                // Ctrl+字母 → 控制字符 (A=0x01 ... Z=0x1a)
+                if ctrl {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        let ctrl_char = match code {
+                            KeyCode::KeyA => Some("\x01"),
+                            KeyCode::KeyB => Some("\x02"),
+                            KeyCode::KeyC => Some("\x03"),
+                            KeyCode::KeyD => Some("\x04"),
+                            KeyCode::KeyE => Some("\x05"),
+                            KeyCode::KeyF => Some("\x06"),
+                            KeyCode::KeyG => Some("\x07"),
+                            KeyCode::KeyH => Some("\x08"),
+                            KeyCode::KeyI => Some("\x09"),
+                            KeyCode::KeyJ => Some("\x0a"),
+                            KeyCode::KeyK => Some("\x0b"),
+                            KeyCode::KeyL => Some("\x0c"),
+                            KeyCode::KeyM => Some("\x0d"),
+                            KeyCode::KeyN => Some("\x0e"),
+                            KeyCode::KeyO => Some("\x0f"),
+                            KeyCode::KeyP => Some("\x10"),
+                            KeyCode::KeyQ => Some("\x11"),
+                            KeyCode::KeyR => Some("\x12"),
+                            KeyCode::KeyS => Some("\x13"),
+                            KeyCode::KeyT => Some("\x14"),
+                            KeyCode::KeyU => Some("\x15"),
+                            KeyCode::KeyV => Some("\x16"),
+                            KeyCode::KeyW => Some("\x17"),
+                            KeyCode::KeyX => Some("\x18"),
+                            KeyCode::KeyY => Some("\x19"),
+                            KeyCode::KeyZ => Some("\x1a"),
+                            _ => None,
+                        };
+                        if let Some(ch) = ctrl_char {
+                            let mut term = self.terminal.lock().unwrap();
+                            term.write_input(ch);
+                            drop(term);
+                            self.do_render();
+                            return;
+                        }
+                    }
+                }
+
+                // 特殊键
                 let esc = match event.logical_key {
                     Key::Named(NamedKey::Enter)     => Some("\r"),
                     Key::Named(NamedKey::Backspace)  => Some("\x7f"),
@@ -164,13 +215,6 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(seq) = esc {
                     term.write_input(seq);
                 } else if let Key::Character(ref ch) = event.logical_key {
-                    if let Some(text) = &event.text {
-                        let bytes = text.as_str().as_bytes();
-                        if bytes.len() == 1 && bytes[0] <= 0x1a {
-                            term.write_input(text.as_str());
-                            return;
-                        }
-                    }
                     term.write_input(ch.as_str());
                 } else if let Some(text) = &event.text {
                     if !text.as_str().is_empty() {

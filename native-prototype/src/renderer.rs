@@ -375,9 +375,9 @@ impl Renderer {
                 continue;
             }
 
-            // 确保字形在图集中
             let glyph = self.atlas.ensure_glyph(&mut self.font_system, &mut self.swash_cache, ch_char);
 
+            let cell_w = if crate::atlas::is_wide_char(ch_char) { cw * 2.0 } else { cw };
             let (uv_pos, uv_size, g_offset, g_size) = if let Some(g) = glyph {
                 (
                     [g.x as f32, g.y as f32],
@@ -390,7 +390,7 @@ impl Renderer {
             };
 
             instances.push(CellInstance {
-                pos: [px, py], size: [cw, ch],
+                pos: [px, py], size: [cell_w, ch],
                 uv_pos, uv_size,
                 glyph_offset: g_offset, glyph_size: g_size,
                 fg, bg,
