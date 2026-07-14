@@ -69,7 +69,27 @@ impl App {
             cursor_timer: Instant::now(),
             proxy,
             modifiers: Modifiers::default(),
-            egui_ctx: egui::Context::default(),
+            egui_ctx: {
+                let ctx = egui::Context::default();
+                // 加载中文字体
+                let mut fonts = egui::FontDefinitions::default();
+                if let Ok(font_data) = std::fs::read("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc") {
+                    fonts.font_data.insert(
+                        "noto_cjk".to_owned(),
+                        egui::FontData::from_owned(font_data).into(),
+                    );
+                    fonts.families
+                        .entry(egui::FontFamily::Proportional)
+                        .or_default()
+                        .push("noto_cjk".to_owned());
+                    fonts.families
+                        .entry(egui::FontFamily::Monospace)
+                        .or_default()
+                        .push("noto_cjk".to_owned());
+                }
+                ctx.set_fonts(fonts);
+                ctx
+            },
             egui_state: None,
             egui_renderer: None,
             sidebar: Sidebar::new(),
