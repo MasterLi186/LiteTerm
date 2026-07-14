@@ -17,5 +17,11 @@ if [ -n "$OLD_PID" ]; then
     sleep 0.5
 fi
 
+# WebKitGTK 内存优化环境变量
+export WEBKIT_DISABLE_DMABUF_RENDERER=1   # 禁用 DMA-BUF 硬件渲染，防止 dmabuf fd 泄漏
+export WEBKIT_INSPECTOR_SERVER=127.0.0.1:9222  # 开启 WebInspector 远程调试
+
 echo "启动 GuiShell..."
+echo "  DMABUF 渲染: 已禁用"
+echo "  WebInspector: http://127.0.0.1:9222"
 exec "$BINARY" "$@" 2>/dev/null
