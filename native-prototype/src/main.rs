@@ -10,6 +10,7 @@ use winit::{
 
 mod terminal;
 mod renderer;
+mod atlas;
 
 use terminal::TerminalState;
 use renderer::Renderer;
