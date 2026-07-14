@@ -1,0 +1,19 @@
+[package]
+name = "liteterm-native"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "liteterm-native"
+path = "src/main.rs"
+
+[dependencies]
+winit = "0.30"
+wgpu = "25"
+cosmic-text = "0.12"
+alacritty_terminal = "0.25"
+vte = "0.15"
+portable-pty = "0.8"
+pollster = "0.4"
+log = "0.4"
+env_logger = "0.11"

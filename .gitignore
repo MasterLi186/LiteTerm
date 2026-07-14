@@ -9,3 +9,4 @@ src-tauri/gen
 158BitNet/
 credentials.enc
 passwords.toml
+/native-prototype/target/
