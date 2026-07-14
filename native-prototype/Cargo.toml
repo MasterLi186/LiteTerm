@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 winit = "0.30"
-wgpu = "25"
+wgpu = "24"
 cosmic-text = "0.12"
 alacritty_terminal = "0.25"
 vte = "0.15"
@@ -20,3 +20,6 @@ env_logger = "0.11"
 bytemuck = { version = "1", features = ["derive"] }
 arboard = "3"
 unicode-width = "0.2"
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"

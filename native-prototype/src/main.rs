@@ -11,10 +11,12 @@ use winit::{
 mod terminal;
 mod renderer;
 mod atlas;
+mod sidebar;
 
 use atlas::is_word_char;
 use terminal::TerminalState;
-use renderer::Renderer;
+use renderer::{GpuState, Renderer};
+use sidebar::Sidebar;
 
 #[derive(Debug)]
 enum UserEvent {
@@ -31,12 +33,19 @@ enum ClickState {
 
 struct App {
     window: Option<Arc<Window>>,
+    gpu: Option<GpuState>,
     renderer: Option<Renderer>,
     terminal: Arc<Mutex<TerminalState>>,
     cursor_visible: bool,
     cursor_timer: Instant,
     proxy: EventLoopProxy<UserEvent>,
     modifiers: Modifiers,
+    // egui
+    egui_ctx: egui::Context,
+    egui_state: Option<egui_winit::State>,
+    egui_renderer: Option<egui_wgpu::Renderer>,
+    sidebar: Sidebar,
+    sidebar_width: f32,
     // Mouse state
     mouse_pressed: bool,
     mouse_position: (f64, f64),
@@ -53,12 +62,18 @@ impl App {
     fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
         Self {
             window: None,
+            gpu: None,
             renderer: None,
             terminal: Arc::new(Mutex::new(TerminalState::new())),
             cursor_visible: true,
             cursor_timer: Instant::now(),
             proxy,
             modifiers: Modifiers::default(),
+            egui_ctx: egui::Context::default(),
+            egui_state: None,
+            egui_renderer: None,
+            sidebar: Sidebar::new(),
+            sidebar_width: 220.0,
             mouse_pressed: false,
             mouse_position: (0.0, 0.0),
             selection_start: None,
@@ -76,21 +91,132 @@ impl App {
             self.cursor_visible = !self.cursor_visible;
             self.cursor_timer = Instant::now();
         }
-        if let Some(renderer) = &mut self.renderer {
-            let term = self.terminal.lock().unwrap();
-            renderer.render(&term, self.cursor_visible, self.selection_start, self.selection_end);
+
+        let gpu = match &self.gpu {
+            Some(g) => g,
+            None => return,
+        };
+        let window = match &self.window {
+            Some(w) => w.clone(),
+            None => return,
+        };
+
+        // 1. Run egui (sidebar)
+        let egui_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
+        let egui_output = self.egui_ctx.run(egui_input, |ctx| {
+            self.sidebar_width = self.sidebar.ui(ctx);
+        });
+
+        // Handle egui platform output (cursor changes etc)
+        self.egui_state.as_mut().unwrap().handle_platform_output(&window, egui_output.platform_output);
+
+        let paint_jobs = self.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [gpu.width, gpu.height],
+            pixels_per_point: window.scale_factor() as f32,
+        };
+
+        // 2. Get surface texture
+        let output = match gpu.surface.get_current_texture() {
+            Ok(t) => t,
+            Err(wgpu::SurfaceError::Lost) => {
+                if let Some(g) = &mut self.gpu {
+                    g.resize(g.width, g.height);
+                }
+                return;
+            }
+            Err(e) => { log::warn!("Surface error: {:?}", e); return; }
+        };
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Main Encoder"),
+        });
+
+        // 3. Clear the entire surface with terminal background
+        {
+            let _clear_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Clear Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: renderer::BG_DEFAULT[0] as f64 / 255.0,
+                            g: renderer::BG_DEFAULT[1] as f64 / 255.0,
+                            b: renderer::BG_DEFAULT[2] as f64 / 255.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
         }
+
+        // 4. Render terminal cells (right of sidebar)
+        if let Some(renderer) = &mut self.renderer {
+            let term_width = (gpu.width as f32 - self.sidebar_width).max(1.0);
+            renderer.set_viewport(self.sidebar_width, term_width, gpu.height as f32, gpu);
+
+            let term = self.terminal.lock().unwrap();
+            renderer.render_to_pass(gpu, &view, &mut encoder, &term, self.cursor_visible, self.selection_start, self.selection_end);
+        }
+
+        // 5. Render egui (sidebar overlay, on top)
+        let egui_renderer = self.egui_renderer.as_mut().unwrap();
+        for (id, delta) in &egui_output.textures_delta.set {
+            egui_renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
+        }
+        let _cmd_bufs = egui_renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &paint_jobs, &screen_descriptor);
+
+        {
+            let mut egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Egui Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            // egui render needs 'static lifetime on the render pass
+            let egui_pass_static: wgpu::RenderPass<'static> = egui_pass.forget_lifetime();
+            let mut egui_pass_static = egui_pass_static;
+            egui_renderer.render(&mut egui_pass_static, &paint_jobs, &screen_descriptor);
+        }
+
+        for id in &egui_output.textures_delta.free {
+            egui_renderer.free_texture(id);
+        }
+
+        // 6. Submit and present
+        gpu.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
     }
 
+    /// Convert pixel position to terminal cell, accounting for sidebar offset
     fn pixel_to_cell(&self, x: f64, y: f64) -> (usize, usize) {
         if let Some(renderer) = &self.renderer {
             let (cw, ch) = renderer.cell_size();
-            let col = (x as f32 / cw).floor().max(0.0) as usize;
+            let term_x = (x as f32 - self.sidebar_width).max(0.0);
+            let col = (term_x / cw).floor() as usize;
             let row = (y as f32 / ch).floor().max(0.0) as usize;
             (col, row)
         } else {
             (0, 0)
         }
+    }
+
+    /// Check if mouse is in terminal area (right of sidebar)
+    fn is_in_terminal(&self, x: f64) -> bool {
+        x as f32 >= self.sidebar_width
     }
 
     fn get_selection_text(&self) -> String {
@@ -132,13 +258,9 @@ impl App {
         result.trim_end().to_string()
     }
 
-    /// Double-click: select word at (col, row)
     fn select_word(&mut self, col: usize, row: usize) {
         let term = self.terminal.lock().unwrap();
-        let t = match term.term() {
-            Some(t) => t,
-            None => return,
-        };
+        let t = match term.term() { Some(t) => t, None => return };
         let grid = t.grid();
         use alacritty_terminal::grid::Dimensions;
         let cols = grid.columns();
@@ -168,13 +290,9 @@ impl App {
         self.selection_end = Some((end, row));
     }
 
-    /// Triple-click: select entire line
     fn select_line(&mut self, row: usize) {
         let term = self.terminal.lock().unwrap();
-        let t = match term.term() {
-            Some(t) => t,
-            None => return,
-        };
+        let t = match term.term() { Some(t) => t, None => return };
         use alacritty_terminal::grid::Dimensions;
         let cols = t.grid().columns();
         drop(term);
@@ -191,18 +309,24 @@ impl App {
         }
     }
 
-    /// Check if app is in mouse-reporting mode (vim, htop, etc.)
     fn is_mouse_mode(&self) -> bool {
         let term = self.terminal.lock().unwrap();
         Renderer::is_mouse_mode(&term)
     }
 
-    /// Send SGR mouse event to PTY: \x1b[<btn;col;row;M or m
     fn send_mouse_event(&mut self, btn: u32, col: usize, row: usize, pressed: bool) {
         let c = if pressed { 'M' } else { 'm' };
         let seq = format!("\x1b[<{};{};{}{}", btn, col + 1, row + 1, c);
         let mut term = self.terminal.lock().unwrap();
         term.write_input(&seq);
+    }
+
+    fn sync_terminal_size(&mut self) {
+        if let Some(renderer) = &self.renderer {
+            let (cols, rows) = renderer.calculate_grid_size();
+            let mut term = self.terminal.lock().unwrap();
+            term.resize(cols, rows);
+        }
     }
 }
 
@@ -215,17 +339,42 @@ impl ApplicationHandler<UserEvent> for App {
         if self.window.is_some() { return; }
         let attrs = Window::default_attributes()
             .with_title("LiteTerm Native Prototype")
-            .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 768.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
 
-        let renderer = pollster::block_on(Renderer::new(window.clone()));
-        let (cols, rows) = renderer.calculate_grid_size();
+        // Init GPU
+        let gpu = pollster::block_on(GpuState::new(window.clone()));
+
+        // Init egui
+        let egui_state = egui_winit::State::new(
+            self.egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(gpu.device.limits().max_texture_dimension_2d as usize),
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.format(), None, 1, false);
+
+        // Init terminal renderer
+        let renderer = Renderer::new(&gpu);
+        let term_width = (gpu.width as f32 - self.sidebar_width).max(1.0);
+        let renderer_ref = &renderer;
+        let _ = term_width; // will be set on first render
+
+        // Spawn shell with initial size
         {
+            let (cols, rows) = renderer.calculate_grid_size();
             let mut term = self.terminal.lock().unwrap();
             term.spawn_shell(cols, rows);
         }
-        self.renderer = Some(renderer);
 
+        self.egui_state = Some(egui_state);
+        self.egui_renderer = Some(egui_renderer);
+        self.renderer = Some(renderer);
+        self.gpu = Some(gpu);
+
+        // PTY read thread
         let terminal = self.terminal.clone();
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
@@ -234,6 +383,7 @@ impl ApplicationHandler<UserEvent> for App {
             });
         });
 
+        // Cursor blink thread
         let proxy2 = self.proxy.clone();
         std::thread::spawn(move || {
             loop {
@@ -242,7 +392,6 @@ impl ApplicationHandler<UserEvent> for App {
             }
         });
 
-        window.request_redraw();
         self.window = Some(window);
     }
 
@@ -251,22 +400,36 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // Pass events to egui first
+        if let Some(egui_state) = &mut self.egui_state {
+            if let Some(window) = &self.window {
+                let response = egui_state.on_window_event(window, &event);
+                if response.consumed {
+                    self.do_render();
+                    return;
+                }
+            }
+        }
+
         match event {
             WindowEvent::CloseRequested => { event_loop.exit(); }
 
             WindowEvent::Resized(size) => {
-                if let Some(renderer) = &mut self.renderer {
-                    renderer.resize(size.width, size.height);
-                    let (cols, rows) = renderer.calculate_grid_size();
-                    let mut term = self.terminal.lock().unwrap();
-                    term.resize(cols, rows);
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.resize(size.width, size.height);
                 }
+                self.sync_terminal_size();
                 self.do_render();
             }
 
             WindowEvent::ModifiersChanged(mods) => { self.modifiers = mods; }
 
             WindowEvent::MouseInput { state, button, .. } => {
+                // Only handle terminal clicks (right of sidebar)
+                if !self.is_in_terminal(self.mouse_position.0) {
+                    return;
+                }
+
                 let shift = self.modifiers.state().shift_key();
                 let mouse_mode = self.is_mouse_mode();
 
@@ -274,14 +437,12 @@ impl ApplicationHandler<UserEvent> for App {
                     let cell = self.pixel_to_cell(self.mouse_position.0, self.mouse_position.1);
 
                     if state == ElementState::Pressed {
-                        // Mouse reporting (unless Shift is held to force selection)
                         if mouse_mode && !shift {
                             self.send_mouse_event(0, cell.0, cell.1, true);
                             self.mouse_pressed = true;
                             return;
                         }
 
-                        // Click detection: single / double / triple
                         let now = Instant::now();
                         let elapsed = now.duration_since(self.last_click_time).as_millis();
                         let same_pos = cell == self.last_click_pos;
@@ -312,7 +473,6 @@ impl ApplicationHandler<UserEvent> for App {
                         self.mouse_pressed = true;
                         self.do_render();
                     } else {
-                        // Release
                         if mouse_mode && !shift {
                             self.send_mouse_event(0, cell.0, cell.1, false);
                         }
@@ -321,7 +481,6 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
 
-                // Middle-click paste
                 if button == MouseButton::Middle && state == ElementState::Pressed {
                     if mouse_mode && !shift {
                         let cell = self.pixel_to_cell(self.mouse_position.0, self.mouse_position.1);
@@ -337,7 +496,6 @@ impl ApplicationHandler<UserEvent> for App {
                     self.do_render();
                 }
 
-                // Right-click
                 if button == MouseButton::Right && state == ElementState::Pressed {
                     if mouse_mode && !shift {
                         let cell = self.pixel_to_cell(self.mouse_position.0, self.mouse_position.1);
@@ -351,14 +509,11 @@ impl ApplicationHandler<UserEvent> for App {
                 let shift = self.modifiers.state().shift_key();
                 let mouse_mode = self.is_mouse_mode();
 
-                if self.mouse_pressed {
+                if self.mouse_pressed && self.is_in_terminal(position.x) {
                     let cell = self.pixel_to_cell(position.x, position.y);
-
                     if mouse_mode && !shift {
-                        // Mouse motion reporting (SGR drag: button 32+btn)
                         self.send_mouse_event(32, cell.0, cell.1, true);
                     } else if self.click_state == ClickState::Single {
-                        // Drag selection
                         self.selection_end = Some(cell);
                         self.do_render();
                     }
@@ -366,6 +521,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                if !self.is_in_terminal(self.mouse_position.0) { return; }
+
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y as i32,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 18.0) as i32,
@@ -375,7 +532,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let mouse_mode = self.is_mouse_mode();
                 if mouse_mode {
                     let cell = self.pixel_to_cell(self.mouse_position.0, self.mouse_position.1);
-                    let btn = if lines > 0 { 64 } else { 65 }; // scroll up / down
+                    let btn = if lines > 0 { 64 } else { 65 };
                     for _ in 0..lines.unsigned_abs() {
                         self.send_mouse_event(btn, cell.0, cell.1, true);
                     }
@@ -398,7 +555,6 @@ impl ApplicationHandler<UserEvent> for App {
                 let ctrl = self.modifiers.state().control_key();
                 let shift = self.modifiers.state().shift_key();
 
-                // Ctrl+Shift+C = copy
                 if ctrl && shift {
                     if let PhysicalKey::Code(KeyCode::KeyC) = event.physical_key {
                         self.copy_selection();
@@ -416,11 +572,9 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
 
-                // Clear selection on any key
                 self.selection_start = None;
                 self.selection_end = None;
 
-                // Ctrl+letter
                 if ctrl {
                     if let PhysicalKey::Code(code) = event.physical_key {
                         let ctrl_byte = match code {

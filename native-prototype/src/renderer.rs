@@ -7,8 +7,6 @@ use cosmic_text::{FontSystem, SwashCache};
 use crate::atlas::GlyphAtlas;
 use crate::terminal::TerminalState;
 
-/// Per-cell instance data sent to GPU.
-/// `flags`: bit 0 = underline, bit 1 = strikethrough
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CellInstance {
@@ -98,7 +96,6 @@ fn vs_main(@builtin(vertex_index) vi: u32, cell: CellInstance) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = in.bg;
 
-    // Glyph rendering
     let glyph_local = in.local_pos - in.glyph_offset;
     if glyph_local.x >= 0.0 && glyph_local.y >= 0.0 &&
        glyph_local.x < in.glyph_size.x && glyph_local.y < in.glyph_size.y &&
@@ -108,7 +105,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = mix(color, in.fg, vec4(alpha, alpha, alpha, alpha));
     }
 
-    // Underline (bit 0): 1px line at bottom - 2px
     if (in.flags & 1u) != 0u {
         let underline_y = in.cell_size.y - 2.0;
         if in.local_pos.y >= underline_y && in.local_pos.y < underline_y + 1.0 {
@@ -116,7 +112,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Strikethrough (bit 1): 1px line at middle
     if (in.flags & 2u) != 0u {
         let strike_y = in.cell_size.y * 0.5;
         if in.local_pos.y >= strike_y && in.local_pos.y < strike_y + 1.0 {
@@ -128,40 +123,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-// AdventureTime 配色方案（来自 Tabby）
+// AdventureTime 配色方案
 const ANSI_COLORS: [[u8; 3]; 16] = [
-    // normal: black,    red,       green,     yellow
     [0x05,0x04,0x04], [0xbd,0x00,0x13], [0x4a,0xb1,0x18], [0xe7,0x74,0x1e],
-    // normal: blue,     magenta,   cyan,      white
     [0x0f,0x4a,0xc6], [0x66,0x59,0x93], [0x70,0xa5,0x98], [0xf8,0xdc,0xc0],
-    // bright: black,    red,       green,     yellow
     [0x4e,0x7c,0xbf], [0xfc,0x5f,0x5a], [0x9e,0xff,0x6e], [0xef,0xc1,0x1a],
-    // bright: blue,     magenta,   cyan,      white
     [0x19,0x97,0xc6], [0x9b,0x59,0x53], [0xc8,0xfa,0xf4], [0xf6,0xf5,0xfb],
 ];
-const BG_DEFAULT: [u8; 4] = [0x1f, 0x1d, 0x45, 255]; // #1f1d45
-const FG_DEFAULT: [u8; 4] = [0xf8, 0xdc, 0xc0, 255]; // #f8dcc0
-const CURSOR_COLOR: [f32; 4] = [0xef as f32/255.0, 0xbf as f32/255.0, 0x38 as f32/255.0, 1.0]; // #efbf38
-const SELECTION_BG: [f32; 4] = [0x26 as f32/255.0, 0x4f as f32/255.0, 0x78 as f32/255.0, 1.0]; // #264f78
+pub const BG_DEFAULT: [u8; 4] = [0x1f, 0x1d, 0x45, 255];
+const FG_DEFAULT: [u8; 4] = [0xf8, 0xdc, 0xc0, 255];
+const CURSOR_COLOR: [f32; 4] = [0xef as f32/255.0, 0xbf as f32/255.0, 0x38 as f32/255.0, 1.0];
+const SELECTION_BG: [f32; 4] = [0x26 as f32/255.0, 0x4f as f32/255.0, 0x78 as f32/255.0, 1.0];
 
-pub struct Renderer {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    width: u32,
-    height: u32,
-    font_system: FontSystem,
-    swash_cache: SwashCache,
-    atlas: GlyphAtlas,
-    atlas_texture: wgpu::Texture,
-    pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    uniform_buffer: wgpu::Buffer,
-    sampler: wgpu::Sampler,
+/// Shared GPU state accessible from main for egui integration
+pub struct GpuState {
+    pub surface: wgpu::Surface<'static>,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub config: wgpu::SurfaceConfiguration,
+    pub width: u32,
+    pub height: u32,
 }
 
-impl Renderer {
+impl GpuState {
     pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -180,7 +164,7 @@ impl Renderer {
             .expect("无法获取 GPU adapter");
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor::default(), None)
             .await
             .expect("无法获取 GPU device");
 
@@ -201,12 +185,49 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
+        Self {
+            surface, device, queue, config,
+            width: size.width.max(1), height: size.height.max(1),
+        }
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 { return; }
+        self.width = width;
+        self.height = height;
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&self.device, &self.config);
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+}
+
+pub struct Renderer {
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    atlas: GlyphAtlas,
+    atlas_texture: wgpu::Texture,
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    uniform_buffer: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    // Terminal viewport offset (pixels from left, for sidebar)
+    pub viewport_x: f32,
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+}
+
+impl Renderer {
+    pub fn new(gpu: &GpuState) -> Self {
         let mut font_system = FontSystem::new();
         let mut swash_cache = SwashCache::new();
         let font_size = 15.0;
         let atlas = GlyphAtlas::new(&mut font_system, &mut swash_cache, font_size);
 
-        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let atlas_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Glyph Atlas"),
             size: wgpu::Extent3d { width: atlas.atlas_width, height: atlas.atlas_height, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1,
@@ -215,20 +236,20 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        queue.write_texture(
+        gpu.queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture: &atlas_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             &atlas.data,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(atlas.atlas_width), rows_per_image: Some(atlas.atlas_height) },
             wgpu::Extent3d { width: atlas.atlas_width, height: atlas.atlas_height, depth_or_array_layers: 1 },
         );
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bind_group_layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -249,21 +270,21 @@ impl Renderer {
             ],
         });
 
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniforms"),
             contents: bytemuck::cast_slice(&[Uniforms {
-                screen_size: [size.width as f32, size.height as f32],
+                screen_size: [gpu.width as f32, gpu.height as f32],
                 atlas_size: [atlas.atlas_width as f32, atlas.atlas_height as f32],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
@@ -273,19 +294,19 @@ impl Renderer {
             array_stride: std::mem::size_of::<CellInstance>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x2 },  // pos
-                wgpu::VertexAttribute { offset: 8,  shader_location: 1, format: wgpu::VertexFormat::Float32x2 },  // size
-                wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },  // uv_pos
-                wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },  // uv_size
-                wgpu::VertexAttribute { offset: 32, shader_location: 4, format: wgpu::VertexFormat::Float32x2 },  // glyph_offset
-                wgpu::VertexAttribute { offset: 40, shader_location: 5, format: wgpu::VertexFormat::Float32x2 },  // glyph_size
-                wgpu::VertexAttribute { offset: 48, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },  // fg
-                wgpu::VertexAttribute { offset: 64, shader_location: 7, format: wgpu::VertexFormat::Float32x4 },  // bg
-                wgpu::VertexAttribute { offset: 80, shader_location: 8, format: wgpu::VertexFormat::Uint32 },     // flags
+                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 8,  shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 32, shader_location: 4, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 40, shader_location: 5, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 48, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 64, shader_location: 7, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 80, shader_location: 8, format: wgpu::VertexFormat::Uint32 },
             ],
         };
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -298,7 +319,7 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: gpu.config.format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -312,29 +333,27 @@ impl Renderer {
         });
 
         Self {
-            surface, device, queue, config,
-            width: size.width.max(1), height: size.height.max(1),
             font_system, swash_cache, atlas, atlas_texture,
             pipeline, bind_group_layout, uniform_buffer, sampler,
+            viewport_x: 0.0,
+            viewport_width: gpu.width as f32,
+            viewport_height: gpu.height as f32,
         }
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 { return; }
-        self.width = width;
-        self.height = height;
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[Uniforms {
-            screen_size: [width as f32, height as f32],
+    pub fn set_viewport(&mut self, x: f32, width: f32, height: f32, gpu: &GpuState) {
+        self.viewport_x = x;
+        self.viewport_width = width;
+        self.viewport_height = height;
+        gpu.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[Uniforms {
+            screen_size: [gpu.width as f32, gpu.height as f32],
             atlas_size: [self.atlas.atlas_width as f32, self.atlas.atlas_height as f32],
         }]));
     }
 
     pub fn calculate_grid_size(&self) -> (u16, u16) {
-        let cols = (self.width as f32 / self.atlas.cell_width).floor() as u16;
-        let rows = (self.height as f32 / self.atlas.cell_height).floor() as u16;
+        let cols = (self.viewport_width / self.atlas.cell_width).floor() as u16;
+        let rows = (self.viewport_height / self.atlas.cell_height).floor() as u16;
         (cols.max(1), rows.max(1))
     }
 
@@ -383,7 +402,6 @@ impl Renderer {
         true
     }
 
-    /// Check if terminal has mouse reporting mode enabled
     pub fn is_mouse_mode(terminal: &TerminalState) -> bool {
         if let Some(t) = terminal.term() {
             let mode = *t.mode();
@@ -394,8 +412,13 @@ impl Renderer {
         }
     }
 
-    pub fn render(
+    /// Render terminal cells into an existing render pass.
+    /// Call this AFTER egui has rendered, within the same encoder.
+    pub fn render_to_pass(
         &mut self,
+        gpu: &GpuState,
+        view: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
         terminal: &TerminalState,
         cursor_visible: bool,
         sel_start: Option<(usize, usize)>,
@@ -409,6 +432,7 @@ impl Renderer {
         let content = term.renderable_content();
         let cw = self.atlas.cell_width;
         let ch = self.atlas.cell_height;
+        let offset_x = self.viewport_x;
         let bg_default_f = [BG_DEFAULT[0] as f32 / 255.0, BG_DEFAULT[1] as f32 / 255.0, BG_DEFAULT[2] as f32 / 255.0, 1.0];
 
         let mut instances: Vec<CellInstance> = Vec::with_capacity(8192);
@@ -420,39 +444,27 @@ impl Renderer {
             let cell = &indexed.cell;
             let col_idx = indexed.point.column.0;
             let row_idx = indexed.point.line.0 as usize;
-            let px = col_idx as f32 * cw;
+            // Offset cell positions by sidebar width
+            let px = offset_x + col_idx as f32 * cw;
             let py = row_idx as f32 * ch;
 
             let flags = cell.flags;
 
-            // HIDDEN 或宽字符续位：跳过（宽字符在首位已按 2 列宽渲染）
-            if flags.contains(CellFlags::HIDDEN)
-                || flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+            if flags.contains(CellFlags::HIDDEN) || flags.contains(CellFlags::WIDE_CHAR_SPACER) {
                 continue;
             }
 
             let mut fg = Self::color_to_f32(content.colors, cell.fg, FG_DEFAULT);
             let mut bg = Self::color_to_f32(content.colors, cell.bg, BG_DEFAULT);
 
-            // INVERSE: swap fg/bg
-            if flags.contains(CellFlags::INVERSE) {
-                std::mem::swap(&mut fg, &mut bg);
-            }
+            if flags.contains(CellFlags::INVERSE) { std::mem::swap(&mut fg, &mut bg); }
+            if flags.contains(CellFlags::DIM) { fg[0] *= 0.5; fg[1] *= 0.5; fg[2] *= 0.5; }
 
-            // DIM: reduce fg alpha
-            if flags.contains(CellFlags::DIM) {
-                fg[0] *= 0.5;
-                fg[1] *= 0.5;
-                fg[2] *= 0.5;
-            }
-
-            // Selection highlight
             if Self::is_selected(col_idx, row_idx, sel_start, sel_end) {
                 std::mem::swap(&mut fg, &mut bg);
                 if bg == bg_default_f { bg = SELECTION_BG; }
             }
 
-            // Build GPU flags
             let mut gpu_flags: u32 = 0;
             if flags.intersects(CellFlags::ALL_UNDERLINES) { gpu_flags |= 1; }
             if flags.contains(CellFlags::STRIKEOUT) { gpu_flags |= 2; }
@@ -477,12 +489,8 @@ impl Renderer {
 
             let cell_w = if flags.contains(CellFlags::WIDE_CHAR) { cw * 2.0 } else { cw };
             let (uv_pos, uv_size, g_offset, g_size) = if let Some(g) = glyph {
-                (
-                    [g.x as f32, g.y as f32],
-                    [g.width as f32, g.height as f32],
-                    [g.bearing_x as f32, g.bearing_y as f32],
-                    [g.width as f32, g.height as f32],
-                )
+                ([g.x as f32, g.y as f32], [g.width as f32, g.height as f32],
+                 [g.bearing_x as f32, g.bearing_y as f32], [g.width as f32, g.height as f32])
             } else {
                 ([0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
             };
@@ -497,14 +505,13 @@ impl Renderer {
 
         // Cursor
         if cursor_visible {
-            let cx = cursor.point.column.0 as f32 * cw;
+            let cx = offset_x + cursor.point.column.0 as f32 * cw;
             let cy = cursor.point.line.0 as f32 * ch;
             instances.push(CellInstance {
                 pos: [cx, cy], size: [2.0, ch],
                 uv_pos: [0.0, 0.0], uv_size: [0.0, 0.0],
                 glyph_offset: [0.0, 0.0], glyph_size: [0.0, 0.0],
-                fg: CURSOR_COLOR,
-                bg: CURSOR_COLOR,
+                fg: CURSOR_COLOR, bg: CURSOR_COLOR,
                 flags: 0, _pad: [0; 3],
             });
         }
@@ -512,7 +519,7 @@ impl Renderer {
         if instances.is_empty() { return; }
 
         if self.atlas.dirty {
-            self.queue.write_texture(
+            gpu.queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &self.atlas_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 &self.atlas.data,
                 wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(self.atlas.atlas_width), rows_per_image: Some(self.atlas.atlas_height) },
@@ -521,14 +528,14 @@ impl Renderer {
             self.atlas.dirty = false;
         }
 
-        let instance_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let instance_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Cell Instances"),
             contents: bytemuck::cast_slice(&instances),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
         let atlas_view = self.atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bind_group"),
             layout: &self.bind_group_layout,
             entries: &[
@@ -538,23 +545,15 @@ impl Renderer {
             ],
         });
 
-        let output = match self.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(wgpu::SurfaceError::Lost) => { self.resize(self.width, self.height); return; }
-            Err(e) => { log::warn!("Surface error: {:?}", e); return; }
-        };
-
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Render Encoder") });
-
+        // Terminal render pass with viewport scissor
         {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("Terminal Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: BG_DEFAULT[0] as f64 / 255.0, g: BG_DEFAULT[1] as f64 / 255.0, b: BG_DEFAULT[2] as f64 / 255.0, a: 1.0 }),
+                        load: wgpu::LoadOp::Load, // Don't clear — egui already rendered
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -562,13 +561,20 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            // Clip to terminal viewport (right of sidebar)
+            rp.set_viewport(
+                self.viewport_x, 0.0,
+                self.viewport_width, self.viewport_height,
+                0.0, 1.0,
+            );
+            rp.set_scissor_rect(
+                self.viewport_x as u32, 0,
+                self.viewport_width as u32, self.viewport_height as u32,
+            );
             rp.set_pipeline(&self.pipeline);
             rp.set_bind_group(0, &bind_group, &[]);
             rp.set_vertex_buffer(0, instance_buffer.slice(..));
             rp.draw(0..6, 0..instances.len() as u32);
         }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
     }
 }

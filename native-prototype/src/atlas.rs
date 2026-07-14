@@ -97,7 +97,7 @@ impl GlyphAtlas {
         let metrics = Metrics::new(self.font_size, self.cell_height);
         let mut buf = Buffer::new(font_system, metrics);
         buf.set_size(font_system, Some(char_width * 2.0), Some(self.cell_height * 2.0));
-        let mut attrs = Attrs::new().family(cosmic_text::Family::Monospace);
+        let mut attrs = Attrs::new().family(cosmic_text::Family::Name("Ubuntu Mono"));
         if bold { attrs = attrs.weight(Weight::BOLD); }
         if italic { attrs = attrs.style(Style::Italic); }
         let mut s = [0u8; 4];
