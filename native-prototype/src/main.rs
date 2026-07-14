@@ -20,9 +20,19 @@ use terminal::TerminalState;
 use renderer::{GpuState, Renderer};
 use sidebar::Sidebar;
 
-#[derive(Debug)]
 enum UserEvent {
     Redraw,
+    SshReady(Result<crate::ssh::SshHandle, String>),
+}
+
+impl std::fmt::Debug for UserEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UserEvent::Redraw => write!(f, "Redraw"),
+            UserEvent::SshReady(Ok(_)) => write!(f, "SshReady(Ok)"),
+            UserEvent::SshReady(Err(e)) => write!(f, "SshReady(Err({}))", e),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -348,40 +358,23 @@ impl App {
     fn check_ssh_connect(&mut self) {
         if let Some(idx) = self.sidebar.on_connect.take() {
             if let Some(conn) = self.sidebar.connections.get(idx).cloned() {
-                log::info!("SSH connect: {} ({}:{})", conn.label, conn.host, conn.port);
+                eprintln!("[SSH] 后台连接: {} ({}:{})", conn.label, conn.host, conn.port);
 
-                // Get terminal size
                 let (cols, rows) = if let Some(r) = &self.renderer {
                     r.calculate_grid_size()
                 } else {
                     (80, 24)
                 };
 
-                // Replace current terminal with SSH session
-                let mut term = self.terminal.lock().unwrap();
-                let result = term.spawn_ssh(
-                    &conn.host, conn.port, &conn.user, &conn.auth,
-                    &conn.key_path, cols, rows,
-                );
-                drop(term);
-
-                match result {
-                    Ok(()) => {
-                        log::info!("SSH connected to {}", conn.label);
-                        // Start read loop for SSH
-                        let terminal = self.terminal.clone();
-                        let proxy = self.proxy.clone();
-                        std::thread::spawn(move || {
-                            terminal::read_loop(terminal, move || {
-                                let _ = proxy.send_event(UserEvent::Redraw);
-                            });
-                        });
-                    }
-                    Err(e) => {
-                        log::error!("SSH connect failed: {}", e);
-                        // TODO: show error in UI
-                    }
-                }
+                // 后台线程连接，不阻塞 UI，不碰当前终端
+                let proxy = self.proxy.clone();
+                std::thread::spawn(move || {
+                    let kp = if conn.key_path.is_empty() { None } else { Some(conn.key_path.as_str()) };
+                    let result = crate::ssh::connect(
+                        &conn.host, conn.port, &conn.user, &conn.auth, kp, cols, rows,
+                    );
+                    let _ = proxy.send_event(UserEvent::SshReady(result));
+                });
             }
         }
     }
@@ -462,7 +455,38 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: UserEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Redraw => {}
+            UserEvent::SshReady(result) => {
+                match result {
+                    Ok(handle) => {
+                        eprintln!("[SSH] 连接成功，切换终端");
+                        let (cols, rows) = if let Some(r) = &self.renderer {
+                            r.calculate_grid_size()
+                        } else { (80, 24) };
+
+                        // 替换终端（此时才销毁旧终端）
+                        let mut term = self.terminal.lock().unwrap();
+                        term.apply_ssh_handle(handle, cols, rows);
+                        drop(term);
+
+                        // 启动 read loop
+                        let terminal = self.terminal.clone();
+                        let proxy = self.proxy.clone();
+                        std::thread::spawn(move || {
+                            terminal::read_loop(terminal, move || {
+                                let _ = proxy.send_event(UserEvent::Redraw);
+                            });
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[SSH] 连接失败: {}", e);
+                        // TODO: 在 UI 上显示错误
+                    }
+                }
+            }
+        }
         self.do_render();
         self.check_ssh_connect();
     }

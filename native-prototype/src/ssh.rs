@@ -43,7 +43,8 @@ pub fn connect(
     log::info!("SSH handshake ok");
 
     // 3. Authenticate
-    match auth {
+    // 尝试顺序：显式指定 > agent > 默认密钥
+    let auth_ok = match auth {
         "key" => {
             let kp = key_path.unwrap_or("~/.ssh/id_rsa");
             let expanded = shellexpand::tilde(kp);
@@ -51,20 +52,36 @@ pub fn connect(
                 user, None,
                 std::path::Path::new(expanded.as_ref()),
                 None,
-            ).map_err(|e| format!("密钥认证失败: {}", e))?;
+            ).is_ok()
         }
         "agent" => {
-            session.userauth_agent(user)
-                .map_err(|e| format!("Agent 认证失败: {}", e))?;
+            session.userauth_agent(user).is_ok()
         }
         _ => {
-            return Err("暂不支持密码认证（原型阶段）".to_string());
+            // keyring 或其他：依次尝试 agent → key → 带密码的 key
+            let mut ok = session.userauth_agent(user).is_ok();
+            if !ok {
+                // 尝试默认密钥
+                let default_keys = ["~/.ssh/id_rsa", "~/.ssh/id_ed25519", "~/.ssh/id_ecdsa"];
+                for kp in &default_keys {
+                    let expanded = shellexpand::tilde(kp);
+                    let path = std::path::Path::new(expanded.as_ref());
+                    if path.exists() {
+                        if session.userauth_pubkey_file(user, None, path, None).is_ok() {
+                            ok = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            ok
         }
+    };
+
+    if !auth_ok || !session.authenticated() {
+        return Err(format!("SSH 认证失败 (auth={}, user={})", auth, user));
     }
 
-    if !session.authenticated() {
-        return Err("SSH 认证失败".to_string());
-    }
     log::info!("SSH auth ok");
 
     // 4. Open channel + PTY + shell

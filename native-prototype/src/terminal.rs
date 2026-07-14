@@ -83,46 +83,12 @@ impl TerminalState {
         self.pty_master = Some(pty_pair.master);
     }
 
-    /// Connect via SSH. This spawns the SSH connection on a dedicated thread
-    /// and sets up reader/writer for the terminal.
-    pub fn spawn_ssh(
-        &mut self,
-        host: &str,
-        port: u16,
-        user: &str,
-        auth: &str,
-        key_path: &str,
-        cols: u16,
-        rows: u16,
-    ) -> Result<(), String> {
+    /// 设置 SSH 连接结果（由异步回调调用）
+    pub fn apply_ssh_handle(&mut self, handle: crate::ssh::SshHandle, cols: u16, rows: u16) {
         self.init_term(cols, rows);
-
-        let host = host.to_string();
-        let user = user.to_string();
-        let auth = auth.to_string();
-        let key_path = key_path.to_string();
-
-        // SSH connect runs on a separate thread (ssh2::Session is !Send)
-        // We use a oneshot channel to get the result back
-        let (result_tx, result_rx) = std::sync::mpsc::channel();
-
-        std::thread::spawn(move || {
-            let kp = if key_path.is_empty() { None } else { Some(key_path.as_str()) };
-            let result = crate::ssh::connect(&host, port, &user, &auth, kp, cols, rows);
-            let _ = result_tx.send(result);
-        });
-
-        // Wait for connection (blocking, but this is called from the UI thread
-        // during setup — could be made async later)
-        let ssh_handle = result_rx.recv()
-            .map_err(|_| "SSH 连接线程异常退出".to_string())?
-            .map_err(|e| format!("SSH 连接失败: {}", e))?;
-
-        self.pty_reader = Some(ssh_handle.reader);
-        self.writer = Some(WriterKind::Channel(ssh_handle.write_tx));
-        self.pty_master = None; // No PTY master for SSH
-
-        Ok(())
+        self.pty_reader = Some(handle.reader);
+        self.writer = Some(WriterKind::Channel(handle.write_tx));
+        self.pty_master = None;
     }
 
     pub fn write_input(&mut self, text: &str) {
