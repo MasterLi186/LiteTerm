@@ -128,14 +128,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+// AdventureTime 配色方案（来自 Tabby）
 const ANSI_COLORS: [[u8; 3]; 16] = [
-    [0,0,0],[205,49,49],[13,188,121],[229,229,16],
-    [36,114,200],[188,63,188],[17,168,205],[229,229,229],
-    [102,102,102],[241,76,76],[35,209,139],[245,245,67],
-    [59,142,234],[214,112,214],[41,184,219],[255,255,255],
+    // normal: black,    red,       green,     yellow
+    [0x05,0x04,0x04], [0xbd,0x00,0x13], [0x4a,0xb1,0x18], [0xe7,0x74,0x1e],
+    // normal: blue,     magenta,   cyan,      white
+    [0x0f,0x4a,0xc6], [0x66,0x59,0x93], [0x70,0xa5,0x98], [0xf8,0xdc,0xc0],
+    // bright: black,    red,       green,     yellow
+    [0x4e,0x7c,0xbf], [0xfc,0x5f,0x5a], [0x9e,0xff,0x6e], [0xef,0xc1,0x1a],
+    // bright: blue,     magenta,   cyan,      white
+    [0x19,0x97,0xc6], [0x9b,0x59,0x53], [0xc8,0xfa,0xf4], [0xf6,0xf5,0xfb],
 ];
-const BG_DEFAULT: [u8; 4] = [15, 20, 25, 255];
-const FG_DEFAULT: [u8; 4] = [229, 229, 229, 255];
+const BG_DEFAULT: [u8; 4] = [0x1f, 0x1d, 0x45, 255]; // #1f1d45
+const FG_DEFAULT: [u8; 4] = [0xf8, 0xdc, 0xc0, 255]; // #f8dcc0
+const CURSOR_COLOR: [f32; 4] = [0xef as f32/255.0, 0xbf as f32/255.0, 0x38 as f32/255.0, 1.0]; // #efbf38
+const SELECTION_BG: [f32; 4] = [0x26 as f32/255.0, 0x4f as f32/255.0, 0x78 as f32/255.0, 1.0]; // #264f78
 
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
@@ -442,7 +449,7 @@ impl Renderer {
             // Selection highlight
             if Self::is_selected(col_idx, row_idx, sel_start, sel_end) {
                 std::mem::swap(&mut fg, &mut bg);
-                if bg == bg_default_f { bg = [0.2, 0.4, 0.6, 1.0]; }
+                if bg == bg_default_f { bg = SELECTION_BG; }
             }
 
             // Build GPU flags
@@ -496,8 +503,8 @@ impl Renderer {
                 pos: [cx, cy], size: [2.0, ch],
                 uv_pos: [0.0, 0.0], uv_size: [0.0, 0.0],
                 glyph_offset: [0.0, 0.0], glyph_size: [0.0, 0.0],
-                fg: [0.0, 0.83, 1.0, 1.0],
-                bg: [0.0, 0.83, 1.0, 1.0],
+                fg: CURSOR_COLOR,
+                bg: CURSOR_COLOR,
                 flags: 0, _pad: [0; 3],
             });
         }
