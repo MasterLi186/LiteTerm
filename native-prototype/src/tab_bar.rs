@@ -72,12 +72,15 @@ pub fn render_tab_bar(ctx: &egui::Context, tab_manager: &TabManager) -> TabBarAc
                         });
                     });
 
-                    let full_resp = resp.response.interact(egui::Sense::click());
-                    if full_resp.clicked() {
-                        action.switch_to = Some(i);
-                    }
-                    if full_resp.middle_clicked() {
-                        action.close = Some(i);
+                    // 只在 × 没被点时，外层 click 才切换标签
+                    if action.close.is_none() {
+                        let full_resp = resp.response.interact(egui::Sense::click());
+                        if full_resp.clicked() {
+                            action.switch_to = Some(i);
+                        }
+                        if full_resp.middle_clicked() {
+                            action.close = Some(i);
+                        }
                     }
                 }
 
