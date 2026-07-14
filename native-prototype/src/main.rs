@@ -40,6 +40,7 @@ struct App {
     terminal: Arc<Mutex<TerminalState>>,
     cursor_visible: bool,
     cursor_timer: Instant,
+    startup_time: Instant,
     proxy: EventLoopProxy<UserEvent>,
     modifiers: Modifiers,
     // egui
@@ -69,6 +70,7 @@ impl App {
             terminal: Arc::new(Mutex::new(TerminalState::new())),
             cursor_visible: true,
             cursor_timer: Instant::now(),
+            startup_time: Instant::now(),
             proxy,
             modifiers: Modifiers::default(),
             egui_ctx: {
@@ -472,6 +474,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let response = egui_state.on_window_event(window, &event);
                 if response.consumed {
                     self.do_render();
+                    self.check_ssh_connect();
                     return;
                 }
             }
@@ -615,6 +618,8 @@ impl ApplicationHandler<UserEvent> for App {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed { return; }
+                // 启动后 500ms 内忽略键盘（防止窗口创建时的虚假按键事件）
+                if self.startup_time.elapsed().as_millis() < 500 { return; }
                 self.cursor_visible = true;
                 self.cursor_timer = Instant::now();
 

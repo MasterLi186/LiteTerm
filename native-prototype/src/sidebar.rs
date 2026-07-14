@@ -186,10 +186,16 @@ impl Sidebar {
                         });
 
                         if response.inner.clicked() {
+                            // 单击已选中的连接 → 触发连接（替代双击，更可靠）
+                            if self.selected == Some(i) {
+                                self.on_connect = Some(i);
+                                eprintln!("[SIDEBAR] 连接触发: {} ({}:{})", conn.label, conn.host, conn.port);
+                            }
                             self.selected = Some(i);
                         }
                         if response.inner.double_clicked() {
                             self.on_connect = Some(i);
+                            eprintln!("[SIDEBAR] 双击连接: {} ({}:{})", conn.label, conn.host, conn.port);
                         }
                     }
 
