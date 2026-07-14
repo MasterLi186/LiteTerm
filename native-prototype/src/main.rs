@@ -12,6 +12,8 @@ mod terminal;
 mod renderer;
 mod atlas;
 mod sidebar;
+mod connections;
+mod ssh;
 
 use atlas::is_word_char;
 use terminal::TerminalState;
@@ -341,6 +343,47 @@ impl App {
         term.write_input(&seq);
     }
 
+    fn check_ssh_connect(&mut self) {
+        if let Some(idx) = self.sidebar.on_connect.take() {
+            if let Some(conn) = self.sidebar.connections.get(idx).cloned() {
+                log::info!("SSH connect: {} ({}:{})", conn.label, conn.host, conn.port);
+
+                // Get terminal size
+                let (cols, rows) = if let Some(r) = &self.renderer {
+                    r.calculate_grid_size()
+                } else {
+                    (80, 24)
+                };
+
+                // Replace current terminal with SSH session
+                let mut term = self.terminal.lock().unwrap();
+                let result = term.spawn_ssh(
+                    &conn.host, conn.port, &conn.user, &conn.auth,
+                    &conn.key_path, cols, rows,
+                );
+                drop(term);
+
+                match result {
+                    Ok(()) => {
+                        log::info!("SSH connected to {}", conn.label);
+                        // Start read loop for SSH
+                        let terminal = self.terminal.clone();
+                        let proxy = self.proxy.clone();
+                        std::thread::spawn(move || {
+                            terminal::read_loop(terminal, move || {
+                                let _ = proxy.send_event(UserEvent::Redraw);
+                            });
+                        });
+                    }
+                    Err(e) => {
+                        log::error!("SSH connect failed: {}", e);
+                        // TODO: show error in UI
+                    }
+                }
+            }
+        }
+    }
+
     fn sync_terminal_size(&mut self) {
         if let Some(renderer) = &self.renderer {
             let (cols, rows) = renderer.calculate_grid_size();
@@ -417,6 +460,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: UserEvent) {
         self.do_render();
+        self.check_ssh_connect();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -667,7 +711,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.do_render();
             }
 
-            WindowEvent::RedrawRequested => { self.do_render(); }
+            WindowEvent::RedrawRequested => {
+                self.do_render();
+                self.check_ssh_connect();
+            }
             _ => {}
         }
     }

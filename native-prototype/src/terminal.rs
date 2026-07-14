@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -25,9 +25,15 @@ impl EventListener for Listener {
     fn send_event(&self, _event: Event) {}
 }
 
+/// Writer abstraction: either direct Box<dyn Write> or mpsc sender
+enum WriterKind {
+    Direct(Box<dyn Write + Send>),
+    Channel(mpsc::Sender<Vec<u8>>),
+}
+
 pub struct TerminalState {
     term: Option<Term<Listener>>,
-    pty_writer: Option<Box<dyn Write + Send>>,
+    writer: Option<WriterKind>,
     pty_reader: Option<Box<dyn Read + Send>>,
     pty_master: Option<Box<dyn MasterPty + Send>>,
     cols: u16,
@@ -39,7 +45,7 @@ impl TerminalState {
     pub fn new() -> Self {
         Self {
             term: None,
-            pty_writer: None,
+            writer: None,
             pty_reader: None,
             pty_master: None,
             cols: 80,
@@ -48,14 +54,16 @@ impl TerminalState {
         }
     }
 
-    pub fn spawn_shell(&mut self, cols: u16, rows: u16) {
+    fn init_term(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
-
         let config = TermConfig::default();
         let dims = TermDimensions { cols: cols as usize, rows: rows as usize };
-        let term = Term::new(config, &dims, Listener);
-        self.term = Some(term);
+        self.term = Some(Term::new(config, &dims, Listener));
+    }
+
+    pub fn spawn_shell(&mut self, cols: u16, rows: u16) {
+        self.init_term(cols, rows);
 
         let pty_system = native_pty_system();
         let pty_pair = pty_system
@@ -71,14 +79,62 @@ impl TerminalState {
         let writer = pty_pair.master.take_writer().expect("获取 PTY writer 失败");
 
         self.pty_reader = Some(reader);
-        self.pty_writer = Some(writer);
+        self.writer = Some(WriterKind::Direct(writer));
         self.pty_master = Some(pty_pair.master);
     }
 
+    /// Connect via SSH. This spawns the SSH connection on a dedicated thread
+    /// and sets up reader/writer for the terminal.
+    pub fn spawn_ssh(
+        &mut self,
+        host: &str,
+        port: u16,
+        user: &str,
+        auth: &str,
+        key_path: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        self.init_term(cols, rows);
+
+        let host = host.to_string();
+        let user = user.to_string();
+        let auth = auth.to_string();
+        let key_path = key_path.to_string();
+
+        // SSH connect runs on a separate thread (ssh2::Session is !Send)
+        // We use a oneshot channel to get the result back
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let kp = if key_path.is_empty() { None } else { Some(key_path.as_str()) };
+            let result = crate::ssh::connect(&host, port, &user, &auth, kp, cols, rows);
+            let _ = result_tx.send(result);
+        });
+
+        // Wait for connection (blocking, but this is called from the UI thread
+        // during setup — could be made async later)
+        let ssh_handle = result_rx.recv()
+            .map_err(|_| "SSH 连接线程异常退出".to_string())?
+            .map_err(|e| format!("SSH 连接失败: {}", e))?;
+
+        self.pty_reader = Some(ssh_handle.reader);
+        self.writer = Some(WriterKind::Channel(ssh_handle.write_tx));
+        self.pty_master = None; // No PTY master for SSH
+
+        Ok(())
+    }
+
     pub fn write_input(&mut self, text: &str) {
-        if let Some(writer) = &mut self.pty_writer {
-            let _ = writer.write_all(text.as_bytes());
-            let _ = writer.flush();
+        match &mut self.writer {
+            Some(WriterKind::Direct(w)) => {
+                let _ = w.write_all(text.as_bytes());
+                let _ = w.flush();
+            }
+            Some(WriterKind::Channel(tx)) => {
+                let _ = tx.send(text.as_bytes().to_vec());
+            }
+            None => {}
         }
     }
 
@@ -93,13 +149,13 @@ impl TerminalState {
         if let Some(master) = &self.pty_master {
             let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         }
+        // TODO: SSH resize (would need to send window-change request through channel)
     }
 
     pub fn scroll(&mut self, delta: i32) {
         if let Some(t) = &self.term {
             let max = t.grid().history_size() as i32;
             self.scroll_offset = (self.scroll_offset + delta).clamp(0, max);
-            // alacritty_terminal 的 display_offset 需要通过 scroll_display 设置
         }
     }
 
@@ -135,14 +191,12 @@ where
     let mut parser = alacritty_terminal::vte::ansi::Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new();
 
     loop {
-        // 阻塞读（不持锁）
         let n = match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
-            Err(e) => { log::error!("PTY 读取错误: {}", e); break; }
+            Err(e) => { log::error!("读取错误: {}", e); break; }
         };
 
-        // 短暂持锁写入终端状态，立即释放
         {
             let mut term_state = terminal.lock().unwrap();
             if let Some(t) = &mut term_state.term {
