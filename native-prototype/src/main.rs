@@ -486,13 +486,21 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         // Pass events to egui first
+        let mut egui_consumed = false;
         if let Some(egui_state) = &mut self.egui_state {
             if let Some(window) = &self.window {
                 let response = egui_state.on_window_event(window, &event);
                 if response.consumed {
+                    egui_consumed = true;
                     self.do_render();
                     self.check_ssh_connect();
-                    return;
+                    // 滚轮和键盘事件即使 egui 消费了也要继续传给终端
+                    let pass_through = matches!(event,
+                        WindowEvent::MouseWheel { .. } | WindowEvent::KeyboardInput { .. }
+                    ) && self.is_in_terminal(self.mouse_position.0, self.mouse_position.1);
+                    if !pass_through {
+                        return;
+                    }
                 }
             }
         }
