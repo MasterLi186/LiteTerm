@@ -114,9 +114,10 @@ impl ApplicationHandler for App {
                 if event.state != ElementState::Pressed {
                     return;
                 }
-                // 重置光标闪烁
                 self.cursor_visible = true;
                 self.cursor_timer = Instant::now();
+
+                let modifiers = event.physical_key;
 
                 // 特殊键转义序列
                 let esc = match event.logical_key {
@@ -140,21 +141,24 @@ impl ApplicationHandler for App {
                 let mut term = self.terminal.lock().unwrap();
                 if let Some(seq) = esc {
                     term.write_input(seq);
-                } else if let Some(text) = &event.text {
-                    let s = text.as_str();
-                    if !s.is_empty() {
-                        // Ctrl+字母 → 转为控制字符
-                        if event.state == ElementState::Pressed && s.len() == 1 {
-                            let ch = s.as_bytes()[0];
-                            if ch <= 26 && ch > 0 {
-                                // 已经是控制字符（winit 在 Ctrl 按下时返回 0x01-0x1a）
-                                term.write_input(s);
-                                return;
-                            }
+                } else if let Key::Character(ref ch) = event.logical_key {
+                    // Ctrl+字母：winit 的 logical_key 仍是字母，需要手动转控制字符
+                    // 检查 text 是否为控制字符（winit 在 Ctrl 按下时 text 为 \x01-\x1a）
+                    if let Some(text) = &event.text {
+                        let bytes = text.as_str().as_bytes();
+                        if bytes.len() == 1 && bytes[0] <= 0x1a {
+                            // Ctrl+A=0x01 ... Ctrl+Z=0x1a
+                            term.write_input(text.as_str());
+                            return;
                         }
-                        term.write_input(s);
+                    }
+                    term.write_input(ch.as_str());
+                } else if let Some(text) = &event.text {
+                    if !text.as_str().is_empty() {
+                        term.write_input(text.as_str());
                     }
                 }
+                let _ = modifiers; // suppress warning
             }
 
             WindowEvent::RedrawRequested => {
