@@ -20,7 +20,7 @@ pub struct Sidebar {
     pub width: f32,
     pub connections: Vec<SshConnection>,
     pub selected: Option<usize>,
-    pub on_connect: Option<usize>,
+    pub on_connect: Option<SshConnection>,
     collapsed_groups: std::collections::HashSet<String>,
 }
 
@@ -67,12 +67,16 @@ impl Sidebar {
         }
     }
 
+    pub fn take_connect(&mut self) -> Option<SshConnection> {
+        self.on_connect.take()
+    }
+
     pub fn ui(&mut self, ctx: &egui::Context) -> f32 {
         if !self.visible {
             return 0.0;
         }
 
-        self.on_connect = None;
+        // Don't clear on_connect here — it's taken by the caller via take_connect()
         let panel_width = self.width;
 
         egui::SidePanel::left("sidebar")
@@ -186,16 +190,13 @@ impl Sidebar {
                         });
 
                         if response.inner.clicked() {
-                            // 单击已选中的连接 → 触发连接（替代双击，更可靠）
                             if self.selected == Some(i) {
-                                self.on_connect = Some(i);
-                                eprintln!("[SIDEBAR] 连接触发: {} ({}:{})", conn.label, conn.host, conn.port);
+                                self.on_connect = Some(conn.clone());
                             }
                             self.selected = Some(i);
                         }
                         if response.inner.double_clicked() {
-                            self.on_connect = Some(i);
-                            eprintln!("[SIDEBAR] 双击连接: {} ({}:{})", conn.label, conn.host, conn.port);
+                            self.on_connect = Some(conn.clone());
                         }
                     }
 

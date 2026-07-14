@@ -63,6 +63,11 @@ impl TerminalState {
     }
 
     pub fn spawn_shell(&mut self, cols: u16, rows: u16) {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        self.spawn_shell_with_path(&shell, cols, rows);
+    }
+
+    pub fn spawn_shell_with_path(&mut self, shell: &str, cols: u16, rows: u16) {
         self.init_term(cols, rows);
 
         let pty_system = native_pty_system();
@@ -70,8 +75,7 @@ impl TerminalState {
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .expect("打开 PTY 失败");
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let mut cmd = CommandBuilder::new(&shell);
+        let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
         pty_pair.slave.spawn_command(cmd).expect("启动 shell 失败");
 

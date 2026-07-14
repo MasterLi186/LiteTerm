@@ -214,8 +214,8 @@ pub struct Renderer {
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
-    // Terminal viewport offset (pixels from left, for sidebar)
     pub viewport_x: f32,
+    pub viewport_y: f32,
     pub viewport_width: f32,
     pub viewport_height: f32,
 }
@@ -336,13 +336,15 @@ impl Renderer {
             font_system, swash_cache, atlas, atlas_texture,
             pipeline, bind_group_layout, uniform_buffer, sampler,
             viewport_x: 0.0,
+            viewport_y: 0.0,
             viewport_width: gpu.width as f32,
             viewport_height: gpu.height as f32,
         }
     }
 
-    pub fn set_viewport(&mut self, x: f32, width: f32, height: f32, gpu: &GpuState) {
+    pub fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32, gpu: &GpuState) {
         self.viewport_x = x;
+        self.viewport_y = y;
         self.viewport_width = width;
         self.viewport_height = height;
         // shader 的 screen_size 用 viewport 宽高（不是整个窗口），
@@ -564,14 +566,14 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            // Clip to terminal viewport (right of sidebar)
+            // Clip to terminal viewport (right of sidebar, below tab bar)
             rp.set_viewport(
-                self.viewport_x, 0.0,
+                self.viewport_x, self.viewport_y,
                 self.viewport_width, self.viewport_height,
                 0.0, 1.0,
             );
             rp.set_scissor_rect(
-                self.viewport_x as u32, 0,
+                self.viewport_x as u32, self.viewport_y as u32,
                 self.viewport_width as u32, self.viewport_height as u32,
             );
             rp.set_pipeline(&self.pipeline);

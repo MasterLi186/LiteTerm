@@ -29,3 +29,4 @@ serde = { version = "1", features = ["derive"] }
 dirs = "6"
 shellexpand = "3"
 os_pipe = "1"
+uuid = { version = "1", features = ["v4"] }
