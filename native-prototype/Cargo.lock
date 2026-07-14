@@ -1066,6 +1066,7 @@ name = "liteterm-native"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "bytemuck",
  "cosmic-text",
  "env_logger",
  "log",

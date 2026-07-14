@@ -21,7 +21,7 @@ impl Dimensions for TermDimensions {
 
 /// 事件监听器（alacritty_terminal 需要）
 #[derive(Clone)]
-struct Listener;
+pub struct Listener;
 
 impl EventListener for Listener {
     fn send_event(&self, _event: Event) {}
