@@ -418,8 +418,9 @@ impl Renderer {
 
             let flags = cell.flags;
 
-            // HIDDEN: don't render character
-            if flags.contains(CellFlags::HIDDEN) {
+            // HIDDEN 或宽字符续位：跳过（宽字符在首位已按 2 列宽渲染）
+            if flags.contains(CellFlags::HIDDEN)
+                || flags.contains(CellFlags::WIDE_CHAR_SPACER) {
                 continue;
             }
 
@@ -467,7 +468,7 @@ impl Renderer {
 
             let glyph = self.atlas.ensure_glyph(&mut self.font_system, &mut self.swash_cache, ch_char, bold, italic);
 
-            let cell_w = if crate::atlas::is_wide_char(ch_char) { cw * 2.0 } else { cw };
+            let cell_w = if flags.contains(CellFlags::WIDE_CHAR) { cw * 2.0 } else { cw };
             let (uv_pos, uv_size, g_offset, g_size) = if let Some(g) = glyph {
                 (
                     [g.x as f32, g.y as f32],
