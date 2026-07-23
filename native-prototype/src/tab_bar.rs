@@ -54,7 +54,7 @@ pub fn render_tab_bar(ctx: &egui::Context, tab_manager: &TabManager) -> TabBarAc
                     ui.painter().rect_filled(tab_rect, 4.0, bg);
                     if tab_resp.hovered() && !is_active {
                         ui.painter().rect_filled(tab_rect, 4.0,
-                            egui::Color32::from_rgba_premultiplied(0x30, 0x36, 0x3d, 0x60));
+                            egui::Color32::from_rgba_unmultiplied(0x30, 0x36, 0x3d, 0x60));
                     }
 
                     // 类型圆点
@@ -110,7 +110,7 @@ pub fn render_tab_bar(ctx: &egui::Context, tab_manager: &TabManager) -> TabBarAc
                 );
                 if plus_resp.hovered() {
                     ui.painter().rect_filled(plus_rect, 4.0,
-                        egui::Color32::from_rgba_premultiplied(0x30, 0x36, 0x3d, 0x80));
+                        egui::Color32::from_rgba_unmultiplied(0x30, 0x36, 0x3d, 0x80));
                 }
                 ui.painter().text(
                     plus_rect.center(),

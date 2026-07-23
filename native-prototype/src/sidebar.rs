@@ -227,7 +227,7 @@ impl Sidebar {
                                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(panel_width - 20.0, 18.0), egui::Sense::click());
                                 if is_selected || resp.hovered() {
                                     let bg = if is_selected { egui::Color32::from_rgb(0x1c, 0x20, 0x28) }
-                                    else { egui::Color32::from_rgba_premultiplied(0x30, 0x36, 0x3d, 0x60) };
+                                    else { egui::Color32::from_rgba_unmultiplied(0x30, 0x36, 0x3d, 0x60) };
                                     ui.painter().rect_filled(rect, 3.0, bg);
                                 }
                                 let tr = rect.shrink2(egui::vec2(4.0, 0.0));
