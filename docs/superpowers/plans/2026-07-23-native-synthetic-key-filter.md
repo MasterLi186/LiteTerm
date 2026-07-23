@@ -4,7 +4,7 @@
 
 **Goal:** 在 Native 键盘事件入口丢弃 X11/winit 合成按键，消除启动时提示符前后出现相同随机字符串的问题。
 
-**Architecture:** 提取一个纯键盘事件决策函数，以 `ElementState` 和 `is_synthetic` 判断事件是否可进入 Native 按键处理。synthetic 事件在传给 egui 和应用快捷键前直接返回；真实释放事件仍可传给 egui，但不会写入终端。删除原有 500ms 时间门限，保留真实按键 repeat 和所有现有快捷键映射。
+**Architecture:** 提取纯键盘路由函数，以 `ElementState` 和 `is_synthetic` 返回 `Drop`、`EguiOnly` 或 `App`。synthetic `Pressed` 在 egui 前丢弃；synthetic 与真实 `Released` 只更新 egui 状态；真实 `Pressed` 才进入 Native 快捷键和终端处理。删除原有 500ms 时间门限，保留真实按键 repeat 和所有现有快捷键映射。
 
 **Tech Stack:** Rust、winit 0.30、X11、现有 Native 单元测试与 `native-prototype/build.sh`
 
@@ -25,39 +25,27 @@
 
 - [ ] **Step 1: 写入失败测试**
 
-在 `layout_tests` 中导入 `should_handle_keyboard_input` 和 `ElementState`，增加：
+在 `layout_tests` 中导入 `keyboard_input_route`、`KeyboardInputRoute` 和 `ElementState`，增加：
 
 ```rust
 #[test]
-fn synthetic_focus_keypress_is_never_handled() {
-    assert!(!should_handle_keyboard_input(
-        ElementState::Pressed,
-        true,
-        false,
-    ));
-}
-
-#[test]
-fn physical_pressed_is_handled_but_released_is_not() {
-    assert!(should_handle_keyboard_input(
-        ElementState::Pressed,
-        false,
-        false,
-    ));
-    assert!(!should_handle_keyboard_input(
-        ElementState::Released,
-        false,
-        false,
-    ));
-}
-
-#[test]
-fn physical_repeat_press_remains_handled() {
-    assert!(should_handle_keyboard_input(
-        ElementState::Pressed,
-        false,
-        true,
-    ));
+fn keyboard_input_route_separates_synthetic_and_release_events() {
+    assert_eq!(
+        keyboard_input_route(ElementState::Pressed, true),
+        KeyboardInputRoute::Drop,
+    );
+    assert_eq!(
+        keyboard_input_route(ElementState::Released, true),
+        KeyboardInputRoute::EguiOnly,
+    );
+    assert_eq!(
+        keyboard_input_route(ElementState::Pressed, false),
+        KeyboardInputRoute::App,
+    );
+    assert_eq!(
+        keyboard_input_route(ElementState::Released, false),
+        KeyboardInputRoute::EguiOnly,
+    );
 }
 ```
 
@@ -67,54 +55,58 @@ Run:
 
 ```bash
 cd native-prototype
-cargo test synthetic_focus_keypress_is_never_handled
+cargo test keyboard_input_route_separates_synthetic_and_release_events
 ```
 
-Expected: 编译失败，提示 `should_handle_keyboard_input` 尚未定义。
+Expected: 编译失败，提示 `keyboard_input_route` 或 `KeyboardInputRoute` 尚未定义。
 
 - [ ] **Step 3: 实现纯决策函数**
 
 在 `point_in_terminal_bounds` 附近增加：
 
 ```rust
-fn should_handle_keyboard_input(
-    state: ElementState,
-    is_synthetic: bool,
-    _repeat: bool,
-) -> bool {
-    state == ElementState::Pressed && !is_synthetic
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyboardInputRoute {
+    Drop,
+    EguiOnly,
+    App,
+}
+
+fn keyboard_input_route(state: ElementState, is_synthetic: bool) -> KeyboardInputRoute {
+    match (state, is_synthetic) {
+        (ElementState::Pressed, true) => KeyboardInputRoute::Drop,
+        (ElementState::Pressed, false) => KeyboardInputRoute::App,
+        (ElementState::Released, _) => KeyboardInputRoute::EguiOnly,
+    }
 }
 ```
 
-- [ ] **Step 4: 在 egui 前丢弃 synthetic 事件**
+- [ ] **Step 4: 在 egui 前仅丢弃 synthetic Pressed**
 
 在 `window_event` 开头增加：
 
 ```rust
-if matches!(
-    &event,
+let keyboard_route = match &event {
     WindowEvent::KeyboardInput {
-        is_synthetic: true,
-        ..
-    }
-) {
+        event,
+        is_synthetic,
+    } => Some(keyboard_input_route(event.state, *is_synthetic)),
+    _ => None,
+};
+if keyboard_route == Some(KeyboardInputRoute::Drop) {
     return;
 }
 ```
 
-随后计算 `is_tab_key` 时显式读取 `is_synthetic` 并使用决策函数：
+随后计算 `is_tab_key` 时复用路由结果：
 
 ```rust
-let is_tab_key = if let WindowEvent::KeyboardInput {
-    event,
-    is_synthetic,
-} = &event
-{
-    should_handle_keyboard_input(event.state, *is_synthetic, event.repeat)
-        && matches!(event.logical_key, Key::Named(NamedKey::Tab))
-} else {
-    false
-};
+let is_tab_key = keyboard_route == Some(KeyboardInputRoute::App)
+    && matches!(
+        &event,
+        WindowEvent::KeyboardInput { event, .. }
+            if matches!(event.logical_key, Key::Named(NamedKey::Tab))
+    );
 ```
 
 - [ ] **Step 5: 替换终端处理门限**
@@ -122,11 +114,8 @@ let is_tab_key = if let WindowEvent::KeyboardInput {
 将实际键盘处理分支改为：
 
 ```rust
-WindowEvent::KeyboardInput {
-    event,
-    is_synthetic,
-} => {
-    if !should_handle_keyboard_input(event.state, is_synthetic, event.repeat) {
+WindowEvent::KeyboardInput { event, .. } => {
+    if keyboard_route != Some(KeyboardInputRoute::App) {
         return;
     }
     self.cursor_visible = true;
@@ -152,15 +141,13 @@ Run:
 
 ```bash
 cd native-prototype
-cargo test synthetic_focus_keypress_is_never_handled
-cargo test physical_pressed_is_handled_but_released_is_not
-cargo test physical_repeat_press_remains_handled
+cargo test keyboard_input_route_separates_synthetic_and_release_events
 cargo test
 cargo fmt --check
 cargo clippy --all-targets
 ```
 
-Expected: 三个目标测试和全部 Native 测试通过；本次代码不产生新的 Clippy 警告。
+Expected: 路由目标测试和全部 Native 测试通过；本次代码不产生新的 Clippy 警告。
 
 ### Task 2: X11 聚焦复现与最终构建
 

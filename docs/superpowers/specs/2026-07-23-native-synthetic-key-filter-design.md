@@ -14,10 +14,11 @@ PTY 先在提示符前回显字符，Bash/readline 随后输出提示符并重�
 
 ## 修复方案
 
-在 `window_event` 的键盘事件入口显式读取 `is_synthetic`：
+在 `window_event` 的键盘事件入口显式读取 `is_synthetic`，并将事件分为三类：
 
-- synthetic 键盘事件永不进入快捷键、Tab 或终端写入逻辑。
-- 仅处理真实的 `Pressed` 事件。
+- synthetic `Pressed` 在传给 egui 前直接丢弃，永不进入快捷键、Tab 或终端写入逻辑。
+- synthetic `Released` 仅传给 egui，用于清理窗口失焦时的按键状态，不进入应用快捷键或终端。
+- 真实 `Pressed` 进入现有应用和终端处理，真实 `Released` 仅传给 egui。
 - 删除启动后 500ms 忽略所有键盘事件的时间窗。
 - 保留真实按键的 repeat 行为、终端特殊键、控制字符和应用快捷键。
 - `startup_time` 继续供现有鼠标诊断时间戳使用，不删除该字段。
@@ -26,11 +27,12 @@ PTY 先在提示符前回显字符，Bash/readline 随后输出提示符并重�
 
 ## 测试与验证
 
-提取纯键盘事件决策函数，并覆盖：
+提取返回 `Drop`、`EguiOnly` 或 `App` 的纯路由决策函数，并覆盖：
 
-- synthetic `Pressed` 始终拒绝，与启动耗时无关。
-- 真实 `Pressed` 被接受。
-- 真实 `Released` 被拒绝。
-- 真实 repeat `Pressed` 仍被接受。
+- synthetic `Pressed` 路由到 `Drop`。
+- synthetic `Released` 路由到 `EguiOnly`。
+- 真实 `Pressed` 路由到 `App`。
+- 真实 `Released` 路由到 `EguiOnly`。
+- 真实 repeat 沿用 `Pressed` 路由，仍进入 `App`。
 
 运行独立 Native 构建与全部测试。现场验证使用 X11 自动化：启动前保持一个可打印键按下，聚焦 Native 后释放。修复后首个提示符前后均不得出现该字符，随后真实键盘输入仍应正常工作。
