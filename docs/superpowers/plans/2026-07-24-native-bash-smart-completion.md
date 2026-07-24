@@ -1394,6 +1394,7 @@ impl ShellBootstrap for FakeBootstrap {
     fn deploy_bash_runtime(
         &mut self,
         session: &CompletionSessionKey,
+        bash_path: &str,
     ) -> Result<RemoteBashRuntime, String> {
         self.calls.push("deploy");
         if matches!(self.failure, FakeFailure::Deploy) {
@@ -1401,6 +1402,7 @@ impl ShellBootstrap for FakeBootstrap {
         }
         Ok(RemoteBashRuntime {
             session: session.clone(),
+            bash_path: bash_path.into(),
             rc_path: "/tmp/session.bash".into(),
             candidate_path: "/tmp/candidate".into(),
             widget_sequence: "\x1b[777;1~".into(),
@@ -1431,6 +1433,7 @@ fn bootstrap_success_uses_integrated_bash_without_plain_fallback() {
     let mut transport = FakeBootstrap::bash_success();
     let runtime = bootstrap_shell(&mut transport, test_session()).unwrap();
     assert!(runtime.is_some());
+    assert_eq!(runtime.as_ref().unwrap().bash_path, "/bin/bash");
     assert_eq!(
         transport.calls,
         ["probe", "deploy", "open_integrated"]
@@ -1494,6 +1497,7 @@ In `bash_integration.rs`, add:
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteBashRuntime {
     pub session: CompletionSessionKey,
+    pub bash_path: String,
     pub rc_path: String,
     pub candidate_path: String,
     pub widget_sequence: String,
@@ -1535,6 +1539,7 @@ trait ShellBootstrap {
     fn deploy_bash_runtime(
         &mut self,
         session: &CompletionSessionKey,
+        bash_path: &str,
     ) -> Result<RemoteBashRuntime, String>;
     fn open_integrated_bash(&mut self, runtime: &RemoteBashRuntime) -> Result<(), String>;
     fn cleanup_bash_runtime(&mut self, runtime: &RemoteBashRuntime);
@@ -1552,7 +1557,7 @@ fn bootstrap_shell<B: ShellBootstrap>(
             return Ok(None);
         }
     };
-    let runtime = match bootstrap.deploy_bash_runtime(&session) {
+    let runtime = match bootstrap.deploy_bash_runtime(&session, &shell) {
         Ok(runtime) => runtime,
         Err(_) => {
             bootstrap.open_plain_shell()?;
@@ -1564,7 +1569,6 @@ fn bootstrap_shell<B: ShellBootstrap>(
         bootstrap.open_plain_shell()?;
         return Ok(None);
     }
-    let _ = shell;
     Ok(Some(runtime))
 }
 ```
@@ -1580,7 +1584,7 @@ pub fn connect(
 ) -> Result<SshHandle, String>
 ```
 
-Implement `Ssh2Bootstrap<'a>` for this trait. It holds `&'a ssh2::Session`, terminal dimensions and `Option<ssh2::Channel<'a>>`. `probe_login_shell` and deployment use the rules below; the two open methods store the requested PTY channel in that option. `connect` calls `bootstrap_shell`, then takes the channel and continues with the existing SSH I/O thread.
+Implement `Ssh2Bootstrap<'a>` for this trait. It holds `&'a ssh2::Session`, terminal dimensions and `Option<ssh2::Channel<'a>>`. `probe_login_shell` and deployment use the rules below; `deploy_bash_runtime` stores the validated `bash_path` in `RemoteBashRuntime`, and `open_integrated_bash` calls `paths.launch_command(&runtime.bash_path)`. The two open methods store the requested PTY channel in that option. `connect` calls `bootstrap_shell`, then takes the channel and continues with the existing SSH I/O thread.
 
 Before opening the final PTY channel:
 
