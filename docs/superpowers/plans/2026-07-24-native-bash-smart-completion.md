@@ -1353,22 +1353,105 @@ fn remote_paths_are_token_scoped_and_shell_safe() {
 }
 
 #[test]
-fn failed_integration_decision_falls_back_to_plain_shell() {
-    assert_eq!(
-        choose_shell_mode(Ok("/bin/bash".into()), Err("sftp disabled".into())),
-        ShellChoice::Plain
-    );
-    assert_eq!(
-        choose_shell_mode(Ok("/bin/fish".into()), Ok(())),
-        ShellChoice::Plain
-    );
-}
-
-#[test]
 fn ssh_shutdown_signal_is_independent_from_terminal_input() {
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
     shutdown_tx.send(()).unwrap();
     assert!(shutdown_rx.try_recv().is_ok());
+}
+
+#[derive(Clone, Copy)]
+enum FakeFailure {
+    None,
+    Deploy,
+    IntegratedOpen,
+}
+
+struct FakeBootstrap {
+    failure: FakeFailure,
+    calls: Vec<&'static str>,
+}
+
+impl FakeBootstrap {
+    fn bash_success() -> Self {
+        Self { failure: FakeFailure::None, calls: Vec::new() }
+    }
+
+    fn failing(failure: FakeFailure) -> Self {
+        Self { failure, calls: Vec::new() }
+    }
+}
+
+fn test_session() -> CompletionSessionKey {
+    CompletionSessionKey::new_for_test(1, "abcdef12")
+}
+
+impl ShellBootstrap for FakeBootstrap {
+    fn probe_login_shell(&mut self) -> Result<String, String> {
+        self.calls.push("probe");
+        Ok("/bin/bash".into())
+    }
+
+    fn deploy_bash_runtime(
+        &mut self,
+        session: &CompletionSessionKey,
+    ) -> Result<RemoteBashRuntime, String> {
+        self.calls.push("deploy");
+        if matches!(self.failure, FakeFailure::Deploy) {
+            return Err("deploy failed".into());
+        }
+        Ok(RemoteBashRuntime {
+            session: session.clone(),
+            rc_path: "/tmp/session.bash".into(),
+            candidate_path: "/tmp/candidate".into(),
+            widget_sequence: "\x1b[777;1~".into(),
+        })
+    }
+
+    fn open_integrated_bash(&mut self, _: &RemoteBashRuntime) -> Result<(), String> {
+        self.calls.push("open_integrated");
+        if matches!(self.failure, FakeFailure::IntegratedOpen) {
+            Err("exec failed".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn cleanup_bash_runtime(&mut self, _: &RemoteBashRuntime) {
+        self.calls.push("cleanup");
+    }
+
+    fn open_plain_shell(&mut self) -> Result<(), String> {
+        self.calls.push("open_plain");
+        Ok(())
+    }
+}
+
+#[test]
+fn bootstrap_success_uses_integrated_bash_without_plain_fallback() {
+    let mut transport = FakeBootstrap::bash_success();
+    let runtime = bootstrap_shell(&mut transport, test_session()).unwrap();
+    assert!(runtime.is_some());
+    assert_eq!(
+        transport.calls,
+        ["probe", "deploy", "open_integrated"]
+    );
+}
+
+#[test]
+fn bootstrap_deploy_failure_opens_plain_shell() {
+    let mut transport = FakeBootstrap::failing(FakeFailure::Deploy);
+    assert!(bootstrap_shell(&mut transport, test_session()).unwrap().is_none());
+    assert_eq!(transport.calls, ["probe", "deploy", "open_plain"]);
+}
+
+#[test]
+fn bootstrap_exec_failure_cleans_up_then_opens_plain_shell() {
+    let mut transport = FakeBootstrap::failing(FakeFailure::IntegratedOpen);
+    assert!(bootstrap_shell(&mut transport, test_session()).unwrap().is_none());
+    assert_eq!(
+        transport.calls,
+        ["probe", "deploy", "open_integrated", "cleanup", "open_plain"]
+    );
 }
 ```
 
@@ -1411,6 +1494,7 @@ In `bash_integration.rs`, add:
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteBashRuntime {
     pub session: CompletionSessionKey,
+    pub rc_path: String,
     pub candidate_path: String,
     pub widget_sequence: String,
 }
@@ -1443,25 +1527,45 @@ Only accept probed shell paths that are absolute, contain no control/quote chara
 
 - [ ] **Step 3: Probe the login shell and prepare files through the authenticated session**
 
-Add the pure decision helper used by the tests:
+Introduce an injectable orchestration boundary. It owns no terminal state and is exercised with `FakeBootstrap`; the production adapter stores the channel it opens and returns it to `connect` after orchestration:
 
 ```rust
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ShellChoice {
-    Plain,
-    IntegratedBash,
+trait ShellBootstrap {
+    fn probe_login_shell(&mut self) -> Result<String, String>;
+    fn deploy_bash_runtime(
+        &mut self,
+        session: &CompletionSessionKey,
+    ) -> Result<RemoteBashRuntime, String>;
+    fn open_integrated_bash(&mut self, runtime: &RemoteBashRuntime) -> Result<(), String>;
+    fn cleanup_bash_runtime(&mut self, runtime: &RemoteBashRuntime);
+    fn open_plain_shell(&mut self) -> Result<(), String>;
 }
 
-fn choose_shell_mode(
-    probe: Result<String, String>,
-    preparation: Result<(), String>,
-) -> ShellChoice {
-    match (probe, preparation) {
-        (Ok(shell), Ok(())) if crate::bash_integration::is_bash_path(&shell) => {
-            ShellChoice::IntegratedBash
+fn bootstrap_shell<B: ShellBootstrap>(
+    bootstrap: &mut B,
+    session: CompletionSessionKey,
+) -> Result<Option<RemoteBashRuntime>, String> {
+    let shell = match bootstrap.probe_login_shell() {
+        Ok(shell) if crate::bash_integration::is_bash_path(&shell) => shell,
+        _ => {
+            bootstrap.open_plain_shell()?;
+            return Ok(None);
         }
-        _ => ShellChoice::Plain,
+    };
+    let runtime = match bootstrap.deploy_bash_runtime(&session) {
+        Ok(runtime) => runtime,
+        Err(_) => {
+            bootstrap.open_plain_shell()?;
+            return Ok(None);
+        }
+    };
+    if bootstrap.open_integrated_bash(&runtime).is_err() {
+        bootstrap.cleanup_bash_runtime(&runtime);
+        bootstrap.open_plain_shell()?;
+        return Ok(None);
     }
+    let _ = shell;
+    Ok(Some(runtime))
 }
 ```
 
@@ -1475,6 +1579,8 @@ pub fn connect(
     integration: Option<CompletionSessionKey>,
 ) -> Result<SshHandle, String>
 ```
+
+Implement `Ssh2Bootstrap<'a>` for this trait. It holds `&'a ssh2::Session`, terminal dimensions and `Option<ssh2::Channel<'a>>`. `probe_login_shell` and deployment use the rules below; the two open methods store the requested PTY channel in that option. `connect` calls `bootstrap_shell`, then takes the channel and continues with the existing SSH I/O thread.
 
 Before opening the final PTY channel:
 
@@ -1492,6 +1598,16 @@ pub bash_runtime: Option<crate::bash_integration::RemoteBashRuntime>,
 pub shutdown_tx: mpsc::Sender<()>,
 ```
 
+Add:
+
+```rust
+impl SshHandle {
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(());
+    }
+}
+```
+
 Create a matching `shutdown_rx` before spawning the I/O thread. Check it at the top of every loop; when signaled, switch the session to blocking mode, call `channel.close()`, and break. Keep the existing `write_tx`/`resize_tx` behavior.
 
 - [ ] **Step 4: Apply remote protocol metadata to the exact tab**
@@ -1505,6 +1621,36 @@ remote_bash_runtime: Option<crate::bash_integration::RemoteBashRuntime>,
 to `TerminalState`. In `TerminalState::apply_ssh_handle`, initialize `MarkerDecoder` from `handle.bash_runtime`, move that metadata into `remote_bash_runtime`, and retain the remote candidate path/widget sequence for fill requests. Local terminals continue using `local_bash_runtime`; the two options are mutually exclusive.
 
 Pass the placeholder tab’s cloned session into the background `ssh::connect` call. Extend `UserEvent::SshReady` with that session and reject stale results before saving credentials or starting SFTP.
+
+The stale/closed-tab branch must shut down a successful unused handle before returning:
+
+```rust
+fn reject_stale_ssh_result(result: Result<ssh::SshHandle, String>) {
+    if let Ok(handle) = result {
+        handle.shutdown();
+    }
+}
+```
+
+In `UserEvent::SshReady`, first find the tab and compare its current session. If either lookup or equality fails, call `reject_stale_ssh_result(result)` and do nothing else. Add:
+
+```rust
+#[test]
+fn stale_successful_ssh_result_is_explicitly_shutdown() {
+    let (write_tx, _write_rx) = mpsc::channel();
+    let (resize_tx, _resize_rx) = mpsc::channel();
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    let handle = ssh::SshHandle {
+        reader: Box::new(std::io::empty()),
+        write_tx,
+        resize_tx,
+        shutdown_tx,
+        bash_runtime: None,
+    };
+    reject_stale_ssh_result(Ok(handle));
+    assert!(shutdown_rx.try_recv().is_ok());
+}
+```
 
 - [ ] **Step 5: Implement same-tab SSH reconnect with session rotation**
 
@@ -2142,6 +2288,105 @@ git commit -m "feat: 添加 Bash 智能补全弹窗"
 
 - [ ] **Step 1: Add executable component-integration coverage**
 
+First add a real local Bash/PTTY test to `bash_integration.rs`; it executes `/bin/bash`, but isolates `HOME` so it never reads or changes the developer’s real `.bashrc`:
+
+```rust
+#[test]
+fn real_local_bash_pty_emits_authenticated_prompt_without_modifying_bashrc() {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use std::io::{Read, Write};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    assert!(std::path::Path::new("/bin/bash").exists());
+    let home = tempfile::tempdir().unwrap();
+    let bashrc = home.path().join(".bashrc");
+    let original = b"PS1='integration$ '\n";
+    std::fs::write(&bashrc, original).unwrap();
+
+    let session = CompletionSessionKey::new_for_test(11, "abcdef12");
+    let runtime = LocalBashRuntime::create(session.clone()).unwrap();
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 8,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new("/bin/bash");
+    command.arg("--rcfile");
+    command.arg(runtime.rc_path());
+    command.arg("-i");
+    command.env("HOME", home.path());
+    command.env("TERM", "xterm-256color");
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let mut writer = pair.master.take_writer().unwrap();
+    let (output_tx, output_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buffer = [0_u8; 4096];
+        while let Ok(length) = reader.read(&mut buffer) {
+            if length == 0 || output_tx.send(buffer[..length].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut decoder = MarkerDecoder::new(session);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut prompt_seen = false;
+    while Instant::now() < deadline {
+        if let Ok(bytes) = output_rx.recv_timeout(Duration::from_millis(100)) {
+            prompt_seen |= decoder
+                .scan(&bytes)
+                .iter()
+                .any(|boundary| boundary.kind == MarkerKind::Prompt);
+            if prompt_seen {
+                break;
+            }
+        }
+    }
+    writer.write_all(b"exit\r").unwrap();
+    writer.flush().unwrap();
+    let _ = child.wait();
+
+    assert!(prompt_seen, "真实 Bash PTY 应输出认证提示符标记");
+    assert_eq!(std::fs::read(&bashrc).unwrap(), original);
+}
+```
+
+Add an environment-gated real SSH test to `ssh.rs`; it is ignored by default and can run on a configured fixture without embedding credentials:
+
+```rust
+#[test]
+#[ignore = "requires LITETERM_TEST_SSH_HOST/USER and key or password"]
+fn real_ssh_bash_bootstrap_and_shutdown() {
+    let params = ConnectionParams {
+        host: std::env::var("LITETERM_TEST_SSH_HOST").unwrap(),
+        port: std::env::var("LITETERM_TEST_SSH_PORT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(22),
+        user: std::env::var("LITETERM_TEST_SSH_USER").unwrap(),
+        auth: std::env::var("LITETERM_TEST_SSH_AUTH").unwrap_or_else(|_| "key".into()),
+        key_path: std::env::var("LITETERM_TEST_SSH_KEY").unwrap_or_default(),
+        password: std::env::var("LITETERM_TEST_SSH_PASSWORD").unwrap_or_default(),
+    };
+    let session = CompletionSessionKey::new_for_test(1, "abcdef12");
+    let handle = connect(&params, 80, 24, Some(session)).unwrap();
+    assert!(handle.bash_runtime.is_some(), "fixture login shell must be Bash");
+    handle.shutdown();
+}
+```
+
+Document the exact optional command:
+
+```bash
+cd native-prototype
+cargo test ssh::tests::real_ssh_bash_bootstrap_and_shutdown -- --ignored --nocapture
+```
+
 Add `#[cfg(test)] mod completion_integration_tests;` to `main.rs`. In `terminal.rs`, expose this test-only harness:
 
 ```rust
@@ -2243,7 +2488,7 @@ fn ssh_reconnect_and_failed_sftp_fill_reject_old_events() {
 }
 ```
 
-The real SSH server and shell-switch process tests remain in the manual acceptance steps because CI has no SSH fixture; the automated test above still exercises the production session/request rejection gate, history pipeline and terminal prompt tracker.
+The default suite runs the real local Bash PTY test, mock SSH bootstrap tests, production session/request gate, history pipeline and terminal prompt tracker. A real SSH fixture is covered by the ignored environment-gated test and by manual acceptance because ordinary CI has no SSH credentials.
 
 - [ ] **Step 2: Run formatting and all unit/integration tests**
 
@@ -2314,7 +2559,7 @@ Expected: no whitespace errors, no unrelated staged files, root launch/build scr
 Stage the new integration test file and its `#[cfg(test)]` module/harness. If Steps 1-8 required a scoped fix, include only those exact Native files:
 
 ```bash
-git add native-prototype/src/completion_integration_tests.rs native-prototype/src/main.rs native-prototype/src/terminal.rs
+git add native-prototype/src/completion_integration_tests.rs native-prototype/src/bash_integration.rs native-prototype/src/ssh.rs native-prototype/src/main.rs native-prototype/src/terminal.rs
 git commit -m "test: 覆盖 Bash 智能补全流程"
 ```
 
