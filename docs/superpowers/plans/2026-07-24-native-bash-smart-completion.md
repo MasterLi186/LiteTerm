@@ -112,6 +112,14 @@ mod tests {
         state.refresh("git");
         assert!(state.is_popup_visible());
     }
+
+    #[test]
+    fn successor_rotates_token_and_increments_generation() {
+        let current = CompletionSessionKey::new_for_test(7, "old");
+        let next = current.successor();
+        assert_eq!(next.generation, 8);
+        assert_ne!(next.token(), current.token());
+    }
 }
 ```
 
@@ -152,6 +160,10 @@ impl CompletionSessionKey {
 
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    pub fn successor(&self) -> Self {
+        Self::new(self.generation.wrapping_add(1).max(1))
     }
 }
 
@@ -319,6 +331,9 @@ impl CompletionState {
         self.pending_fill = None;
     }
     pub fn begin_fill(&mut self, request_id: u64) { self.pending_fill = Some(request_id); }
+    pub fn pending_fill_matches(&self, request_id: u64) -> bool {
+        self.pending_fill == Some(request_id)
+    }
     pub fn finish_fill(&mut self, request_id: u64) -> bool {
         if self.pending_fill != Some(request_id) { return false; }
         self.pending_fill = None;
@@ -330,6 +345,9 @@ impl CompletionState {
         if self.pending_fill == Some(request_id) { self.pending_fill = None; }
     }
     pub fn cancel_pending_fill(&mut self) { self.pending_fill = None; }
+    pub fn reset_session(&mut self, session: CompletionSessionKey) {
+        *self = Self::new(session);
+    }
     pub fn set_history_path(&mut self, path: String) { self.history_path = Some(path); }
     pub fn history_path(&self) -> Option<&str> { self.history_path.as_deref() }
     pub fn set_sftp_ready(&mut self, ready: bool) { self.sftp_ready = ready; }
@@ -768,6 +786,7 @@ impl LocalBashRuntime {
     }
 
     pub fn session(&self) -> &CompletionSessionKey { &self.session }
+    pub fn directory_path(&self) -> &Path { self._directory.path() }
     pub fn rc_path(&self) -> &Path { &self.rc_path }
     pub fn candidate_path(&self) -> &Path { &self.candidate_path }
     pub fn widget_sequence(&self) -> &str { &self.widget_sequence }
@@ -886,6 +905,21 @@ git commit -m "feat: 注入临时 Bash 会话集成"
 Add terminal tests that feed one persistent `TestProcessor`:
 
 ```rust
+fn terminal_with_completion(
+    cols: u16,
+    rows: u16,
+    session: CompletionSessionKey,
+) -> TerminalState {
+    let mut state = TerminalState::new();
+    state.init_term(cols, rows);
+    state.prompt_tracking = Some(PromptTracking {
+        decoder: MarkerDecoder::new(session.clone()),
+        session,
+        anchor: None,
+    });
+    state
+}
+
 #[test]
 fn prompt_anchor_is_snapshotted_before_suffix_bytes() {
     let session = CompletionSessionKey::new_for_test(1, "abc");
@@ -895,6 +929,16 @@ fn prompt_anchor_is_snapshotted_before_suffix_bytes() {
         &mut parser,
         b"$ \x1b]777;LiteTerm;abc;1;P\x07git",
     );
+    assert_eq!(state.current_bash_input().as_deref(), Some("git"));
+}
+
+#[test]
+fn split_prompt_marker_uses_the_production_processing_path() {
+    let session = CompletionSessionKey::new_for_test(1, "abc");
+    let mut state = terminal_with_completion(20, 4, session);
+    let mut parser = TestProcessor::new();
+    state.process_pty_output(&mut parser, b"$ \x1b]777;LiteTerm;abc;");
+    state.process_pty_output(&mut parser, b"1;P\x07git");
     assert_eq!(state.current_bash_input().as_deref(), Some("git"));
 }
 
@@ -954,6 +998,17 @@ fn history_path_event_preserves_session_identity() {
             path: "/home/me".into()
         }]
     );
+}
+
+#[test]
+fn pty_eof_drops_the_local_runtime_directory() {
+    let session = CompletionSessionKey::new_for_test(2, "abcdef12");
+    let runtime = LocalBashRuntime::create(session).unwrap();
+    let directory = runtime.directory_path().to_path_buf();
+    let mut state = TerminalState::new();
+    state.local_bash_runtime = Some(runtime);
+    state.finish_session();
+    assert!(!directory.exists());
 }
 ```
 
@@ -1049,9 +1104,11 @@ Use this exact public surface:
 pub fn current_bash_input(&self) -> Option<String>;
 pub fn invalidate_prompt(&mut self);
 pub fn take_bash_submission(&mut self) -> Option<String>;
+pub fn finish_session(&mut self);
 ```
 
 `take_bash_submission` reads the current input first, then clears the anchor.
+At this stage `finish_session` clears prompt tracking and drops `local_bash_runtime`; dropping `LocalBashRuntime` removes its `TempDir`. Task 6 extends it to remote shutdown/runtime metadata.
 
 - [ ] **Step 4: Keep protocol replies separate from user-input classification**
 
@@ -1086,7 +1143,7 @@ where
     I: Fn(IntegrationEvent) + Send + 'static,
 ```
 
-For each chunk, capture the returned events while holding the terminal lock, release the lock, send every event through `integration_event`, then request redraw. Update current call sites temporarily with a no-op integration callback until Task 5 wires `UserEvent`.
+For each chunk, capture the returned events while holding the terminal lock, release the lock, send every event through `integration_event`, then request redraw. When the read loop ends because of EOF or an unrecoverable read error, lock once more and call `finish_session()`. Update current call sites temporarily with a no-op integration callback until Task 5 wires `UserEvent`.
 
 - [ ] **Step 6: Invalidate on real resize and verify all terminal tests**
 
@@ -1123,10 +1180,19 @@ Add pure helpers in `main.rs` tests:
 ```rust
 #[test]
 fn completion_event_matches_tab_generation_and_token() {
-    let tab = test_tab_with_session(4, "current");
-    assert!(completion_event_is_current(&tab, &CompletionSessionKey::new_for_test(4, "current")));
-    assert!(!completion_event_is_current(&tab, &CompletionSessionKey::new_for_test(3, "current")));
-    assert!(!completion_event_is_current(&tab, &CompletionSessionKey::new_for_test(4, "old")));
+    let current = CompletionSessionKey::new_for_test(4, "current");
+    assert!(completion_event_is_current(
+        &current,
+        &CompletionSessionKey::new_for_test(4, "current"),
+    ));
+    assert!(!completion_event_is_current(
+        &current,
+        &CompletionSessionKey::new_for_test(3, "current"),
+    ));
+    assert!(!completion_event_is_current(
+        &current,
+        &CompletionSessionKey::new_for_test(4, "old"),
+    ));
 }
 
 #[test]
@@ -1217,10 +1283,10 @@ Add:
 
 ```rust
 fn completion_event_is_current(
-    tab: &tab_manager::Tab,
+    current: &CompletionSessionKey,
     session: &CompletionSessionKey,
 ) -> bool {
-    tab.completion.session() == session
+    current == session
 }
 ```
 
@@ -1303,6 +1369,37 @@ fn ssh_shutdown_signal_is_independent_from_terminal_input() {
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
     shutdown_tx.send(()).unwrap();
     assert!(shutdown_rx.try_recv().is_ok());
+}
+```
+
+Add to `tab_manager.rs` tests:
+
+```rust
+fn test_ssh_connection() -> SshConnection {
+    SshConnection {
+        label: "测试".into(),
+        host: "127.0.0.1".into(),
+        port: 22,
+        user: "test".into(),
+        auth: "key".into(),
+        key_path: String::new(),
+        password: String::new(),
+        group: String::new(),
+        group_color: [0, 0, 0],
+    }
+}
+
+#[test]
+fn ssh_reconnect_keeps_tab_id_and_rotates_session() {
+    let mut manager = TabManager::new();
+    let connection = test_ssh_connection();
+    let tab_id = manager.new_ssh_placeholder(&connection);
+    let previous = manager.tabs[0].completion.session().clone();
+    let plan = manager.reset_ssh_for_reconnect(0).unwrap();
+    assert_eq!(plan.tab_id, tab_id);
+    assert_eq!(plan.session.generation, previous.generation + 1);
+    assert_ne!(plan.session.token(), previous.token());
+    assert!(manager.tabs[0].completion.history().is_empty());
 }
 ```
 
@@ -1409,7 +1506,62 @@ to `TerminalState`. In `TerminalState::apply_ssh_handle`, initialize `MarkerDeco
 
 Pass the placeholder tab’s cloned session into the background `ssh::connect` call. Extend `UserEvent::SshReady` with that session and reject stale results before saving credentials or starting SFTP.
 
-- [ ] **Step 5: Close SSH channels before removing tabs**
+- [ ] **Step 5: Implement same-tab SSH reconnect with session rotation**
+
+Add:
+
+```rust
+pub struct SshReconnectPlan {
+    pub tab_id: String,
+    pub params: crate::ssh::ConnectionParams,
+    pub session: CompletionSessionKey,
+    pub old_terminal: Arc<Mutex<TerminalState>>,
+}
+
+pub fn reset_ssh_for_reconnect(&mut self, index: usize) -> Option<SshReconnectPlan> {
+    let tab = self.tabs.get_mut(index)?;
+    let params = match &tab.tab_type {
+        TabType::Ssh { params, .. } => params.clone(),
+        TabType::Local { .. } => return None,
+    };
+    let session = tab.completion.session().successor();
+    tab.completion.reset_session(session.clone());
+    let old_terminal = std::mem::replace(
+        &mut tab.terminal,
+        Arc::new(Mutex::new(TerminalState::new())),
+    );
+    tab.read_thread_started = false;
+    tab.label = format!("{} (连接中...)", tab.label.trim_end_matches(" (连接中...)"));
+    Some(SshReconnectPlan {
+        tab_id: tab.id.clone(),
+        params,
+        session,
+        old_terminal,
+    })
+}
+```
+
+Refactor the background portion of `new_ssh_tab` into:
+
+```rust
+fn spawn_ssh_connect(
+    &self,
+    tab_id: String,
+    params: ssh::ConnectionParams,
+    session: CompletionSessionKey,
+) {
+    let (cols, rows) = self.grid_size();
+    let proxy = self.proxy.clone();
+    std::thread::spawn(move || {
+        let result = ssh::connect(&params, cols, rows, Some(session.clone()));
+        let _ = proxy.send_event(UserEvent::SshReady { tab_id, session, result });
+    });
+}
+```
+
+Implement `App::reconnect_ssh_tab(index)` by calling `reset_ssh_for_reconnect`, shutting down `old_terminal`, stopping/removing the old SFTP worker and file browser, then calling `spawn_ssh_connect` with the returned values. Change only `TabBarAction::Reconnect(index)` to this method. Keep the file-browser `SftpCommand::Reconnect` behavior unchanged; it reloads history but does not rotate the shell generation.
+
+- [ ] **Step 6: Close SSH channels before removing tabs**
 
 Add `ssh_shutdown_tx: Option<mpsc::Sender<()>>` to `TerminalState`, initialize it from `SshHandle`, and expose:
 
@@ -1423,9 +1575,9 @@ pub fn shutdown(&mut self) {
 }
 ```
 
-In `App::close_tab`, lock the target terminal and call `shutdown()` before `TabManager::close`. Apply the same operation to every removed tab in `close_other_tabs`. On `WindowEvent::CloseRequested`, call `shutdown()` for all tabs, send `SftpCommand::Shutdown` to every worker, and only then call `event_loop.exit()`. This guarantees the remote wrapper gets EOF/close and can remove its temporary RC and candidate files.
+Extend `finish_session()` to call `shutdown()` and clear `remote_bash_runtime`. In `App::close_tab`, lock the target terminal and call `shutdown()` before `TabManager::close`. Apply the same operation to every removed tab in `close_other_tabs`. On `WindowEvent::CloseRequested`, call `shutdown()` for all tabs, send `SftpCommand::Shutdown` to every worker, and only then call `event_loop.exit()`. This guarantees the remote wrapper gets EOF/close and can remove its temporary RC and candidate files.
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 7: Run tests**
 
 ```bash
 cd native-prototype
@@ -1433,11 +1585,12 @@ cargo fmt -- src/ssh.rs src/bash_integration.rs src/terminal.rs src/tab_manager.
 cargo test ssh::tests -- --nocapture
 cargo test bash_integration::tests -- --nocapture
 cargo test terminal::tests -- --nocapture
+cargo test tab_manager::tests -- --nocapture
 ```
 
 Expected: pure SSH decisions pass; no real network is needed.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add native-prototype/src/ssh.rs native-prototype/src/bash_integration.rs native-prototype/src/terminal.rs native-prototype/src/tab_manager.rs native-prototype/src/main.rs
@@ -1483,9 +1636,42 @@ fn completion_event_keeps_session_and_request_identity() {
     };
     assert_eq!(event.completion_session(), Some(&session));
 }
+
+#[test]
+fn remote_candidate_creation_is_exclusive_private_and_not_truncating() {
+    let flags = remote_candidate_create_flags();
+    assert!(flags.contains(ssh2::OpenFlags::WRITE));
+    assert!(flags.contains(ssh2::OpenFlags::CREATE));
+    assert!(flags.contains(ssh2::OpenFlags::EXCLUSIVE));
+    assert!(!flags.contains(ssh2::OpenFlags::TRUNCATE));
+    assert_eq!(REMOTE_CANDIDATE_MODE, 0o600);
+}
 ```
 
 - [ ] **Step 2: Add SFTP commands and events**
+
+Wrap every worker event so stale file-browser and Ready events from an old same-tab SSH session are rejected too:
+
+```rust
+#[derive(Debug)]
+pub struct SftpWorkerEvent {
+    pub session: CompletionSessionKey,
+    pub event: SftpEvent,
+}
+```
+
+Change `UserEvent::Sftp` to carry `SftpWorkerEvent`, and change:
+
+```rust
+pub fn start_worker(
+    tab_id: String,
+    session: CompletionSessionKey,
+    params: crate::ssh::ConnectionParams,
+    proxy: EventLoopProxy<crate::UserEvent>,
+) -> SftpHandle;
+```
+
+Every proxy send from that worker clones the same session into the envelope. In `main.rs`, compare the envelope session with the tab’s current completion session before applying **any** Ready, Failed, listing, transfer, mutation or completion event.
 
 Add:
 
@@ -1573,6 +1759,12 @@ fn read_remote_history_tail(
 Validate candidate bytes with the same nonempty/no-control rule. Create a sibling request-scoped path with `WRITE | CREATE | EXCLUSIVE`, mode `0600`, write and close it, then `sftp.rename(temp, target, Some(RenameFlags::OVERWRITE))`. Remove the temporary file on every error.
 
 ```rust
+const REMOTE_CANDIDATE_MODE: i32 = 0o600;
+
+fn remote_candidate_create_flags() -> ssh2::OpenFlags {
+    ssh2::OpenFlags::WRITE | ssh2::OpenFlags::CREATE | ssh2::OpenFlags::EXCLUSIVE
+}
+
 fn candidate_temporary_path(path: &str, request_id: u64) -> Result<String, String> {
     let path = Path::new(path);
     let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty())
@@ -1663,6 +1855,50 @@ pub fn write_local_candidate_atomic(path: &Path, bytes: &[u8]) -> Result<(), Str
 On either matching successful event, lock the original tab terminal, call `commit_completion_fill()`, and only then call `finish_fill(request_id)`. `commit_completion_fill` sends only the private widget sequence. On failure, call `fail_fill` and leave the Bash line unchanged.
 
 The completion event handler must match all four values: tab ID, generation/token session key, and request ID. Switching away from a tab or closing it cancels its pending request so a late success cannot inject bytes.
+
+Implement and use this gate **before** locking the terminal or sending the widget:
+
+```rust
+fn completion_fill_may_commit(
+    state: &CompletionState,
+    current_session: &CompletionSessionKey,
+    event_session: &CompletionSessionKey,
+    request_id: u64,
+    result: &Result<(), String>,
+) -> bool {
+    result.is_ok()
+        && current_session == event_session
+        && state.pending_fill_matches(request_id)
+}
+```
+
+Add tests proving a wrong request ID, stale token/generation and `Err` result all return false. Only after this returns true may production code call `commit_completion_fill`; then call `finish_fill(request_id)`. Because all `CompletionState` access occurs on the winit thread, no other event can cancel the request between the gate and commit.
+
+Add a production-path terminal test using the existing `SharedWriter` fixture:
+
+```rust
+#[test]
+fn completion_commit_writes_widget_without_any_execute_byte() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let (completed_tx, completed_rx) = mpsc::channel();
+    let mut state = TerminalState::new();
+    state.writer = Some(spawn_writer_worker(Box::new(SharedWriter {
+        captured: captured.clone(),
+        completed_tx,
+    })));
+    let runtime = LocalBashRuntime::create(
+        CompletionSessionKey::new_for_test(1, "abcdef12"),
+    ).unwrap();
+    let expected = runtime.widget_sequence().as_bytes().to_vec();
+    state.local_bash_runtime = Some(runtime);
+    assert!(state.commit_completion_fill());
+    completed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let bytes = captured.lock().unwrap().clone();
+    assert_eq!(bytes, expected);
+    assert!(!bytes.contains(&b'\r'));
+    assert!(!bytes.contains(&b'\n'));
+}
+```
 
 - [ ] **Step 7: Run tests**
 
@@ -1898,10 +2134,118 @@ git commit -m "feat: 添加 Bash 智能补全弹窗"
 ### Task 9: Integration Regression, Native Build, and Manual Acceptance
 
 **Files:**
+- Create: `native-prototype/src/completion_integration_tests.rs`
+- Modify: `native-prototype/src/main.rs`
+- Modify: `native-prototype/src/terminal.rs` (`#[cfg(test)]` harness only)
 - Modify only if a failing test identifies a scoped defect in files from Tasks 1-8.
 - Do not modify root `build.sh`, root `run.sh`, or old GuiShell sources.
 
-- [ ] **Step 1: Run formatting and all unit tests**
+- [ ] **Step 1: Add executable component-integration coverage**
+
+Add `#[cfg(test)] mod completion_integration_tests;` to `main.rs`. In `terminal.rs`, expose this test-only harness:
+
+```rust
+#[cfg(test)]
+pub(crate) struct CompletionHarness {
+    terminal: TerminalState,
+    parser: Processor,
+}
+
+#[cfg(test)]
+impl CompletionHarness {
+    pub fn new(cols: u16, rows: u16, session: CompletionSessionKey) -> Self {
+        let mut terminal = TerminalState::new();
+        terminal.init_term(cols, rows);
+        terminal.prompt_tracking = Some(PromptTracking {
+            decoder: MarkerDecoder::new(session.clone()),
+            session,
+            anchor: None,
+        });
+        Self { terminal, parser: Processor::new() }
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<IntegrationEvent> {
+        self.terminal.process_pty_output(&mut self.parser, bytes)
+    }
+
+    pub fn input(&self) -> Option<String> {
+        self.terminal.current_bash_input()
+    }
+
+    pub fn submit(&mut self) -> Option<String> {
+        self.terminal.take_bash_submission()
+    }
+}
+```
+
+Create `completion_integration_tests.rs` with executable tests covering the approved non-network integration matrix:
+
+```rust
+use crate::smart_completion::{CompletionSessionKey, CompletionState, parse_bash_history};
+use crate::terminal::CompletionHarness;
+
+#[test]
+fn local_bash_prompt_history_selection_and_submission_flow() {
+    let session = CompletionSessionKey::new_for_test(1, "abc");
+    let mut terminal = CompletionHarness::new(40, 6, session.clone());
+    terminal.feed(b"$ \x1b]777;LiteTerm;abc;1;P\x07git");
+    let mut completion = CompletionState::new(session);
+    completion.replace_history(parse_bash_history(b"git log\ngit status\n"));
+    completion.refresh(terminal.input().as_deref().unwrap());
+    assert_eq!(completion.selected_candidate(), Some("git status"));
+    assert_eq!(terminal.submit().as_deref(), Some("git"));
+    completion.merge_executed("git");
+    assert_eq!(completion.history()[0], "git");
+    assert_eq!(terminal.input(), None);
+}
+
+#[test]
+fn shell_switch_stays_disabled_without_a_new_authenticated_prompt() {
+    let session = CompletionSessionKey::new_for_test(1, "abc");
+    let mut terminal = CompletionHarness::new(40, 6, session);
+    terminal.feed(b"$ \x1b]777;LiteTerm;abc;1;P\x07fish");
+    assert_eq!(terminal.submit().as_deref(), Some("fish"));
+    terminal.feed(b"fish> ");
+    assert_eq!(terminal.input(), None);
+}
+
+#[test]
+fn missing_history_and_long_commands_degrade_safely() {
+    let session = CompletionSessionKey::new_for_test(1, "abc");
+    let mut completion = CompletionState::new(session);
+    assert!(parse_bash_history(b"").is_empty());
+    let long = format!("echo {}", "x".repeat(16_384));
+    completion.replace_history(vec![long.clone()]);
+    completion.refresh("echo ");
+    assert_eq!(completion.selected_candidate(), Some(long.as_str()));
+}
+
+#[test]
+fn ssh_reconnect_and_failed_sftp_fill_reject_old_events() {
+    let previous = CompletionSessionKey::new_for_test(2, "old");
+    let current = previous.successor();
+    let mut completion = CompletionState::new(current.clone());
+    completion.begin_fill(8);
+    assert!(!crate::completion_fill_may_commit(
+        &completion,
+        &current,
+        &previous,
+        8,
+        &Ok(()),
+    ));
+    assert!(!crate::completion_fill_may_commit(
+        &completion,
+        &current,
+        &current,
+        8,
+        &Err("SFTP unavailable".into()),
+    ));
+}
+```
+
+The real SSH server and shell-switch process tests remain in the manual acceptance steps because CI has no SSH fixture; the automated test above still exercises the production session/request rejection gate, history pipeline and terminal prompt tracker.
+
+- [ ] **Step 2: Run formatting and all unit/integration tests**
 
 ```bash
 cd native-prototype
@@ -1912,7 +2256,7 @@ cargo clippy --all-targets
 
 Expected: all tests pass; Clippy exits 0. Record pre-existing warnings separately rather than broad cleanup.
 
-- [ ] **Step 2: Run the isolated Native build**
+- [ ] **Step 3: Run the isolated Native build**
 
 From repository root:
 
@@ -1922,7 +2266,7 @@ From repository root:
 
 Expected: Native build, Clippy, and full Native test suite succeed without rebuilding or replacing the old GuiShell binary.
 
-- [ ] **Step 3: Launch only the new Native binary**
+- [ ] **Step 4: Launch only the new Native binary**
 
 Use the existing isolated launcher:
 
@@ -1932,7 +2276,7 @@ Use the existing isolated launcher:
 
 Do not stop the old GuiShell process. Confirm the running executable name remains `liteterm-native`.
 
-- [ ] **Step 4: Manually verify local Bash**
+- [ ] **Step 5: Manually verify local Bash**
 
 1. Open a local Bash tab with a populated `~/.bash_history`.
 2. Type a nonempty prefix and confirm prefix matches precede contains matches.
@@ -1942,7 +2286,7 @@ Do not stop the old GuiShell process. Confirm the running executable name remain
 6. Run `fish` or `zsh`; confirm the popup stays disabled until a new integrated Bash prompt.
 7. Test Emacs mode, `set -o vi`, and user bindings mapping End/Ctrl-U to `accept-line`; first Enter must still not execute.
 
-- [ ] **Step 5: Manually verify SSH Bash and failure fallback**
+- [ ] **Step 6: Manually verify SSH Bash and failure fallback**
 
 1. Connect to a Bash SSH target; verify remote history suggestions.
 2. Fill and execute a remote command using two Enter presses.
@@ -1950,11 +2294,11 @@ Do not stop the old GuiShell process. Confirm the running executable name remain
 4. Connect to Fish/Zsh or a target with SFTP disabled; verify the ordinary terminal opens without completion and without connection failure.
 5. Close the tab during a history read and during a candidate write; verify no stale event writes to another tab.
 
-- [ ] **Step 6: Inspect process and file cleanup**
+- [ ] **Step 7: Inspect process and file cleanup**
 
 Verify local runtime directories and remote `/tmp/liteterm-native-<token>-<generation>.*` files disappear when their Bash session exits normally. Confirm failure paths leave no reusable world-readable file and no token is logged.
 
-- [ ] **Step 7: Run final diff safety checks**
+- [ ] **Step 8: Run final diff safety checks**
 
 ```bash
 git diff --check
@@ -1965,15 +2309,16 @@ git diff --name-only HEAD
 
 Expected: no whitespace errors, no unrelated staged files, root launch/build scripts unchanged.
 
-- [ ] **Step 8: Commit any scoped integration fix**
+- [ ] **Step 9: Commit integration tests and any scoped fix**
 
-If Steps 1-7 required a fix, stage only its exact Native files and commit:
+Stage the new integration test file and its `#[cfg(test)]` module/harness. If Steps 1-8 required a scoped fix, include only those exact Native files:
 
 ```bash
-git commit -m "fix: 完善 Bash 智能补全回归"
+git add native-prototype/src/completion_integration_tests.rs native-prototype/src/main.rs native-prototype/src/terminal.rs
+git commit -m "test: 覆盖 Bash 智能补全流程"
 ```
 
-If no fix was needed, do not create an empty commit.
+Do not stage unrelated dirty files.
 
 ## Final Review Gate
 
