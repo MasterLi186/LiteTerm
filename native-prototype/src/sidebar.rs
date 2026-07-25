@@ -25,7 +25,14 @@ fn monitor_source_presentation(
     };
     let snapshot = snapshot.map_or_else(
         || "正在采集".into(),
-        |data| format!("CPU {:.0}% · {}", data.cpu_percent, safe_monitor_text(&data.memory_text, 48)),
+        |data| {
+            let cpu = data
+                .cpu_percent
+                .is_finite()
+                .then(|| format!("{:.0}%", data.cpu_percent))
+                .unwrap_or_else(|| "--".into());
+            format!("CPU {cpu} · {}", safe_monitor_text(&data.memory_text, 48))
+        },
     );
     MonitorSourcePresentation { source, detail, snapshot }
 }
@@ -745,5 +752,34 @@ mod tests {
         assert_eq!(presentation.detail, "alice@alpha.example:22");
         assert_eq!(presentation.snapshot, "正在采集");
         assert_ne!(presentation.source, "本机");
+    }
+
+    #[test]
+    fn monitor_presentation_uses_placeholder_for_non_finite_cpu() {
+        let snapshot = crate::monitor::MonitorData {
+            cpu_percent: f32::NAN,
+            cpu_name: String::new(),
+            memory_used: 0,
+            memory_total: 0,
+            memory_text: "1G / 2G".into(),
+            memory_percent: 0.0,
+            swap_used: 0,
+            swap_total: 0,
+            swap_text: String::new(),
+            swap_percent: 0.0,
+            uptime_text: String::new(),
+            load_text: String::new(),
+            disk_items: Vec::new(),
+            processes: Vec::new(),
+            net_interfaces: Vec::new(),
+        };
+
+        let presentation = super::monitor_source_presentation(
+            &crate::monitor::MonitorKey::Local,
+            Some(&snapshot),
+        );
+
+        assert_eq!(presentation.snapshot, "CPU -- · 1G / 2G");
+        assert!(!presentation.snapshot.contains("NaN"));
     }
 }

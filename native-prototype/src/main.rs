@@ -111,6 +111,20 @@ fn next_remote_monitor_generation(counter: &mut u64) -> u64 {
     *counter
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabActionApplyPhase {
+    BeforeTerminalRender,
+    AfterPresent,
+}
+
+fn tab_action_apply_phase(action: &tab_bar::TabBarAction) -> TabActionApplyPhase {
+    if action.switch_to.is_some() || action.close.is_some() || action.new_tab {
+        TabActionApplyPhase::AfterPresent
+    } else {
+        TabActionApplyPhase::BeforeTerminalRender
+    }
+}
+
 fn monitor_event_from_remote(event: remote_monitor::RemoteMonitorEvent) -> monitor::MonitorEvent {
     match event {
         remote_monitor::RemoteMonitorEvent::Update { key, generation, data } => {
@@ -543,15 +557,11 @@ impl App {
             pixels_per_point: window.scale_factor() as f32,
         };
 
-        // 2. Handle tab bar actions (non-mutating ones only here)
-        if let Some(idx) = tab_action.switch_to {
-            self.tab_manager.switch_to(idx);
-            self.selection_start = None;
-            self.selection_end = None;
-        }
-        // defer close/new_tab to after render (needs &mut self without gpu borrow)
-        let deferred_close = tab_action.close;
-        let deferred_new = tab_action.new_tab;
+        // 2. Defer every tab mutation until the frame using the old active snapshot is presented.
+        let defer_actions = tab_action_apply_phase(&tab_action) == TabActionApplyPhase::AfterPresent;
+        let deferred_switch = defer_actions.then_some(tab_action.switch_to).flatten();
+        let deferred_close = defer_actions.then_some(tab_action.close).flatten();
+        let deferred_new = defer_actions && tab_action.new_tab;
 
         // 3. Get surface texture
         let output = match gpu.surface.get_current_texture() {
@@ -627,6 +637,12 @@ impl App {
         output.present();
 
         // Deferred tab actions (after gpu borrow ends)
+        if let Some(idx) = deferred_switch {
+            self.tab_manager.switch_to(idx);
+            self.selection_start = None;
+            self.selection_end = None;
+            window.request_redraw();
+        }
         if let Some(idx) = deferred_close {
             eprintln!("[MAIN] deferred close tab {}", idx);
             self.tab_manager.close(idx);
@@ -1612,6 +1628,20 @@ mod completion_tests {
         remove_monitor_slots(&mut slots, std::slice::from_ref(&remote));
         assert!(slots.contains_key(&monitor::MonitorKey::Local));
         assert!(!slots.contains_key(&remote));
+    }
+
+    #[test]
+    fn tab_switch_action_is_deferred_until_after_present() {
+        let action = tab_bar::TabBarAction {
+            switch_to: Some(1),
+            close: None,
+            new_tab: false,
+        };
+
+        assert_eq!(
+            tab_action_apply_phase(&action),
+            TabActionApplyPhase::AfterPresent
+        );
     }
 }
 
