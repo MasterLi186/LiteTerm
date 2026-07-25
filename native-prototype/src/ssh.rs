@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::bash_integration::RemoteBashRuntime;
 
@@ -13,6 +13,60 @@ fn configure_tcp_timeouts(tcp: &TcpStream, timeout: Duration) -> Result<(), Stri
         .map_err(|error| format!("设置 SSH TCP 读超时失败: {error}"))?;
     tcp.set_write_timeout(Some(timeout))
         .map_err(|error| format!("设置 SSH TCP 写超时失败: {error}"))
+}
+
+fn resolve_ssh_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("DNS 解析失败: {error}"))?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        Err("DNS 解析没有返回可用地址".to_string())
+    } else {
+        Ok(addresses)
+    }
+}
+
+fn connect_resolved<Connected>(
+    addresses: &[SocketAddr],
+    timeout: Duration,
+    connector: impl FnMut(SocketAddr, Duration) -> std::io::Result<Connected>,
+) -> Result<Connected, String> {
+    connect_resolved_with_clock(addresses, timeout, Instant::now, connector)
+}
+
+fn connect_resolved_with_clock<Connected>(
+    addresses: &[SocketAddr],
+    timeout: Duration,
+    mut now: impl FnMut() -> Instant,
+    mut connector: impl FnMut(SocketAddr, Duration) -> std::io::Result<Connected>,
+) -> Result<Connected, String> {
+    let deadline = now()
+        .checked_add(timeout)
+        .ok_or_else(|| "SSH TCP 连接超时无效".to_string())?;
+    let mut last_error = None;
+
+    for (index, &address) in addresses.iter().enumerate() {
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Err("SSH TCP 连接超时".to_string());
+        }
+        let addresses_left = u32::try_from(addresses.len() - index)
+            .map_err(|_| "SSH 地址数量超出支持范围".to_string())?;
+        let attempt_timeout = remaining / addresses_left;
+        if attempt_timeout.is_zero() {
+            return Err("SSH TCP 连接超时".to_string());
+        }
+        match connector(address, attempt_timeout) {
+            Ok(connected) => return Ok(connected),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    match last_error {
+        Some(error) => Err(format!("TCP 连接失败: {error}")),
+        None => Err("没有可用的 SSH 地址".to_string()),
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -51,8 +105,6 @@ impl From<&crate::sidebar::SshConnection> for ConnectionParams {
 }
 
 pub(crate) fn connect_authenticated(params: &ConnectionParams) -> Result<ssh2::Session, String> {
-    use std::net::ToSocketAddrs;
-
     log::info!(
         "SSH connecting to {}:{} user={} auth={}",
         params.host,
@@ -60,17 +112,13 @@ pub(crate) fn connect_authenticated(params: &ConnectionParams) -> Result<ssh2::S
         params.user,
         params.auth
     );
-    let address = format!("{}:{}", params.host, params.port);
-    let socket = address
-        .to_socket_addrs()
-        .map_err(|error| format!("DNS 解析失败: {error} ({address})"))?
-        .next()
-        .ok_or_else(|| format!("DNS 无结果: {address}"))?;
-    let tcp = TcpStream::connect_timeout(&socket, SSH_IO_TIMEOUT)
-        .map_err(|error| format!("TCP 连接失败: {error}"))?;
+    let addresses = resolve_ssh_addresses(&params.host, params.port)?;
+    let tcp = connect_resolved(&addresses, SSH_IO_TIMEOUT, |address, remaining| {
+        TcpStream::connect_timeout(&address, remaining)
+    })?;
     configure_tcp_timeouts(&tcp, SSH_IO_TIMEOUT)?;
 
-    log::info!("SSH TCP connected to {}", address);
+    log::info!("SSH TCP connected to {}:{}", params.host, params.port);
     let mut session =
         ssh2::Session::new().map_err(|error| format!("SSH session 创建失败: {error}"))?;
     session.set_tcp_stream(tcp);
@@ -322,7 +370,95 @@ pub fn connect(
 
 #[cfg(test)]
 mod tests {
-    use super::ConnectionParams;
+    use super::{
+        connect_resolved, connect_resolved_with_clock, resolve_ssh_addresses, ConnectionParams,
+    };
+
+    #[test]
+    fn resolver_accepts_bare_ipv6_host() {
+        let addresses = resolve_ssh_addresses("::1", 2222).unwrap();
+
+        assert!(!addresses.is_empty());
+        assert!(addresses
+            .iter()
+            .all(|address| address.is_ipv6() && address.port() == 2222));
+    }
+
+    #[test]
+    fn connector_tries_later_address_after_first_failure() {
+        let first = "127.0.0.1:2201".parse().unwrap();
+        let second = "127.0.0.1:2202".parse().unwrap();
+        let mut attempts = Vec::new();
+
+        let connected = connect_resolved(
+            &[first, second],
+            std::time::Duration::from_secs(1),
+            |address, remaining| {
+                attempts.push((address, remaining));
+                if address == first {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        "first refused",
+                    ))
+                } else {
+                    Ok(address)
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(connected, second);
+        assert_eq!(
+            attempts
+                .iter()
+                .map(|(address, _)| *address)
+                .collect::<Vec<_>>(),
+            [first, second]
+        );
+        assert!(attempts
+            .iter()
+            .all(|(_, remaining)| *remaining <= std::time::Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn connector_reserves_deadline_budget_for_later_addresses() {
+        let first = "127.0.0.1:2201".parse().unwrap();
+        let second = "127.0.0.1:2202".parse().unwrap();
+        let started = std::time::Instant::now();
+        let elapsed =
+            std::rc::Rc::new(std::cell::Cell::new(std::time::Duration::from_secs(0)));
+        let clock_elapsed = elapsed.clone();
+        let connector_elapsed = elapsed.clone();
+        let mut attempts = Vec::new();
+
+        let connected = connect_resolved_with_clock(
+            &[first, second],
+            std::time::Duration::from_secs(10),
+            move || started + clock_elapsed.get(),
+            |address, attempt_timeout| {
+                attempts.push((address, attempt_timeout));
+                if address == first {
+                    connector_elapsed.set(connector_elapsed.get() + attempt_timeout);
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "first timed out",
+                    ))
+                } else {
+                    Ok(address)
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(connected, second);
+        assert_eq!(
+            attempts,
+            [
+                (first, std::time::Duration::from_secs(5)),
+                (second, std::time::Duration::from_secs(5)),
+            ]
+        );
+    }
 
     #[test]
     fn connection_params_debug_redacts_key_path_and_password() {
