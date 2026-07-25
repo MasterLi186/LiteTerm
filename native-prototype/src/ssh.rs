@@ -3,11 +3,151 @@ use std::net::TcpStream;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use crate::bash_integration::RemoteBashRuntime;
+
+const SSH_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const SSH_IO_TIMEOUT_MS: u32 = 10_000;
+
+fn configure_tcp_timeouts(tcp: &TcpStream, timeout: Duration) -> Result<(), String> {
+    tcp.set_read_timeout(Some(timeout))
+        .map_err(|error| format!("设置 SSH TCP 读超时失败: {error}"))?;
+    tcp.set_write_timeout(Some(timeout))
+        .map_err(|error| format!("设置 SSH TCP 写超时失败: {error}"))
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ConnectionParams {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: String,
+    pub key_path: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for ConnectionParams {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConnectionParams")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("auth", &self.auth)
+            .finish_non_exhaustive()
+    }
+}
+
+impl From<&crate::sidebar::SshConnection> for ConnectionParams {
+    fn from(connection: &crate::sidebar::SshConnection) -> Self {
+        Self {
+            host: connection.host.clone(),
+            port: connection.port,
+            user: connection.user.clone(),
+            auth: connection.auth.clone(),
+            key_path: connection.key_path.clone(),
+            password: connection.password.clone(),
+        }
+    }
+}
+
+pub(crate) fn connect_authenticated(params: &ConnectionParams) -> Result<ssh2::Session, String> {
+    use std::net::ToSocketAddrs;
+
+    log::info!(
+        "SSH connecting to {}:{} user={} auth={}",
+        params.host,
+        params.port,
+        params.user,
+        params.auth
+    );
+    let address = format!("{}:{}", params.host, params.port);
+    let socket = address
+        .to_socket_addrs()
+        .map_err(|error| format!("DNS 解析失败: {error} ({address})"))?
+        .next()
+        .ok_or_else(|| format!("DNS 无结果: {address}"))?;
+    let tcp = TcpStream::connect_timeout(&socket, SSH_IO_TIMEOUT)
+        .map_err(|error| format!("TCP 连接失败: {error}"))?;
+    configure_tcp_timeouts(&tcp, SSH_IO_TIMEOUT)?;
+
+    log::info!("SSH TCP connected to {}", address);
+    let mut session =
+        ssh2::Session::new().map_err(|error| format!("SSH session 创建失败: {error}"))?;
+    session.set_tcp_stream(tcp);
+    session.set_timeout(SSH_IO_TIMEOUT_MS);
+    session
+        .handshake()
+        .map_err(|error| format!("SSH 握手失败: {error}"))?;
+    log::info!("SSH handshake ok");
+
+    let key_path = (!params.key_path.is_empty()).then_some(params.key_path.as_str());
+    let password = (!params.password.is_empty()).then_some(params.password.as_str());
+    let mut authenticated = false;
+
+    if params.auth == "key" || params.auth == "keyring" || params.auth.is_empty() {
+        if let Some(path) = key_path {
+            let expanded = shellexpand::tilde(path);
+            let expanded = std::path::Path::new(expanded.as_ref());
+            if expanded.exists() {
+                authenticated = session
+                    .userauth_pubkey_file(&params.user, None, expanded, password)
+                    .is_ok();
+            }
+        }
+    }
+
+    if !authenticated {
+        authenticated = session.userauth_agent(&params.user).is_ok();
+    }
+
+    if !authenticated {
+        for path in ["~/.ssh/id_rsa", "~/.ssh/id_ed25519", "~/.ssh/id_ecdsa"] {
+            let expanded = shellexpand::tilde(path);
+            let expanded = std::path::Path::new(expanded.as_ref());
+            if expanded.exists()
+                && session
+                    .userauth_pubkey_file(&params.user, None, expanded, password)
+                    .is_ok()
+            {
+                authenticated = true;
+                break;
+            }
+        }
+    }
+
+    if !authenticated {
+        if let Some(password) = password {
+            authenticated = session.userauth_password(&params.user, password).is_ok();
+        }
+    }
+
+    if !authenticated || !session.authenticated() {
+        return Err(format!(
+            "SSH 认证失败 (auth={}, user={})",
+            params.auth, params.user
+        ));
+    }
+
+    session.set_keepalive(true, 30);
+    log::info!("SSH auth ok");
+    Ok(session)
+}
+
 /// SSH connection that runs entirely on a single thread (ssh2::Session is !Send).
 /// The reader stays on the SSH thread; writing is done via mpsc channel.
 pub struct SshHandle {
     pub reader: Box<dyn Read + Send>,
     pub write_tx: mpsc::Sender<Vec<u8>>,
+    pub resize_tx: mpsc::Sender<(u16, u16)>,
+    pub shutdown_tx: mpsc::Sender<()>,
+    pub io_done_rx: mpsc::Receiver<()>,
+    pub bash_runtime: Option<RemoteBashRuntime>,
+}
+
+impl SshHandle {
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(());
+    }
 }
 
 /// Connect to an SSH server and return a handle for reading/writing.
@@ -103,18 +243,27 @@ pub fn connect(
     // Instead, we use a pipe: the writer thread writes to a pipe,
     // and the SSH thread reads from the pipe and forwards to the channel.
     let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+    let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    let (io_done_tx, io_done_rx) = mpsc::channel::<()>();
 
     // We'll use OS pipes for the reader side too — the SSH thread reads
     // from the channel and writes to a pipe, and the terminal thread
     // reads from the other end.
-    let (mut pipe_read, mut pipe_write) = os_pipe::pipe()
-        .map_err(|e| format!("创建管道失败: {}", e))?;
+    let (pipe_read, mut pipe_write) =
+        os_pipe::pipe().map_err(|e| format!("创建管道失败: {}", e))?;
 
     // SSH I/O thread: reads channel → pipe, reads mpsc → channel
     std::thread::spawn(move || {
         session.set_blocking(false);
         let mut buf = [0u8; 4096];
         loop {
+            if !matches!(shutdown_rx.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+                session.set_blocking(true);
+                let _ = channel.close();
+                break;
+            }
+
             // Read from channel (non-blocking)
             match channel.read(&mut buf) {
                 Ok(0) => {
@@ -144,14 +293,54 @@ pub fn connect(
                 session.set_blocking(false);
             }
 
+            while let Ok((new_cols, new_rows)) = resize_rx.try_recv() {
+                session.set_blocking(true);
+                let _ = channel.request_pty_size(new_cols as u32, new_rows as u32, None, None);
+                session.set_blocking(false);
+            }
+
             // Small sleep to avoid busy loop (non-blocking mode)
             std::thread::sleep(Duration::from_millis(5));
         }
+        session.set_blocking(true);
+        let _ = channel.close();
         drop(pipe_write);
+        drop(channel);
+        drop(session);
+        let _ = io_done_tx.send(());
     });
 
     Ok(SshHandle {
         reader: Box::new(pipe_read),
         write_tx,
+        resize_tx,
+        shutdown_tx,
+        io_done_rx,
+        bash_runtime: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConnectionParams;
+
+    #[test]
+    fn connection_params_debug_redacts_key_path_and_password() {
+        let params = ConnectionParams {
+            host: "server.example.com".into(),
+            port: 2222,
+            user: "deploy".into(),
+            auth: "key".into(),
+            key_path: "KEY_PATH_SENTINEL".into(),
+            password: "PASSWORD_SENTINEL".into(),
+        };
+
+        let debug = format!("{params:?}");
+
+        assert!(debug.contains("server.example.com"));
+        assert!(debug.contains("deploy"));
+        assert!(debug.contains("key"));
+        assert!(!debug.contains("KEY_PATH_SENTINEL"));
+        assert!(!debug.contains("PASSWORD_SENTINEL"));
+    }
 }

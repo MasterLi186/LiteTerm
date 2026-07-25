@@ -9,6 +9,7 @@ pub struct SshConnection {
     pub user: String,
     pub auth: String,
     pub key_path: String,
+    pub password: String,
     pub group: String,
     pub group_color: [u8; 3],
 }
@@ -130,6 +131,7 @@ impl Sidebar {
                     user: host.user.clone(),
                     auth: host.auth.to_string(),
                     key_path: host.key_path.clone(),
+                    password: String::new(),
                     group: group.label.clone(),
                     group_color: color,
                 });
@@ -366,6 +368,7 @@ impl Sidebar {
                         user: self.new_conn.user.clone(),
                         auth: auth.to_string(),
                         key_path: self.new_conn.key_path.clone(),
+                        password: self.new_conn.password.clone(),
                         group: self.new_conn.group.clone(),
                         group_color: [0x58, 0xa6, 0xff],
                     });

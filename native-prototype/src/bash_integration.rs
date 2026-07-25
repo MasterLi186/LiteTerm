@@ -117,6 +117,28 @@ fi
     )
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct RemoteBashRuntime {
+    pub session: CompletionSessionKey,
+    pub bash_path: String,
+    pub rc_path: String,
+    pub candidate_path: String,
+    pub widget_sequence: String,
+}
+
+impl std::fmt::Debug for RemoteBashRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteBashRuntime")
+            .field("session", &self.session)
+            .field("bash_path", &self.bash_path)
+            .field("rc_path", &"<redacted>")
+            .field("candidate_path", &"<redacted>")
+            .field("widget_sequence", &"<redacted>")
+            .finish()
+    }
+}
+
 pub struct LocalBashRuntime {
     temp_dir: TempDir,
     session: CompletionSessionKey,
