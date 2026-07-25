@@ -26,11 +26,11 @@ fn monitor_source_presentation(
     let snapshot = snapshot.map_or_else(
         || "正在采集".into(),
         |data| {
-            let cpu = data
-                .cpu_percent
-                .is_finite()
-                .then(|| format!("{:.0}%", data.cpu_percent))
-                .unwrap_or_else(|| "--".into());
+            let cpu = if data.cpu_percent.is_finite() {
+                format!("{:.0}%", data.cpu_percent)
+            } else {
+                "--".into()
+            };
             format!("CPU {cpu} · {}", safe_monitor_text(&data.memory_text, 48))
         },
     );
