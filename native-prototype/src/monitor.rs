@@ -81,7 +81,7 @@ pub struct MonitorData {
     pub net_interfaces: Vec<NetIfaceInfo>,
 }
 
-fn format_bytes(bytes: u64) -> String {
+pub(crate) fn format_bytes(bytes: u64) -> String {
     const KIB: u64 = 1_024;
     const MIB: u64 = 1_048_576;
     const GIB: u64 = 1_073_741_824;
@@ -98,7 +98,7 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn format_uptime(secs: u64) -> String {
+pub(crate) fn format_uptime(secs: u64) -> String {
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
     let mins = (secs % 3600) / 60;

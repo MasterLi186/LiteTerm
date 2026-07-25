@@ -10,6 +10,7 @@ use winit::{
 
 mod terminal;
 mod renderer;
+mod remote_monitor;
 mod atlas;
 mod bash_integration;
 mod sidebar;
