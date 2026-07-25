@@ -23,11 +23,22 @@ use atlas::is_word_char;
 use terminal::TerminalState;
 use renderer::{GpuState, Renderer};
 use sidebar::Sidebar;
+use smart_completion::CompletionSessionKey;
 use tab_manager::TabManager;
 
 enum UserEvent {
     Redraw,
     SshReady { tab_id: String, result: Result<crate::ssh::SshHandle, String> },
+    CompletionHistory {
+        tab_id: String,
+        session: CompletionSessionKey,
+        path: std::path::PathBuf,
+        result: Result<Vec<u8>, String>,
+    },
+    TerminalIntegration {
+        tab_id: String,
+        event: terminal::IntegrationEvent,
+    },
 }
 
 impl std::fmt::Debug for UserEvent {
@@ -38,7 +49,80 @@ impl std::fmt::Debug for UserEvent {
                 let status = if result.is_ok() { "Ok" } else { "Err" };
                 write!(f, "SshReady({}, {})", tab_id, status)
             }
+            UserEvent::CompletionHistory { tab_id, result, .. } => {
+                let status = if result.is_ok() { "Ok" } else { "Err" };
+                write!(f, "CompletionHistory({}, {})", tab_id, status)
+            }
+            UserEvent::TerminalIntegration { tab_id, event } => {
+                let kind = match event {
+                    terminal::IntegrationEvent::HistoryPath { .. } => "HistoryPath",
+                };
+                write!(f, "TerminalIntegration({}, {})", tab_id, kind)
+            }
         }
+    }
+}
+
+fn completion_event_is_current(
+    current: &CompletionSessionKey,
+    session: &CompletionSessionKey,
+) -> bool {
+    current == session
+}
+
+fn apply_completion_history_event(
+    tab_manager: &mut TabManager,
+    tab_id: &str,
+    session: &CompletionSessionKey,
+    requested_path: &std::path::Path,
+    result: Result<Vec<u8>, String>,
+) -> bool {
+    let Some(index) = tab_manager.find_by_id(tab_id) else {
+        return false;
+    };
+    let completion = &mut tab_manager.tabs[index].completion;
+    if !completion_event_is_current(completion.session(), session)
+        || completion.history_path().map(std::path::Path::new) != Some(requested_path)
+    {
+        return false;
+    }
+
+    let history = result
+        .map(|bytes| smart_completion::parse_bash_history(&bytes))
+        .unwrap_or_default();
+    completion.replace_history(history);
+    true
+}
+
+fn apply_history_path_event(
+    tab_manager: &mut TabManager,
+    tab_id: &str,
+    session: &CompletionSessionKey,
+    path: String,
+) -> Option<(CompletionSessionKey, std::path::PathBuf)> {
+    let path_buf = std::path::PathBuf::from(&path);
+    let index = tab_manager.find_by_id(tab_id)?;
+    let completion = &mut tab_manager.tabs[index].completion;
+    if !completion_event_is_current(completion.session(), session)
+        || !path_buf.is_absolute()
+        || path.chars().any(char::is_control)
+        || completion.history_path() == Some(path.as_str())
+    {
+        return None;
+    }
+
+    completion.replace_history(Vec::new());
+    completion.set_history_path(path);
+    Some((completion.session().clone(), path_buf))
+}
+
+fn refresh_active_completion(tab_manager: &mut TabManager, input: Option<&str>) {
+    let Some(tab) = tab_manager.tabs.get_mut(tab_manager.active_idx) else {
+        return;
+    };
+    match input {
+        Some(prefix) if !prefix.is_empty() => tab.completion.refresh(prefix),
+        _ => tab.completion.clear_candidates(),
     }
 }
 
@@ -127,16 +211,41 @@ impl App {
     }
 
     /// Start a read_loop for a terminal on a background thread
-    fn start_read_loop(&self, terminal: Arc<Mutex<TerminalState>>) {
-        let proxy = self.proxy.clone();
+    fn start_read_loop(&self, tab_id: String, terminal: Arc<Mutex<TerminalState>>) {
+        let redraw_proxy = self.proxy.clone();
+        let event_proxy = self.proxy.clone();
         std::thread::spawn(move || {
             terminal::read_loop(
                 terminal,
                 move || {
-                    let _ = proxy.send_event(UserEvent::Redraw);
+                    let _ = redraw_proxy.send_event(UserEvent::Redraw);
                 },
-                |_event| {},
+                move |event| {
+                    let _ = event_proxy.send_event(UserEvent::TerminalIntegration {
+                        tab_id: tab_id.clone(),
+                        event,
+                    });
+                },
             );
+        });
+    }
+
+    fn request_local_history(
+        &self,
+        tab_id: String,
+        session: CompletionSessionKey,
+        path: std::path::PathBuf,
+    ) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let result =
+                smart_completion::read_history_tail(&path, smart_completion::MAX_HISTORY_BYTES);
+            let _ = proxy.send_event(UserEvent::CompletionHistory {
+                tab_id,
+                session,
+                path,
+                result,
+            });
         });
     }
 
@@ -144,8 +253,23 @@ impl App {
     fn new_local_tab(&mut self) {
         let (cols, rows) = self.grid_size();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let (_id, terminal) = self.tab_manager.new_local(&shell, cols, rows);
-        self.start_read_loop(terminal);
+        let (tab_id, terminal) = self.tab_manager.new_local(&shell, cols, rows);
+        let history_request = self
+            .tab_manager
+            .active()
+            .filter(|tab| tab.id == tab_id)
+            .and_then(|tab| {
+                tab.completion.history_path().map(|path| {
+                    (
+                        tab.completion.session().clone(),
+                        std::path::PathBuf::from(path),
+                    )
+                })
+            });
+        self.start_read_loop(tab_id.clone(), terminal);
+        if let Some((session, path)) = history_request {
+            self.request_local_history(tab_id, session, path);
+        }
     }
 
     /// Create a new SSH tab (connects in background)
@@ -181,6 +305,15 @@ impl App {
 
         let gpu = match &self.gpu { Some(g) => g, None => return };
         let window = match &self.window { Some(w) => w.clone(), None => return };
+
+        let active_input = self.tab_manager.active().and_then(|tab| {
+            let terminal = tab.terminal.clone();
+            terminal
+                .lock()
+                .ok()
+                .and_then(|terminal| terminal.current_bash_input())
+        });
+        refresh_active_completion(&mut self.tab_manager, active_input.as_deref());
 
         // 1. Run egui (tab bar + sidebar + dialogs)
         let egui_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
@@ -470,13 +603,36 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Redraw => {}
+            UserEvent::CompletionHistory {
+                tab_id,
+                session,
+                path,
+                result,
+            } => {
+                apply_completion_history_event(
+                    &mut self.tab_manager,
+                    &tab_id,
+                    &session,
+                    &path,
+                    result,
+                );
+            }
+            UserEvent::TerminalIntegration { tab_id, event } => match event {
+                terminal::IntegrationEvent::HistoryPath { session, path } => {
+                    let history_request =
+                        apply_history_path_event(&mut self.tab_manager, &tab_id, &session, path);
+                    if let Some((session, path)) = history_request {
+                        self.request_local_history(tab_id, session, path);
+                    }
+                }
+            },
             UserEvent::SshReady { tab_id, result } => {
                 match result {
                     Ok(handle) => {
                         eprintln!("[SSH] 连接成功: {}", tab_id);
                         let (cols, rows) = self.grid_size();
                         if let Some(terminal) = self.tab_manager.apply_ssh(& tab_id, handle, cols, rows) {
-                            self.start_read_loop(terminal);
+                            self.start_read_loop(tab_id.clone(), terminal);
                         }
                     }
                     Err(e) => {
@@ -777,6 +933,182 @@ impl ApplicationHandler<UserEvent> for App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn completion_event_matches_tab_generation_and_token() {
+        let current = CompletionSessionKey::new_for_test(4, "current");
+        assert!(completion_event_is_current(
+            &current,
+            &CompletionSessionKey::new_for_test(4, "current"),
+        ));
+        assert!(!completion_event_is_current(
+            &current,
+            &CompletionSessionKey::new_for_test(3, "current"),
+        ));
+        assert!(!completion_event_is_current(
+            &current,
+            &CompletionSessionKey::new_for_test(4, "old"),
+        ));
+    }
+
+    #[test]
+    fn completion_event_debug_redacts_token_path_and_history_bytes() {
+        let event = UserEvent::CompletionHistory {
+            tab_id: "tab-1".into(),
+            session: CompletionSessionKey::new_for_test(7, "secret-token"),
+            path: "/secret/history/path".into(),
+            result: Ok(b"secret-history-command".to_vec()),
+        };
+
+        let debug = format!("{event:?}");
+
+        assert!(debug.contains("CompletionHistory"));
+        assert!(debug.contains("tab-1"));
+        assert!(!debug.contains("secret-token"));
+        assert!(!debug.contains("/secret/history/path"));
+        assert!(!debug.contains("secret-history-command"));
+    }
+
+    #[test]
+    fn completion_history_handler_ignores_stale_tab_and_session() {
+        let mut manager = TabManager::new();
+        let (tab_id, _) = manager.new_local("bash", 80, 24);
+        let current = manager.tabs[0].completion.session().clone();
+        let current_path =
+            std::path::PathBuf::from(manager.tabs[0].completion.history_path().unwrap());
+        manager.tabs[0]
+            .completion
+            .replace_history(vec!["keep me".into()]);
+
+        assert!(!apply_completion_history_event(
+            &mut manager,
+            "missing-tab",
+            &current,
+            &current_path,
+            Ok(b"replace me\n".to_vec()),
+        ));
+        assert!(!apply_completion_history_event(
+            &mut manager,
+            &tab_id,
+            &CompletionSessionKey::new_for_test(current.generation, "stale"),
+            &current_path,
+            Ok(b"replace me\n".to_vec()),
+        ));
+        assert_eq!(manager.tabs[0].completion.history(), ["keep me"]);
+    }
+
+    #[test]
+    fn completion_history_handler_clears_current_history_on_read_failure() {
+        let mut manager = TabManager::new();
+        let (tab_id, _) = manager.new_local("bash", 80, 24);
+        let session = manager.tabs[0].completion.session().clone();
+        let current_path =
+            std::path::PathBuf::from(manager.tabs[0].completion.history_path().unwrap());
+        manager.tabs[0]
+            .completion
+            .replace_history(vec!["stale history".into()]);
+
+        assert!(apply_completion_history_event(
+            &mut manager,
+            &tab_id,
+            &session,
+            &current_path,
+            Err("unreadable".into()),
+        ));
+        assert!(manager.tabs[0].completion.history().is_empty());
+    }
+
+    #[test]
+    fn stale_default_history_cannot_overwrite_a_new_history_path() {
+        let mut manager = TabManager::new();
+        let (tab_id, _) = manager.new_local("bash", 80, 24);
+        let session = manager.tabs[0].completion.session().clone();
+        let default_path =
+            std::path::PathBuf::from(manager.tabs[0].completion.history_path().unwrap());
+        let custom_path = std::path::PathBuf::from("/tmp/liteterm-custom-history");
+        apply_history_path_event(
+            &mut manager,
+            &tab_id,
+            &session,
+            custom_path.to_string_lossy().into_owned(),
+        );
+
+        assert!(apply_completion_history_event(
+            &mut manager,
+            &tab_id,
+            &session,
+            &custom_path,
+            Ok(b"custom command\n".to_vec()),
+        ));
+        assert!(!apply_completion_history_event(
+            &mut manager,
+            &tab_id,
+            &session,
+            &default_path,
+            Ok(b"default command\n".to_vec()),
+        ));
+        assert_eq!(manager.tabs[0].completion.history(), ["custom command"]);
+    }
+
+    #[test]
+    fn history_path_handler_reloads_only_a_new_current_absolute_path() {
+        let mut manager = TabManager::new();
+        let (tab_id, _) = manager.new_local("bash", 80, 24);
+        let session = manager.tabs[0].completion.session().clone();
+        manager.tabs[0]
+            .completion
+            .replace_history(vec!["old history".into()]);
+        let new_path = std::path::PathBuf::from("/tmp/liteterm-other-history");
+
+        let request = apply_history_path_event(
+            &mut manager,
+            &tab_id,
+            &session,
+            new_path.to_string_lossy().into_owned(),
+        );
+
+        assert_eq!(request, Some((session.clone(), new_path.clone())));
+        assert_eq!(manager.tabs[0].completion.history_path(), new_path.to_str());
+        assert!(manager.tabs[0].completion.history().is_empty());
+        assert_eq!(
+            apply_history_path_event(
+                &mut manager,
+                &tab_id,
+                &session,
+                new_path.to_string_lossy().into_owned(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn active_completion_refreshes_for_input_and_clears_for_none_or_empty() {
+        let mut manager = TabManager::new();
+        manager.new_local("bash", 80, 24);
+        manager.tabs[0]
+            .completion
+            .replace_history(vec!["git status".into(), "git log".into()]);
+
+        refresh_active_completion(&mut manager, Some("git"));
+        assert_eq!(
+            manager.tabs[0].completion.candidates(),
+            ["git status", "git log"]
+        );
+        manager.tabs[0].completion.move_selection(1);
+
+        refresh_active_completion(&mut manager, None);
+        assert!(manager.tabs[0].completion.candidates().is_empty());
+        assert_eq!(manager.tabs[0].completion.selected(), 0);
+
+        refresh_active_completion(&mut manager, Some("git"));
+        refresh_active_completion(&mut manager, Some(""));
+        assert!(manager.tabs[0].completion.candidates().is_empty());
     }
 }
 

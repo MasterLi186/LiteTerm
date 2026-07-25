@@ -231,6 +231,11 @@ impl CompletionState {
         self.selected = self.selected.min(self.candidates.len().saturating_sub(1));
     }
 
+    pub fn clear_candidates(&mut self) {
+        self.candidates.clear();
+        self.selected = 0;
+    }
+
     pub fn move_selection(&mut self, delta: isize) {
         if self.candidates.is_empty() {
             return;
@@ -377,6 +382,31 @@ mod tests {
         state.replace_history(vec!["ls".into(), "pwd".into(), "ls".into()]);
         state.merge_executed("pwd");
         assert_eq!(state.history(), ["pwd", "ls"]);
+    }
+
+    #[test]
+    fn first_fill_does_not_merge_history_but_submission_does() {
+        let mut state = CompletionState::new(CompletionSessionKey::new_for_test(1, "x"));
+        state.replace_history(vec!["git status".into()]);
+        state.begin_fill(10);
+        assert_eq!(state.history(), ["git status"]);
+        state.finish_fill(10);
+        state.merge_executed("git log");
+        assert_eq!(state.history(), ["git log", "git status"]);
+    }
+
+    #[test]
+    fn clearing_candidates_also_resets_selection() {
+        let mut state = CompletionState::new(CompletionSessionKey::new_for_test(1, "clear"));
+        state.replace_history(vec!["git a".into(), "git b".into()]);
+        state.refresh("git");
+        state.move_selection(1);
+        assert_eq!(state.selected(), 1);
+
+        state.clear_candidates();
+
+        assert!(state.candidates().is_empty());
+        assert_eq!(state.selected(), 0);
     }
 
     #[test]

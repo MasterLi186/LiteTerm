@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use crate::bash_integration::is_bash_path;
 use crate::smart_completion::{CompletionSessionKey, CompletionState};
 use crate::terminal::TerminalState;
 use crate::sidebar::SshConnection;
@@ -24,6 +25,11 @@ pub struct TabManager {
     local_counter: usize,
 }
 
+fn default_bash_history_path(home: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    let home = home.filter(|path| path.is_absolute())?;
+    Some(home.join(".bash_history"))
+}
+
 impl TabManager {
     pub fn new() -> Self {
         Self {
@@ -41,7 +47,12 @@ impl TabManager {
         let label = format!("终端 {}", self.local_counter);
         let terminal = Arc::new(Mutex::new(TerminalState::new()));
         let session = CompletionSessionKey::new(1);
-        let completion = CompletionState::new(session.clone());
+        let mut completion = CompletionState::new(session.clone());
+        if is_bash_path(shell) {
+            if let Some(path) = default_bash_history_path(dirs::home_dir()) {
+                completion.set_history_path(path.to_string_lossy().into());
+            }
+        }
 
         {
             let mut term = terminal.lock().unwrap();
@@ -173,6 +184,43 @@ mod tests {
 
         assert_eq!(manager.tabs[0].completion.session().generation, 1);
         assert_eq!(manager.tabs[0].completion.session(), runtime.session());
+    }
+
+    #[test]
+    fn local_bash_tab_starts_with_an_absolute_default_history_path() {
+        let mut manager = TabManager::new();
+        manager.new_local("bash", 80, 24);
+
+        let path = std::path::Path::new(manager.tabs[0].completion.history_path().unwrap());
+        assert!(path.is_absolute());
+        assert!(path.ends_with(".bash_history"));
+    }
+
+    #[test]
+    fn default_bash_history_path_requires_an_absolute_home() {
+        assert_eq!(
+            super::default_bash_history_path(Some(std::path::PathBuf::from("relative-home"))),
+            None
+        );
+        assert_eq!(super::default_bash_history_path(None), None);
+
+        let absolute = super::default_bash_history_path(Some(std::path::PathBuf::from(
+            "/home/test-user",
+        )))
+        .unwrap();
+        assert_eq!(
+            std::path::Path::new(&absolute),
+            std::path::Path::new("/home/test-user/.bash_history")
+        );
+        assert!(std::path::Path::new(&absolute).is_absolute());
+    }
+
+    #[test]
+    fn non_bash_local_tab_does_not_get_a_bash_history_path() {
+        let mut manager = TabManager::new();
+        manager.new_local("fish", 80, 24);
+
+        assert_eq!(manager.tabs[0].completion.history_path(), None);
     }
 
     #[test]
