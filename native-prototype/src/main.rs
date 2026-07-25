@@ -12,6 +12,7 @@ mod terminal;
 mod renderer;
 mod atlas;
 mod sidebar;
+mod smart_completion;
 mod connections;
 mod ssh;
 mod tab_manager;
