@@ -78,7 +78,8 @@ impl RemoteSnapshotParser {
         }
         let total = values
             .iter()
-            .fold(0_u64, |sum, value| sum.saturating_add(*value));
+            .try_fold(0_u64, |sum, value| sum.checked_add(*value))
+            .ok_or_else(|| "远端监控数据缺少有效 STAT CPU 数据".to_string())?;
         let idle = values
             .get(3)
             .copied()
@@ -188,12 +189,17 @@ fn parse_memory(memory: &str) -> Result<MemoryValues, String> {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
+        let name = name.trim();
         if let Some(value) = value
             .split_whitespace()
             .next()
             .and_then(|value| value.parse::<u64>().ok())
         {
-            fields.insert(name.trim(), value.saturating_mul(1024));
+            if let Some(value) = value.checked_mul(1024) {
+                fields.insert(name, value);
+            } else if name == "MemTotal" {
+                return Err("远端监控数据缺少有效 MEM 内存总量".to_string());
+            }
         }
     }
     let total = fields
@@ -224,16 +230,17 @@ fn parse_disks(disks: &str) -> Vec<DiskItem> {
             if fields.len() < 6 {
                 return None;
             }
-            let total = fields[1].parse::<u64>().ok()?.saturating_mul(1024);
+            let total = fields[1].parse::<u64>().ok()?.checked_mul(1024)?;
             if total == 0 {
                 return None;
             }
-            let available = fields[3].parse::<u64>().ok()?.saturating_mul(1024);
+            let available = fields[3].parse::<u64>().ok()?.checked_mul(1024)?;
+            let percent = fields[4].strip_suffix('%')?.parse::<u64>().ok()?.min(100) as u8;
             Some(DiskItem {
                 mount: fields[5..].join(" "),
                 avail: format_bytes(available),
                 size: format_bytes(total),
-                percent: fields[4].trim_end_matches('%').parse().unwrap_or(0),
+                percent,
             })
         })
         .collect()
@@ -244,7 +251,7 @@ fn parse_uptime(uptime: &str) -> String {
         .split_whitespace()
         .next()
         .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| *value >= 0.0)
+        .filter(|value| value.is_finite() && *value >= 0.0)
         .unwrap_or(0.0) as u64;
     format_uptime(seconds)
 }
@@ -256,7 +263,12 @@ fn parse_load(load: &str) -> String {
         .map(str::parse::<f64>)
         .collect::<Result<Vec<_>, _>>();
     match values {
-        Ok(values) if values.len() == 3 => {
+        Ok(values)
+            if values.len() == 3
+                && values
+                    .iter()
+                    .all(|value| value.is_finite() && *value >= 0.0) =>
+        {
             format!("{:.2}, {:.2}, {:.2}", values[0], values[1], values[2])
         }
         _ => String::new(),
@@ -277,8 +289,11 @@ fn parse_processes(processes: &str) -> Vec<ProcessInfo> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            let rss = fields.next()?.parse::<u64>().ok()?.saturating_mul(1024);
+            let rss = fields.next()?.parse::<u64>().ok()?.checked_mul(1024)?;
             let cpu = fields.next()?.parse::<f32>().ok()?;
+            if !cpu.is_finite() || cpu < 0.0 {
+                return None;
+            }
             let name = fields.collect::<Vec<_>>().join(" ");
             (!name.is_empty()).then(|| ProcessInfo {
                 mem_mb: format_bytes(rss),
@@ -490,6 +505,80 @@ mod tests {
 
         let data = parser.parse(&reset, Duration::from_secs(2)).unwrap();
         assert_eq!(data.cpu_percent, 0.0);
+    }
+
+    #[test]
+    fn uptime_rejects_non_finite_and_negative_values() {
+        for value in ["NaN", "+inf", "-inf", "-1.0"] {
+            assert_eq!(super::parse_uptime(value), "0分钟");
+        }
+    }
+
+    #[test]
+    fn load_rejects_non_finite_and_negative_values() {
+        for load in ["NaN 0.2 0.3", "+inf 0.2 0.3", "-1.0 0.2 0.3"] {
+            assert_eq!(super::parse_load(load), "");
+        }
+    }
+
+    #[test]
+    fn process_parser_rejects_invalid_cpu_and_overflowing_rss() {
+        let output = format!(
+            "1 NaN nan\n1 inf infinite\n1 -1 negative\n{} 1 overflow\n1024 2.5 valid\n",
+            u64::MAX
+        );
+
+        let processes = super::parse_processes(&output);
+        assert_eq!(processes.len(), 1);
+        assert_eq!(processes[0].name, "valid");
+        assert_eq!(processes[0].mem_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn memory_parser_rejects_total_overflow_and_ignores_optional_overflow() {
+        let total_overflow = format!("MemTotal: {} kB\n", u64::MAX);
+        assert!(super::parse_memory(&total_overflow).is_err());
+
+        let optional_overflow = format!("MemTotal: 1 kB\nMemAvailable: {} kB\n", u64::MAX);
+        let memory = super::parse_memory(&optional_overflow).unwrap();
+        assert_eq!(memory.used, 1024);
+    }
+
+    #[test]
+    fn disk_parser_rejects_overflow_and_clamps_percentages() {
+        let disks = format!(
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/overflow {} 0 1 1% /overflow\n/dev/avail-overflow 100 0 {} 1% /avail-overflow\n/dev/one 100 0 50 101% /one\n/dev/two 100 0 50 999% /two\n/dev/invalid 100 0 50 nope /invalid\n/dev/negative 100 0 50 -1% /negative\n",
+            u64::MAX
+            , u64::MAX
+        );
+
+        let parsed = super::parse_disks(&disks);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].mount, "/one");
+        assert_eq!(parsed[0].percent, 100);
+        assert_eq!(parsed[1].mount, "/two");
+        assert_eq!(parsed[1].percent, 100);
+    }
+
+    #[test]
+    fn cpu_parser_rejects_aggregate_counter_overflow() {
+        let mut parser = RemoteSnapshotParser::default();
+        let output = format!("STAT\ncpu {} 1 0 0\nMEM\nMemTotal: 1 kB\nEND\n", u64::MAX);
+
+        assert!(parser.parse(&output, Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn reappearing_network_interface_starts_at_zero_rate() {
+        let mut parser = RemoteSnapshotParser::default();
+        parser.parse(SAMPLE, Duration::from_secs(2)).unwrap();
+        let absent = SAMPLE.replacen(" eth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n", "", 1);
+        parser.parse(&absent, Duration::from_secs(2)).unwrap();
+
+        let data = parser.parse(SAMPLE, Duration::from_secs(2)).unwrap();
+        assert_eq!(data.net_interfaces[0].name, "eth0");
+        assert_eq!(data.net_interfaces[0].rx_rate, 0);
+        assert_eq!(data.net_interfaces[0].tx_rate, 0);
     }
 
     #[test]
