@@ -63,18 +63,19 @@ impl RemoteSnapshotParser {
     }
 
     fn parse_cpu(&mut self, stat: &str) -> Result<f32, String> {
-        let values = stat
+        let line = stat
             .lines()
-            .find_map(|line| {
-                let mut fields = line.split_whitespace();
-                (fields.next() == Some("cpu")).then(|| {
-                    fields
-                        .filter_map(|field| field.parse::<u64>().ok())
-                        .collect::<Vec<_>>()
-                })
-            })
-            .filter(|values| !values.is_empty())
+            .find(|line| line.split_whitespace().next() == Some("cpu"))
             .ok_or_else(|| "远端监控数据缺少有效 STAT CPU 数据".to_string())?;
+        let values = line
+            .split_whitespace()
+            .skip(1)
+            .map(|field| field.parse::<u64>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "远端监控数据缺少有效 STAT CPU 数据".to_string())?;
+        if values.len() < 4 {
+            return Err("远端监控数据缺少有效 STAT CPU 数据".to_string());
+        }
         let total = values
             .iter()
             .fold(0_u64, |sum, value| sum.saturating_add(*value));
@@ -151,6 +152,9 @@ fn split_sections(output: &str) -> HashMap<&'static str, String> {
     let mut current = None;
     for line in output.lines() {
         if let Some(marker) = section_marker(line.trim()) {
+            if marker == "END" {
+                break;
+            }
             current = Some(marker);
             sections.entry(marker).or_insert_with(String::new);
         } else if let Some(marker) = current {
@@ -310,16 +314,29 @@ mod tests {
 
         assert_eq!(data.cpu_percent, 0.0);
         assert_eq!(data.cpu_name, "Example CPU");
+        assert_eq!(data.memory_used, 1_048_576_000);
+        assert_eq!(data.memory_total, 2_147_483_648);
         assert_eq!(data.memory_text, "1000M / 2.0G");
+        assert_eq!(data.memory_percent, 48.828125);
+        assert_eq!(data.swap_used, 262_144_000);
+        assert_eq!(data.swap_total, 524_288_000);
         assert_eq!(data.swap_text, "250M / 500M");
+        assert_eq!(data.swap_percent, 50.0);
         assert_eq!(data.uptime_text, "1天1小时1分钟");
         assert_eq!(data.load_text, "0.10, 0.20, 0.30");
         assert_eq!(data.disk_items.len(), 1);
         assert_eq!(data.disk_items[0].mount, "/");
+        assert_eq!(data.disk_items[0].avail, "512M");
+        assert_eq!(data.disk_items[0].size, "1.0G");
+        assert_eq!(data.disk_items[0].percent, 50);
+        assert_eq!(data.processes[0].mem_bytes, 10_485_760);
+        assert_eq!(data.processes[0].mem_mb, "10M");
+        assert_eq!(data.processes[0].cpu, 12.5);
         assert_eq!(data.processes[0].name, "/usr/bin/test process");
         assert_eq!(data.net_interfaces.len(), 1);
         assert_eq!(data.net_interfaces[0].name, "eth0");
         assert_eq!(data.net_interfaces[0].rx_rate, 0);
+        assert_eq!(data.net_interfaces[0].tx_rate, 0);
     }
 
     #[test]
@@ -364,15 +381,79 @@ mod tests {
     }
 
     #[test]
+    fn rejects_required_sections_without_valid_keys() {
+        let mut parser = RemoteSnapshotParser::default();
+        assert!(parser
+            .parse(
+                "STAT\ncpu 1 nope 2 3\nMEM\nMemTotal: 1 kB\nEND\n",
+                Duration::from_secs(1),
+            )
+            .is_err());
+        assert!(parser
+            .parse(
+                "STAT\ncpu 1 0 2 3\nMEM\nMemTotal: nope kB\nEND\n",
+                Duration::from_secs(1),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn end_marker_discards_later_replacement_sections() {
+        let output = format!("{SAMPLE}STAT\ncpu 1 nope 2 3\nMEM\nMemTotal: nope kB\n");
+
+        let sections = super::split_sections(&output);
+        assert_eq!(
+            sections["STAT"],
+            "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 50 0 25 400 25 0 0 0 0 0\n"
+        );
+        assert_eq!(sections["MEM"], "MemTotal:       2097152 kB\nMemAvailable:   1073152 kB\nSwapTotal:       512000 kB\nSwapFree:        256000 kB\n");
+    }
+
+    #[test]
+    fn end_marker_cannot_be_followed_by_required_sections() {
+        let mut parser = RemoteSnapshotParser::default();
+        let output = "END\nSTAT\ncpu 1 0 2 3\nMEM\nMemTotal: 1 kB\n";
+
+        assert!(parser.parse(output, Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
     fn malformed_optional_sections_are_safe() {
         let mut parser = RemoteSnapshotParser::default();
-        let output = "STAT\ncpu 1 xx 2 3\nMEM\nMemTotal: 1 kB\nDISK\nbad\nNET\neth0: nope\nLOAD\nnot load\nUPTIME\nnope\nPS\nbad\nCPUINFO\ninvalid\nEND\n";
+        let output = "STAT\ncpu 1 0 2 3\nMEM\nMemTotal: 1 kB\nDISK\nbad\nNET\neth0: nope\nLOAD\nnot load\nUPTIME\nnope\nPS\nbad\nCPUINFO\ninvalid\nEND\n";
 
         let data = parser.parse(output, Duration::ZERO).unwrap();
         assert_eq!(data.cpu_name, "Unknown CPU");
         assert!(data.disk_items.is_empty());
         assert!(data.processes.is_empty());
         assert!(data.net_interfaces.is_empty());
+    }
+
+    #[test]
+    fn mem_free_is_used_when_mem_available_is_absent() {
+        let mut parser = RemoteSnapshotParser::default();
+        let output = SAMPLE.replace("MemAvailable:   1073152 kB", "MemFree:        1048576 kB");
+
+        let data = parser.parse(&output, Duration::from_secs(1)).unwrap();
+        assert_eq!(data.memory_used, 1_073_741_824);
+        assert_eq!(data.memory_text, "1.0G / 2.0G");
+    }
+
+    #[test]
+    fn network_interfaces_are_sorted_and_loopback_is_ignored() {
+        let mut parser = RemoteSnapshotParser::default();
+        let output = SAMPLE.replace(
+            " lo: 999 0 0 0 0 0 0 0 999 0 0 0 0 0 0 0",
+            " zeta: 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0\n alpha: 1 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0\n lo: 999 0 0 0 0 0 0 0 999 0 0 0 0 0 0 0",
+        );
+
+        let data = parser.parse(&output, Duration::from_secs(1)).unwrap();
+        let names: Vec<_> = data
+            .net_interfaces
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect();
+        assert_eq!(names, ["alpha", "eth0", "zeta"]);
     }
 
     #[test]
@@ -402,14 +483,42 @@ mod tests {
     }
 
     #[test]
+    fn cpu_counter_reset_never_overflows() {
+        let mut parser = RemoteSnapshotParser::default();
+        parser.parse(SAMPLE, Duration::from_secs(2)).unwrap();
+        let reset = SAMPLE.replace("cpu  100 0 50 800 50 0 0 0 0 0", "cpu  1 0 1 1 0");
+
+        let data = parser.parse(&reset, Duration::from_secs(2)).unwrap();
+        assert_eq!(data.cpu_percent, 0.0);
+    }
+
+    #[test]
     fn command_is_fixed_and_contains_all_markers() {
-        for marker in [
-            "STAT", "MEM", "DISK", "NET", "LOAD", "UPTIME", "PS", "CPUINFO", "END",
+        for fragment in [
+            "LC_ALL=C",
+            "cat /proc/stat",
+            "cat /proc/meminfo",
+            "df -Pk",
+            "cat /proc/net/dev",
+            "cat /proc/loadavg",
+            "cat /proc/uptime",
+            "ps -eo rss=,pcpu=,comm= --sort=-pcpu | head -n 24",
+            "grep -m1 -E '^(model name|Hardware|Processor)[[:space:]]*:' /proc/cpuinfo",
         ] {
-            assert!(REMOTE_SNAPSHOT_COMMAND.contains(marker));
+            assert!(REMOTE_SNAPSHOT_COMMAND.contains(fragment));
+        }
+        let markers = [
+            "STAT", "MEM", "DISK", "NET", "LOAD", "UPTIME", "PS", "CPUINFO", "END",
+        ];
+        let mut previous = 0;
+        for marker in markers {
+            let position = REMOTE_SNAPSHOT_COMMAND.find(marker).unwrap();
+            assert!(position >= previous);
+            previous = position;
         }
         assert!(!REMOTE_SNAPSHOT_COMMAND.contains("{user}"));
         assert!(!REMOTE_SNAPSHOT_COMMAND.contains("{host}"));
         assert!(!REMOTE_SNAPSHOT_COMMAND.contains("$USER"));
+        assert!(!REMOTE_SNAPSHOT_COMMAND.contains("$HOST"));
     }
 }
