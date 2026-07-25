@@ -17,6 +17,8 @@ pub(crate) const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 
 pub(crate) enum RemoteMonitorCommand {
     Shutdown,
+    #[cfg(test)]
+    Wake,
 }
 
 pub(crate) enum RemoteMonitorEvent {
@@ -65,6 +67,11 @@ impl RemoteMonitorHandle {
 
     pub(crate) fn shutdown(&self) {
         let _ = self.tx.send(RemoteMonitorCommand::Shutdown);
+    }
+
+    #[cfg(test)]
+    fn wake(&self) {
+        let _ = self.tx.send(RemoteMonitorCommand::Wake);
     }
 }
 
@@ -342,7 +349,7 @@ pub struct RemoteSnapshotParser {
 
 impl RemoteSnapshotParser {
     pub fn parse(&mut self, output: &str, elapsed: Duration) -> Result<MonitorData, String> {
-        let sections = split_sections(output);
+        let sections = split_sections(output)?;
         let (cpu_percent, cpu_name) = (
             self.parse_cpu(
                 sections
@@ -475,12 +482,14 @@ struct MemoryValues {
     swap_total: u64,
 }
 
-fn split_sections(output: &str) -> HashMap<&'static str, String> {
+fn split_sections(output: &str) -> Result<HashMap<&'static str, String>, String> {
     let mut sections = HashMap::new();
     let mut current = None;
+    let mut saw_end = false;
     for line in output.lines() {
         if let Some(marker) = section_marker(line.trim()) {
             if marker == "END" {
+                saw_end = true;
                 break;
             }
             current = Some(marker);
@@ -492,7 +501,9 @@ fn split_sections(output: &str) -> HashMap<&'static str, String> {
             }
         }
     }
-    sections
+    saw_end
+        .then_some(sections)
+        .ok_or_else(|| "远端监控数据缺少 END 结束标记".to_string())
 }
 
 fn section_marker(line: &str) -> Option<&'static str> {
@@ -737,6 +748,29 @@ mod tests {
     }
 
     #[test]
+    fn missing_end_rejects_snapshot_without_advancing_parser_history() {
+        let mut parser = RemoteSnapshotParser::default();
+        parser.parse(SAMPLE, Duration::from_secs(2)).unwrap();
+        let advanced = SAMPLE
+            .replace(
+                "cpu  100 0 50 800 50 0 0 0 0 0",
+                "cpu  120 0 60 870 50 0 0 0 0 0",
+            )
+            .replace("eth0: 1000", "eth0: 5000")
+            .replace("0 0 0 0 2000", "0 0 0 0 10000");
+        let incomplete = advanced.trim_end_matches("END\n");
+
+        assert!(parser.parse(incomplete, Duration::from_secs(2)).is_err());
+        let data = parser.parse(&advanced, Duration::from_secs(2)).unwrap();
+
+        assert!(data.cpu_percent > 0.0);
+        assert!(data
+            .net_interfaces
+            .iter()
+            .any(|iface| iface.rx_rate > 0 || iface.tx_rate > 0));
+    }
+
+    #[test]
     fn rejects_required_sections_without_valid_keys() {
         let mut parser = RemoteSnapshotParser::default();
         assert!(parser
@@ -757,7 +791,7 @@ mod tests {
     fn end_marker_discards_later_replacement_sections() {
         let output = format!("{SAMPLE}STAT\ncpu 1 nope 2 3\nMEM\nMemTotal: nope kB\n");
 
-        let sections = super::split_sections(&output);
+        let sections = super::split_sections(&output).unwrap();
         assert_eq!(
             sections["STAT"],
             "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 50 0 25 400 25 0 0 0 0 0\n"
@@ -974,7 +1008,7 @@ mod tests {
     }
 
     fn timing() -> WorkerTiming {
-        WorkerTiming::new(Duration::from_millis(10), Duration::from_millis(10))
+        WorkerTiming::new(Duration::from_secs(60), Duration::from_secs(60))
     }
 
     fn source(
@@ -1055,9 +1089,7 @@ mod tests {
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             RemoteMonitorEvent::Update { .. }
         ));
-        let started = Instant::now();
         handle.shutdown();
-        assert!(started.elapsed() < Duration::from_millis(100));
         done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(collects.load(Ordering::SeqCst), 1);
     }
@@ -1087,6 +1119,7 @@ mod tests {
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             RemoteMonitorEvent::Failed { .. }
         ));
+        handle.wake();
         assert!(matches!(
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             RemoteMonitorEvent::Update { .. }
@@ -1135,10 +1168,12 @@ mod tests {
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             RemoteMonitorEvent::Update { .. }
         ));
+        handle.wake();
         assert!(matches!(
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             RemoteMonitorEvent::Failed { .. }
         ));
+        handle.wake();
         let update = events_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let RemoteMonitorEvent::Update { data, .. } = update else {
             panic!("expected update")

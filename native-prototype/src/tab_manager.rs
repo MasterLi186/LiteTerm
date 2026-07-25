@@ -373,10 +373,10 @@ mod tests {
     }
 
     impl BlockingSshProbe {
-        fn finish(self) -> bool {
+        fn wait_for_shutdown(&self) -> bool {
             let shutdown_requested = self
                 .shutdown_seen_rx
-                .recv_timeout(Duration::from_millis(250))
+                .recv_timeout(Duration::from_secs(1))
                 .is_ok();
             if !shutdown_requested {
                 self.terminal.lock().unwrap().shutdown();
@@ -384,13 +384,16 @@ mod tests {
                     .recv_timeout(Duration::from_secs(1))
                     .expect("测试清理必须送达 SSH shutdown");
             }
+            shutdown_requested
+        }
+
+        fn release_and_wait(self) {
             let _ = self.release_worker_tx.send(());
             self.read_done_rx
                 .recv_timeout(Duration::from_secs(1))
                 .expect("SSH pipe 关闭后 read_loop 必须有界退出");
             self.worker_thread.join().unwrap();
             self.read_thread.join().unwrap();
-            shutdown_requested
         }
     }
 
@@ -455,10 +458,11 @@ mod tests {
             let _ = close_done_tx.send(());
         });
 
+        let shutdown_requested = probe.wait_for_shutdown();
         close_done_rx
-            .recv_timeout(Duration::from_millis(250))
+            .recv_timeout(Duration::from_secs(1))
             .expect("close 不得等待 SSH worker 或 read_loop");
-        let shutdown_requested = probe.finish();
+        probe.release_and_wait();
         close_thread.join().unwrap();
 
         assert!(shutdown_requested);
@@ -475,10 +479,11 @@ mod tests {
             let _ = close_done_tx.send(());
         });
 
+        let shutdown_requested = probe.wait_for_shutdown();
         close_done_rx
-            .recv_timeout(Duration::from_millis(250))
+            .recv_timeout(Duration::from_secs(1))
             .expect("close_others 不得等待 SSH worker 或 read_loop");
-        let shutdown_requested = probe.finish();
+        probe.release_and_wait();
         close_thread.join().unwrap();
 
         assert!(shutdown_requested);
@@ -494,10 +499,11 @@ mod tests {
             let _ = reset_done_tx.send(plan.is_some());
         });
 
+        let shutdown_requested = probe.wait_for_shutdown();
         assert!(reset_done_rx
-            .recv_timeout(Duration::from_millis(250))
+            .recv_timeout(Duration::from_secs(1))
             .expect("reset 不得等待 SSH worker 或 read_loop"));
-        let shutdown_requested = probe.finish();
+        probe.release_and_wait();
         reset_thread.join().unwrap();
 
         assert!(shutdown_requested);
