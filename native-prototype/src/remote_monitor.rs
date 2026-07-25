@@ -748,16 +748,15 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             mpsc, Arc,
         },
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     use crate::monitor::MonitorKey;
 
     use super::{
         read_snapshot_bounded, start_worker_with_sink_for_test,
-        start_worker_with_sink_for_test_and_spawner, RemoteMonitorEvent,
-        RemoteSnapshotParser, SnapshotSource, WorkerTiming, MAX_SNAPSHOT_BYTES,
-        REMOTE_SNAPSHOT_COMMAND,
+        start_worker_with_sink_for_test_and_spawner, RemoteMonitorEvent, RemoteSnapshotParser,
+        SnapshotSource, WorkerTiming, MAX_SNAPSHOT_BYTES, REMOTE_SNAPSHOT_COMMAND,
     };
 
     const SAMPLE: &str = "STAT\ncpu  100 0 50 800 50 0 0 0 0 0\ncpu0 50 0 25 400 25 0 0 0 0 0\nMEM\nMemTotal:       2097152 kB\nMemAvailable:   1073152 kB\nSwapTotal:       512000 kB\nSwapFree:        256000 kB\nDISK\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1048576 524288 524288 50% /\nNET\nInter-|   Receive                                                |  Transmit\n eth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n lo: 999 0 0 0 0 0 0 0 999 0 0 0 0 0 0 0\nLOAD\n0.10 0.20 0.30 1/100 100\nUPTIME\n90060.00 0.00\nPS\n10240 12.5 /usr/bin/test process\nCPUINFO\nmodel name : Example CPU\nEND\n";
@@ -1206,19 +1205,34 @@ mod tests {
 
     #[test]
     fn shutdown_is_nonblocking_idempotent_and_reports_worker_done() {
-        let collects = Arc::new(AtomicUsize::new(0));
-        let drops = Arc::new(AtomicUsize::new(0));
-        let (events_tx, events_rx) = mpsc::channel();
-        let source = source([Ok(SAMPLE.to_string())], &collects, &drops);
-        let mut sources = VecDeque::from([Ok(source)]);
+        struct BlockingSource {
+            entered: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+        }
+
+        impl SnapshotSource for BlockingSource {
+            fn collect(&mut self) -> Result<String, String> {
+                self.entered
+                    .send(())
+                    .map_err(|_| "进入通知接收端已关闭".to_string())?;
+                self.release
+                    .recv()
+                    .map_err(|_| "释放通知发送端已关闭".to_string())?;
+                Ok(SAMPLE.to_string())
+            }
+        }
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (events_tx, _events_rx) = mpsc::channel();
+        let mut source = Some(BlockingSource {
+            entered: entered_tx,
+            release: release_rx,
+        });
         let mut handle = super::start_worker_with_sink(
             MonitorKey::remote("user", "host", 22),
             9,
-            move || {
-                sources
-                    .pop_front()
-                    .unwrap_or_else(|| Err("no source".to_string()))
-            },
+            move || source.take().ok_or_else(|| "no source".to_string()),
             events_tx,
             timing(),
         )
@@ -1227,18 +1241,26 @@ mod tests {
             .take_done_receiver_for_test()
             .expect("生产 handle 应提供独立完成通知");
 
-        assert!(matches!(
-            events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            RemoteMonitorEvent::Update { .. }
-        ));
-        let started = Instant::now();
-        handle.shutdown();
-        handle.shutdown();
-        drop(handle);
-
-        assert!(started.elapsed() < Duration::from_millis(100));
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker 应进入阻塞 collect");
+        let (returned_tx, returned_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            handle.shutdown();
+            handle.shutdown();
+            drop(handle);
+            let _ = returned_tx.send(());
+        });
+        returned_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shutdown 和 drop 不应等待阻塞中的 collect");
+        assert!(
+            done.try_recv().is_err(),
+            "释放数据源前 worker 不应提前报告完成"
+        );
+        release_tx.send(()).expect("应能释放阻塞的数据源");
         done.recv_timeout(Duration::from_secs(1))
-            .expect("等待中的 worker 应被 shutdown 唤醒并结束");
+            .expect("collect 返回后 worker 应观察 shutdown 并结束");
     }
 
     #[test]
