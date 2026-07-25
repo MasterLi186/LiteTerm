@@ -130,9 +130,13 @@ impl App {
     fn start_read_loop(&self, terminal: Arc<Mutex<TerminalState>>) {
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            terminal::read_loop(terminal, move || {
-                let _ = proxy.send_event(UserEvent::Redraw);
-            });
+            terminal::read_loop(
+                terminal,
+                move || {
+                    let _ = proxy.send_event(UserEvent::Redraw);
+                },
+                |_event| {},
+            );
         });
     }
 
