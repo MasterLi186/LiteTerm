@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use winit::{
@@ -45,6 +46,7 @@ enum UserEvent {
         tab_id: String,
         event: terminal::IntegrationEvent,
     },
+    RemoteMonitor(remote_monitor::RemoteMonitorEvent),
 }
 
 impl std::fmt::Debug for UserEvent {
@@ -65,8 +67,48 @@ impl std::fmt::Debug for UserEvent {
                 };
                 write!(f, "TerminalIntegration({}, {})", tab_id, kind)
             }
+            UserEvent::RemoteMonitor(_) => write!(f, "RemoteMonitor"),
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RemoteMonitorReconcileActions {
+    starts: Vec<(monitor::MonitorKey, ssh::ConnectionParams)>,
+    stops: Vec<monitor::MonitorKey>,
+}
+
+fn monitor_key_sort_key(key: &monitor::MonitorKey) -> (&str, &str, u16) {
+    match key {
+        monitor::MonitorKey::Local => ("", "", 0),
+        monitor::MonitorKey::Remote { user, host, port } => (user, host, *port),
+    }
+}
+
+fn reconcile_actions(
+    required: &HashMap<monitor::MonitorKey, ssh::ConnectionParams>,
+    running: &HashSet<monitor::MonitorKey>,
+) -> RemoteMonitorReconcileActions {
+    let mut starts = required
+        .iter()
+        .filter(|(key, _)| !running.contains(*key))
+        .map(|(key, params)| (key.clone(), params.clone()))
+        .collect::<Vec<_>>();
+    starts.sort_by(|(left, _), (right, _)| {
+        monitor_key_sort_key(left).cmp(&monitor_key_sort_key(right))
+    });
+    let mut stops = running
+        .iter()
+        .filter(|key| !required.contains_key(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    stops.sort_by(|left, right| monitor_key_sort_key(left).cmp(&monitor_key_sort_key(right)));
+    RemoteMonitorReconcileActions { starts, stops }
+}
+
+fn next_remote_monitor_generation(counter: &mut u64) -> u64 {
+    *counter = counter.wrapping_add(1).max(1);
+    *counter
 }
 
 fn completion_event_is_current(
@@ -145,6 +187,9 @@ struct App {
     gpu: Option<GpuState>,
     renderer: Option<Renderer>,
     tab_manager: TabManager,
+    remote_monitors: HashMap<monitor::MonitorKey, remote_monitor::RemoteMonitorHandle>,
+    remote_monitor_generations: HashMap<monitor::MonitorKey, u64>,
+    next_remote_monitor_generation: u64,
     cursor_visible: bool,
     cursor_timer: Instant,
     startup_time: Instant,
@@ -176,6 +221,9 @@ impl App {
             gpu: None,
             renderer: None,
             tab_manager: TabManager::new(),
+            remote_monitors: HashMap::new(),
+            remote_monitor_generations: HashMap::new(),
+            next_remote_monitor_generation: 0,
             cursor_visible: true,
             cursor_timer: Instant::now(),
             startup_time: Instant::now(),
@@ -214,6 +262,35 @@ impl App {
     /// Get the active terminal, if any
     fn active_terminal(&self) -> Option<Arc<Mutex<TerminalState>>> {
         self.tab_manager.active_terminal()
+    }
+
+    fn reconcile_remote_monitors(&mut self) {
+        let required = self.tab_manager.remote_monitor_requirements();
+        let running = self.remote_monitors.keys().cloned().collect::<HashSet<_>>();
+        let actions = reconcile_actions(&required, &running);
+        for key in actions.stops {
+            if let Some(handle) = self.remote_monitors.remove(&key) {
+                handle.shutdown();
+            }
+            self.remote_monitor_generations.remove(&key);
+        }
+        for (key, params) in actions.starts {
+            let generation = next_remote_monitor_generation(&mut self.next_remote_monitor_generation);
+            let proxy = self.proxy.clone();
+            let handle = remote_monitor::start_ssh_worker_with_sink(key.clone(), generation, params, move |event| {
+                proxy.send_event(UserEvent::RemoteMonitor(event)).map_err(|_| ())
+            });
+            debug_assert_eq!(handle.generation(), generation);
+            self.remote_monitor_generations.insert(key.clone(), generation);
+            self.remote_monitors.insert(key, handle);
+        }
+    }
+
+    fn shutdown_remote_monitors(&mut self) {
+        for (_, handle) in self.remote_monitors.drain() {
+            handle.shutdown();
+        }
+        self.remote_monitor_generations.clear();
     }
 
     /// Start a read_loop for a terminal on a background thread
@@ -432,6 +509,7 @@ impl App {
             if self.tab_manager.is_empty() {
                 self.new_local_tab();
             }
+            self.reconcile_remote_monitors();
         }
         if deferred_new {
             eprintln!("[MAIN] deferred new tab");
@@ -611,9 +689,17 @@ impl ApplicationHandler<UserEvent> for App {
         self.window = Some(window);
     }
 
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.shutdown_remote_monitors();
+    }
+
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Redraw => {}
+            UserEvent::RemoteMonitor(event) => {
+                let _ = event;
+                if let Some(window) = &self.window { window.request_redraw(); }
+            }
             UserEvent::CompletionHistory {
                 tab_id,
                 session,
@@ -654,12 +740,14 @@ impl ApplicationHandler<UserEvent> for App {
                         Ok(handle) => {
                             eprintln!("[SSH] 连接成功: {}", tab_id);
                             let (cols, rows) = self.grid_size();
-                            if let Some(terminal) = self
+                            let applied = if let Some(terminal) = self
                                 .tab_manager
                                 .apply_ssh(&tab_id, &session, handle, cols, rows)
                             {
                                 self.start_read_loop(tab_id.clone(), terminal);
-                            }
+                                true
+                            } else { false };
+                            if applied { self.reconcile_remote_monitors(); }
                         }
                         Err(e) => {
                             eprintln!("[SSH] 连接失败: {}: {}", tab_id, e);
@@ -695,7 +783,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
 
         match event {
-            WindowEvent::CloseRequested => { event_loop.exit(); }
+            WindowEvent::CloseRequested => { self.shutdown_remote_monitors(); event_loop.exit(); }
 
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = &mut self.gpu { gpu.resize(size.width, size.height); }
@@ -825,6 +913,7 @@ impl ApplicationHandler<UserEvent> for App {
                             let idx = self.tab_manager.active_idx;
                             self.tab_manager.close(idx);
                             if self.tab_manager.is_empty() { self.new_local_tab(); }
+                            self.reconcile_remote_monitors();
                             self.do_render();
                             return;
                         }

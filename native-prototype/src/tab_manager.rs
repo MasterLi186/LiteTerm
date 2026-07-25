@@ -3,6 +3,7 @@ use crate::monitor::MonitorKey;
 use crate::sidebar::SshConnection;
 use crate::smart_completion::{CompletionSessionKey, CompletionState};
 use crate::terminal::TerminalState;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -41,6 +42,7 @@ pub struct Tab {
     pub terminal: Arc<Mutex<TerminalState>>,
     pub read_thread_started: bool,
     pub completion: CompletionState,
+    pub ssh_connected: bool,
 }
 
 impl Tab {
@@ -120,6 +122,7 @@ impl TabManager {
             terminal: terminal.clone(),
             read_thread_started: false,
             completion,
+            ssh_connected: false,
         };
         self.tabs.push(tab);
         self.active_idx = self.tabs.len() - 1;
@@ -140,6 +143,7 @@ impl TabManager {
             terminal,
             read_thread_started: false,
             completion: CompletionState::new(CompletionSessionKey::new(1)),
+            ssh_connected: false,
         };
         self.tabs.push(tab);
         self.active_idx = self.tabs.len() - 1;
@@ -174,6 +178,7 @@ impl TabManager {
             let mut term = tab.terminal.lock().unwrap();
             term.apply_ssh_handle(handle, cols, rows);
         }
+        tab.ssh_connected = true;
         // Update label to remove "(连接中...)"
         if let TabType::Ssh { ref label, .. } = tab.tab_type {
             tab.label = label.clone();
@@ -189,6 +194,7 @@ impl TabManager {
         };
         let session = tab.completion.session().successor();
         tab.completion.reset_session(session.clone());
+        tab.ssh_connected = false;
         shutdown_terminal(&tab.terminal);
         let old_terminal = std::mem::replace(
             &mut tab.terminal,
@@ -252,6 +258,21 @@ impl TabManager {
         self.active()
             .map(Tab::monitor_key)
             .unwrap_or(MonitorKey::Local)
+    }
+
+    pub fn remote_monitor_requirements(&self) -> HashMap<MonitorKey, crate::ssh::ConnectionParams> {
+        let mut requirements = HashMap::new();
+        for tab in &self.tabs {
+            if !tab.ssh_connected {
+                continue;
+            }
+            if let TabType::Ssh { params, .. } = &tab.tab_type {
+                requirements
+                    .entry(MonitorKey::from_ssh(params))
+                    .or_insert_with(|| params.clone());
+            }
+        }
+        requirements
     }
 
     pub fn active_terminal(&self) -> Option<Arc<Mutex<TerminalState>>> {
@@ -575,6 +596,7 @@ mod tests {
             .unwrap()
             .local_bash_runtime
             .is_none());
+        assert!(!manager.tabs[0].ssh_connected);
     }
 
     #[test]
@@ -616,6 +638,8 @@ mod tests {
             .is_none());
         assert!(shutdown_rx.try_recv().is_ok());
         assert_eq!(manager.tabs[0].completion.session(), &current);
+        assert!(!manager.tabs[0].ssh_connected);
+        assert!(manager.remote_monitor_requirements().is_empty());
     }
 
     #[test]
@@ -629,6 +653,7 @@ mod tests {
             .apply_ssh(&tab_id, &session, handle, 80, 24)
             .is_some());
         assert_eq!(manager.tabs[0].label, "测试");
+        assert!(manager.tabs[0].ssh_connected);
     }
 
     #[test]
@@ -669,6 +694,61 @@ mod tests {
             manager.active_monitor_key(),
             MonitorKey::remote("test", "127.0.0.1", 22)
         );
+    }
+
+    #[test]
+    fn remote_monitor_requirements_include_each_connected_remote_once() {
+        let mut manager = TabManager::new();
+        let shared = test_ssh_connection_for("shared.example", "alice", 22);
+        let distinct = test_ssh_connection_for("shared.example", "bob", 22);
+        let first_id = manager.new_ssh_placeholder(&shared);
+        let second_id = manager.new_ssh_placeholder(&shared);
+        let third_id = manager.new_ssh_placeholder(&distinct);
+        manager.new_ssh_placeholder(&test_ssh_connection_for("pending.example", "carol", 22));
+        let first_session = manager.tabs[0].completion.session().clone();
+        let second_session = manager.tabs[1].completion.session().clone();
+        let third_session = manager.tabs[2].completion.session().clone();
+
+        manager.new_local("sh", 80, 24);
+        assert!(manager
+            .apply_ssh(&first_id, &first_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        assert!(manager
+            .apply_ssh(&second_id, &second_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        assert!(manager
+            .apply_ssh(&third_id, &third_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+
+        let requirements = manager.remote_monitor_requirements();
+
+        assert_eq!(requirements.len(), 2);
+        assert_eq!(
+            requirements.get(&MonitorKey::remote("alice", "shared.example", 22)),
+            Some(&crate::ssh::ConnectionParams::from(&shared))
+        );
+        assert_eq!(
+            requirements.get(&MonitorKey::remote("bob", "shared.example", 22)),
+            Some(&crate::ssh::ConnectionParams::from(&distinct))
+        );
+    }
+
+    #[test]
+    fn reconnect_reset_marks_an_applied_ssh_tab_disconnected() {
+        let mut manager = TabManager::new();
+        let connection = test_ssh_connection();
+        let tab_id = manager.new_ssh_placeholder(&connection);
+        let session = manager.tabs[0].completion.session().clone();
+
+        assert!(manager
+            .apply_ssh(&tab_id, &session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        assert!(manager.tabs[0].ssh_connected);
+
+        manager.reset_ssh_for_reconnect(0).unwrap();
+
+        assert!(!manager.tabs[0].ssh_connected);
+        assert!(manager.remote_monitor_requirements().is_empty());
     }
 
     #[test]
