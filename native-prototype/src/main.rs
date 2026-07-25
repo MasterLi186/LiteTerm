@@ -299,9 +299,14 @@ impl App {
             let handle = remote_monitor::start_ssh_worker_with_sink(key.clone(), generation, params, move |event| {
                 proxy.send_event(UserEvent::RemoteMonitor(event)).map_err(|_| ())
             });
-            debug_assert_eq!(handle.generation(), generation);
-            self.remote_monitor_generations.insert(key.clone(), generation);
-            self.remote_monitors.insert(key, handle);
+            match handle {
+                Ok(handle) => {
+                    debug_assert_eq!(handle.generation(), generation);
+                    self.remote_monitor_generations.insert(key.clone(), generation);
+                    self.remote_monitors.insert(key, handle);
+                }
+                Err(error) => eprintln!("[MONITOR] 启动远端监控 worker 失败: {error}"),
+            }
         }
     }
 

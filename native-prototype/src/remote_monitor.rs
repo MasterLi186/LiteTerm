@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::{
     fmt,
-    io::Read,
+    io::{self, Read},
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread,
     time::{Duration, Instant},
@@ -172,7 +172,7 @@ pub(crate) fn start_ssh_worker_with_sink<E>(
     generation: u64,
     params: crate::ssh::ConnectionParams,
     sink: E,
-) -> RemoteMonitorHandle
+) -> io::Result<RemoteMonitorHandle>
 where
     E: EventSink,
 {
@@ -191,7 +191,7 @@ fn start_worker_with_sink<S, F, E>(
     source_factory: F,
     sink: E,
     timing: WorkerTiming,
-) -> RemoteMonitorHandle
+) -> io::Result<RemoteMonitorHandle>
 where
     S: SnapshotSource + Send + 'static,
     F: FnMut() -> Result<S, String> + Send + 'static,
@@ -203,24 +203,57 @@ where
 fn start_worker_with_optional_done<S, F, E>(
     key: MonitorKey,
     generation: u64,
-    mut source_factory: F,
+    source_factory: F,
     sink: E,
     timing: WorkerTiming,
     done: Option<Sender<()>>,
-) -> RemoteMonitorHandle
+) -> io::Result<RemoteMonitorHandle>
 where
     S: SnapshotSource + Send + 'static,
     F: FnMut() -> Result<S, String> + Send + 'static,
     E: EventSink,
 {
+    start_worker_with_optional_done_and_spawner(
+        key,
+        generation,
+        source_factory,
+        sink,
+        timing,
+        done,
+        spawn_named_remote_monitor_worker,
+    )
+}
+
+fn start_worker_with_optional_done_and_spawner<S, F, E, Spawn>(
+    key: MonitorKey,
+    generation: u64,
+    mut source_factory: F,
+    sink: E,
+    timing: WorkerTiming,
+    done: Option<Sender<()>>,
+    spawn: Spawn,
+) -> io::Result<RemoteMonitorHandle>
+where
+    S: SnapshotSource + Send + 'static,
+    F: FnMut() -> Result<S, String> + Send + 'static,
+    E: EventSink,
+    Spawn: FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
+{
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
+    spawn(Box::new(move || {
         run_worker(key, generation, &mut source_factory, &sink, timing, &rx);
         if let Some(done) = done {
             let _ = done.send(());
         }
-    });
-    RemoteMonitorHandle { generation, tx }
+    }))?;
+    Ok(RemoteMonitorHandle { generation, tx })
+}
+
+fn spawn_named_remote_monitor_worker(worker: Box<dyn FnOnce() + Send>) -> io::Result<()> {
+    thread::Builder::new()
+        .name("liteterm-remote-monitor".to_string())
+        .spawn(worker)
+        .map(|_| ())
 }
 
 fn run_worker<S, F, E>(
@@ -332,13 +365,40 @@ fn start_worker_with_sink_for_test<S, F, E>(
     sink: E,
     timing: WorkerTiming,
     done: Sender<()>,
-) -> RemoteMonitorHandle
+) -> io::Result<RemoteMonitorHandle>
 where
     S: SnapshotSource + Send + 'static,
     F: FnMut() -> Result<S, String> + Send + 'static,
     E: EventSink,
 {
     start_worker_with_optional_done(key, generation, source_factory, sink, timing, Some(done))
+}
+
+#[cfg(test)]
+fn start_worker_with_sink_for_test_and_spawner<S, F, E, Spawn>(
+    key: MonitorKey,
+    generation: u64,
+    source_factory: F,
+    sink: E,
+    timing: WorkerTiming,
+    done: Sender<()>,
+    spawn: Spawn,
+) -> io::Result<RemoteMonitorHandle>
+where
+    S: SnapshotSource + Send + 'static,
+    F: FnMut() -> Result<S, String> + Send + 'static,
+    E: EventSink,
+    Spawn: FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
+{
+    start_worker_with_optional_done_and_spawner(
+        key,
+        generation,
+        source_factory,
+        sink,
+        timing,
+        Some(done),
+        spawn,
+    )
 }
 
 #[derive(Default)]
@@ -656,7 +716,7 @@ fn percent(used: u64, total: u64) -> f32 {
 mod tests {
     use std::{
         collections::VecDeque,
-        io::Cursor,
+        io::{self, Cursor},
         sync::{
             atomic::{AtomicUsize, Ordering},
             mpsc, Arc,
@@ -667,12 +727,34 @@ mod tests {
     use crate::monitor::MonitorKey;
 
     use super::{
-        read_snapshot_bounded, start_worker_with_sink_for_test, RemoteMonitorEvent,
+        read_snapshot_bounded, start_worker_with_sink_for_test,
+        start_worker_with_sink_for_test_and_spawner, RemoteMonitorEvent,
         RemoteSnapshotParser, SnapshotSource, WorkerTiming, MAX_SNAPSHOT_BYTES,
         REMOTE_SNAPSHOT_COMMAND,
     };
 
     const SAMPLE: &str = "STAT\ncpu  100 0 50 800 50 0 0 0 0 0\ncpu0 50 0 25 400 25 0 0 0 0 0\nMEM\nMemTotal:       2097152 kB\nMemAvailable:   1073152 kB\nSwapTotal:       512000 kB\nSwapFree:        256000 kB\nDISK\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1048576 524288 524288 50% /\nNET\nInter-|   Receive                                                |  Transmit\n eth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n lo: 999 0 0 0 0 0 0 0 999 0 0 0 0 0 0 0\nLOAD\n0.10 0.20 0.30 1/100 100\nUPTIME\n90060.00 0.00\nPS\n10240 12.5 /usr/bin/test process\nCPUINFO\nmodel name : Example CPU\nEND\n";
+
+    #[test]
+    fn worker_spawn_failure_returns_an_error_without_a_handle() {
+        let result = start_worker_with_sink_for_test_and_spawner(
+            MonitorKey::remote("alice", "alpha.example", 22),
+            1,
+            || -> Result<FakeSource, String> {
+                Ok(FakeSource {
+                    results: VecDeque::new(),
+                    collects: Arc::new(AtomicUsize::new(0)),
+                    drops: Arc::new(AtomicUsize::new(0)),
+                })
+            },
+            |_| Ok(()),
+            WorkerTiming::new(Duration::ZERO, Duration::ZERO),
+            mpsc::channel().0,
+            |_| Err(io::Error::other("spawn failed")),
+        );
+
+        assert!(result.is_err());
+    }
 
     #[test]
     fn parses_complete_snapshot_into_monitor_shape() {
@@ -1083,7 +1165,8 @@ mod tests {
             events_tx,
             timing(),
             done_tx,
-        );
+        )
+        .unwrap();
 
         assert!(matches!(
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -1113,7 +1196,8 @@ mod tests {
             events_tx,
             timing(),
             done_tx,
-        );
+        )
+        .unwrap();
 
         assert!(matches!(
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -1162,7 +1246,8 @@ mod tests {
             events_tx,
             timing(),
             done_tx,
-        );
+        )
+        .unwrap();
 
         assert!(matches!(
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -1206,7 +1291,8 @@ mod tests {
             |_event| Err(()),
             timing(),
             done_tx,
-        );
+        )
+        .unwrap();
 
         done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(collects.load(Ordering::SeqCst), 1);
