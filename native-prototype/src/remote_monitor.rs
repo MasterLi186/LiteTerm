@@ -58,6 +58,8 @@ impl fmt::Debug for RemoteMonitorEvent {
 pub(crate) struct RemoteMonitorHandle {
     generation: u64,
     tx: Sender<RemoteMonitorCommand>,
+    #[cfg(test)]
+    done_rx: Option<Receiver<()>>,
 }
 
 impl RemoteMonitorHandle {
@@ -70,8 +72,19 @@ impl RemoteMonitorHandle {
     }
 
     #[cfg(test)]
+    fn take_done_receiver_for_test(&mut self) -> Option<Receiver<()>> {
+        self.done_rx.take()
+    }
+
+    #[cfg(test)]
     fn wake(&self) {
         let _ = self.tx.send(RemoteMonitorCommand::Wake);
+    }
+}
+
+impl Drop for RemoteMonitorHandle {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -240,13 +253,27 @@ where
     Spawn: FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
 {
     let (tx, rx) = mpsc::channel();
+    #[cfg(test)]
+    let (worker_done_tx, worker_done_rx) = mpsc::channel();
+    #[cfg(test)]
+    let worker_done_tx = Some(worker_done_tx);
+    #[cfg(not(test))]
+    let worker_done_tx = None::<Sender<()>>;
     spawn(Box::new(move || {
         run_worker(key, generation, &mut source_factory, &sink, timing, &rx);
         if let Some(done) = done {
             let _ = done.send(());
         }
+        if let Some(worker_done_tx) = worker_done_tx {
+            let _ = worker_done_tx.send(());
+        }
     }))?;
-    Ok(RemoteMonitorHandle { generation, tx })
+    Ok(RemoteMonitorHandle {
+        generation,
+        tx,
+        #[cfg(test)]
+        done_rx: Some(worker_done_rx),
+    })
 }
 
 fn spawn_named_remote_monitor_worker(worker: Box<dyn FnOnce() + Send>) -> io::Result<()> {
@@ -721,7 +748,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             mpsc, Arc,
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use crate::monitor::MonitorKey;
@@ -1175,6 +1202,76 @@ mod tests {
         handle.shutdown();
         done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(collects.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn shutdown_is_nonblocking_idempotent_and_reports_worker_done() {
+        let collects = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (events_tx, events_rx) = mpsc::channel();
+        let source = source([Ok(SAMPLE.to_string())], &collects, &drops);
+        let mut sources = VecDeque::from([Ok(source)]);
+        let mut handle = super::start_worker_with_sink(
+            MonitorKey::remote("user", "host", 22),
+            9,
+            move || {
+                sources
+                    .pop_front()
+                    .unwrap_or_else(|| Err("no source".to_string()))
+            },
+            events_tx,
+            timing(),
+        )
+        .unwrap();
+        let done = handle
+            .take_done_receiver_for_test()
+            .expect("生产 handle 应提供独立完成通知");
+
+        assert!(matches!(
+            events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RemoteMonitorEvent::Update { .. }
+        ));
+        let started = Instant::now();
+        handle.shutdown();
+        handle.shutdown();
+        drop(handle);
+
+        assert!(started.elapsed() < Duration::from_millis(100));
+        done.recv_timeout(Duration::from_secs(1))
+            .expect("等待中的 worker 应被 shutdown 唤醒并结束");
+    }
+
+    #[test]
+    fn dropping_handle_signals_shutdown_and_reports_worker_done() {
+        let collects = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (events_tx, events_rx) = mpsc::channel();
+        let source = source([Ok(SAMPLE.to_string())], &collects, &drops);
+        let mut sources = VecDeque::from([Ok(source)]);
+        let mut handle = super::start_worker_with_sink(
+            MonitorKey::remote("user", "host", 22),
+            10,
+            move || {
+                sources
+                    .pop_front()
+                    .unwrap_or_else(|| Err("no source".to_string()))
+            },
+            events_tx,
+            timing(),
+        )
+        .unwrap();
+        let done = handle
+            .take_done_receiver_for_test()
+            .expect("生产 handle 应提供独立完成通知");
+
+        assert!(matches!(
+            events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RemoteMonitorEvent::Update { .. }
+        ));
+        drop(handle);
+
+        done.recv_timeout(Duration::from_secs(1))
+            .expect("drop 不得遗留等待中的监控 worker");
     }
 
     #[test]
