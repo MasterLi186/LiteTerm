@@ -177,6 +177,25 @@ fn apply_monitor_event(
     true
 }
 
+fn apply_monitor_event_and_update_sidebar(
+    slots: &mut HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
+    sidebar: &mut Sidebar,
+    event: monitor::MonitorEvent,
+    remote_generations: &HashMap<monitor::MonitorKey, u64>,
+) -> bool {
+    let key = event.key.clone();
+    let has_snapshot = event.result.is_ok();
+    if !apply_monitor_event(slots, event, remote_generations) {
+        return false;
+    }
+    if has_snapshot {
+        if let Some(data) = slots.get(&key).and_then(|slot| slot.data.as_ref()) {
+            sidebar.on_monitor_update(&key, data);
+        }
+    }
+    true
+}
+
 fn active_monitor_slot<'a>(
     slots: &'a HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
     active_key: &monitor::MonitorKey,
@@ -384,6 +403,7 @@ impl App {
             self.remote_monitor_generations.remove(&key);
             self.remote_monitor_params.remove(&key);
             remove_monitor_slots(&mut self.monitor_slots, std::slice::from_ref(&key));
+            self.sidebar.remove_monitor_view(&key);
         }
         for (key, params) in actions.starts {
             let generation = next_remote_monitor_generation(&mut self.next_remote_monitor_generation);
@@ -537,7 +557,10 @@ impl App {
         refresh_active_completion(&mut self.tab_manager, active_input.as_deref());
 
         let active_monitor_key = self.tab_manager.active_monitor_key();
-        let active_monitor_snapshot = active_monitor_snapshot(&self.monitor_slots, &active_monitor_key);
+        let active_monitor_slot = active_monitor_slot(&self.monitor_slots, &active_monitor_key);
+        let active_monitor_snapshot =
+            active_monitor_snapshot(&self.monitor_slots, &active_monitor_key);
+        let active_monitor_error = active_monitor_slot.and_then(|slot| slot.error.as_deref());
 
         // 1. Run egui (tab bar + sidebar + dialogs)
         let egui_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
@@ -546,7 +569,12 @@ impl App {
             tab_action = tab_bar::render_tab_bar(ctx, &self.tab_manager);
             self.sidebar_width = self
                 .sidebar
-                .ui_with_monitor(ctx, &active_monitor_key, active_monitor_snapshot);
+                .ui_with_monitor(
+                    ctx,
+                    &active_monitor_key,
+                    active_monitor_snapshot,
+                    active_monitor_error,
+                );
         });
 
         self.egui_state.as_mut().unwrap().handle_platform_output(&window, egui_output.platform_output);
@@ -853,8 +881,9 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Redraw => {}
             UserEvent::Monitor(event) => {
-                let _ = apply_monitor_event(
+                let _ = apply_monitor_event_and_update_sidebar(
                     &mut self.monitor_slots,
+                    &mut self.sidebar,
                     event,
                     &self.remote_monitor_generations,
                 );
@@ -1628,6 +1657,46 @@ mod completion_tests {
         remove_monitor_slots(&mut slots, std::slice::from_ref(&remote));
         assert!(slots.contains_key(&monitor::MonitorKey::Local));
         assert!(!slots.contains_key(&remote));
+    }
+
+    #[test]
+    fn main_monitor_event_path_routes_the_key_and_keeps_slot_error() {
+        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let mut generations = std::collections::HashMap::new();
+        generations.insert(key.clone(), 7);
+        let mut slots = std::collections::HashMap::new();
+        let mut sidebar = Sidebar::new();
+
+        let mut data = monitor_data("remote");
+        data.net_interfaces.push(monitor::NetIfaceInfo {
+            name: "eth0".into(),
+            rx_rate: 10,
+            tx_rate: 20,
+        });
+        assert!(apply_monitor_event_and_update_sidebar(
+            &mut slots,
+            &mut sidebar,
+            monitor::MonitorEvent {
+                key: key.clone(),
+                generation: 7,
+                result: Ok(Box::new(data)),
+            },
+            &generations,
+        ));
+        assert!(sidebar.monitor_history_for_test(&key).is_some());
+
+        assert!(apply_monitor_event_and_update_sidebar(
+            &mut slots,
+            &mut sidebar,
+            monitor::MonitorEvent {
+                key: key.clone(),
+                generation: 7,
+                result: Err("暂时断开".into()),
+            },
+            &generations,
+        ));
+        assert!(slots[&key].data.is_some());
+        assert!(slots[&key].error.as_deref().is_some());
     }
 
     #[test]

@@ -1,11 +1,50 @@
 use egui;
 use crate::connections::{ConnectionStore, HostConfig, AuthMethod};
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Eq)]
 struct MonitorSourcePresentation {
-    source: String,
+    dot: MonitorDot,
+    title: String,
     detail: String,
-    snapshot: String,
+    message: String,
+    warning: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MonitorDot {
+    Local,
+    Remote,
+}
+
+impl MonitorDot {
+    fn color(self) -> egui::Color32 {
+        match self {
+            Self::Local => egui::Color32::from_rgb(0x58, 0xa6, 0xff),
+            Self::Remote => egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MonitorViewState {
+    selected_iface: Option<String>,
+    process_tab: u8,
+    net_rx_history: Vec<f64>,
+    net_tx_history: Vec<f64>,
+    last_chart_iface: Option<String>,
+}
+
+impl Default for MonitorViewState {
+    fn default() -> Self {
+        Self {
+            selected_iface: None,
+            process_tab: 1,
+            net_rx_history: Vec::new(),
+            net_tx_history: Vec::new(),
+            last_chart_iface: None,
+        }
+    }
 }
 
 fn safe_monitor_text(value: &str, max_chars: usize) -> String {
@@ -15,26 +54,45 @@ fn safe_monitor_text(value: &str, max_chars: usize) -> String {
 fn monitor_source_presentation(
     key: &crate::monitor::MonitorKey,
     snapshot: Option<&crate::monitor::MonitorData>,
+    error: Option<&str>,
 ) -> MonitorSourcePresentation {
-    let (source, detail) = match key {
-        crate::monitor::MonitorKey::Local => ("本机".into(), String::new()),
+    let (dot, title, detail) = match key {
+        crate::monitor::MonitorKey::Local => {
+            (MonitorDot::Local, "本机".into(), String::new())
+        }
         crate::monitor::MonitorKey::Remote { .. } => (
+            MonitorDot::Remote,
             "已连接".into(),
             safe_monitor_text(&key.status_text(), 96),
         ),
     };
-    let snapshot = snapshot.map_or_else(
-        || "正在采集".into(),
-        |data| {
+    let safe_error = error.map(|value| {
+        let value = safe_monitor_text(value, 160);
+        value
+            .strip_prefix("监控更新失败：")
+            .unwrap_or(&value)
+            .to_string()
+    });
+    let message = match (snapshot, safe_error.as_deref()) {
+        (None, Some(error)) if !error.is_empty() => format!("采集失败：{error}"),
+        (None, _) => "正在采集".into(),
+        (Some(data), _) => {
             let cpu = if data.cpu_percent.is_finite() {
                 format!("{:.0}%", data.cpu_percent)
             } else {
                 "--".into()
             };
             format!("CPU {cpu} · {}", safe_monitor_text(&data.memory_text, 48))
-        },
-    );
-    MonitorSourcePresentation { source, detail, snapshot }
+        }
+    };
+    let warning = (snapshot.is_some() && error.is_some()).then(|| "监控暂时中断".into());
+    MonitorSourcePresentation {
+        dot,
+        title,
+        detail,
+        message,
+        warning,
+    }
 }
 
 #[derive(Clone)]
@@ -129,6 +187,7 @@ pub struct Sidebar {
     // Import/export
     io_path: String,
     io_status: String,
+    monitor_views: HashMap<crate::monitor::MonitorKey, MonitorViewState>,
 }
 
 fn parse_hex_color(s: &str) -> [u8; 3] {
@@ -166,6 +225,7 @@ impl Sidebar {
             keygen_status: String::new(),
             io_path: String::new(),
             io_status: String::new(),
+            monitor_views: HashMap::new(),
         }
     }
 
@@ -199,15 +259,94 @@ impl Sidebar {
         self.on_connect.take()
     }
 
+    pub fn on_monitor_update(
+        &mut self,
+        key: &crate::monitor::MonitorKey,
+        monitor: &crate::monitor::MonitorData,
+    ) {
+        if monitor.net_interfaces.is_empty() {
+            return;
+        }
+        let view = self.monitor_views.entry(key.clone()).or_default();
+        let selected = view.selected_iface.clone().unwrap_or_else(|| {
+            monitor
+                .net_interfaces
+                .iter()
+                .find(|interface| {
+                    !interface.name.starts_with("br-")
+                        && !interface.name.starts_with("docker")
+                        && !interface.name.starts_with("veth")
+                })
+                .unwrap_or(&monitor.net_interfaces[0])
+                .name
+                .clone()
+        });
+        if view.selected_iface.is_none() {
+            view.selected_iface = Some(selected.clone());
+        }
+        if view.last_chart_iface.as_ref() != Some(&selected) {
+            view.net_rx_history.clear();
+            view.net_tx_history.clear();
+            view.last_chart_iface = Some(selected.clone());
+        }
+        let (tx_rate, rx_rate) = monitor
+            .net_interfaces
+            .iter()
+            .find(|interface| interface.name == selected)
+            .map(|interface| (interface.tx_rate, interface.rx_rate))
+            .unwrap_or((0, 0));
+        view.net_tx_history.push(tx_rate as f64);
+        view.net_rx_history.push(rx_rate as f64);
+        if view.net_tx_history.len() > 60 {
+            view.net_tx_history.remove(0);
+        }
+        if view.net_rx_history.len() > 60 {
+            view.net_rx_history.remove(0);
+        }
+    }
+
+    pub fn remove_monitor_view(&mut self, key: &crate::monitor::MonitorKey) {
+        if !matches!(key, crate::monitor::MonitorKey::Local) {
+            self.monitor_views.remove(key);
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test() -> Self {
+        Self::new()
+    }
+
+    #[cfg(test)]
+    fn monitor_view(&self, key: &crate::monitor::MonitorKey) -> &MonitorViewState {
+        self.monitor_views
+            .get(key)
+            .expect("monitor view should exist")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn monitor_history_for_test(
+        &self,
+        key: &crate::monitor::MonitorKey,
+    ) -> Option<(&[f64], &[f64])> {
+        self.monitor_views.get(key).map(|view| {
+            (
+                view.net_rx_history.as_slice(),
+                view.net_tx_history.as_slice(),
+            )
+        })
+    }
+
     pub fn ui_with_monitor(
         &mut self,
         ctx: &egui::Context,
         active_key: &crate::monitor::MonitorKey,
         snapshot: Option<&crate::monitor::MonitorData>,
+        error: Option<&str>,
     ) -> f32 {
         if !self.visible { return 0.0; }
         let panel_width = self.width;
-        let presentation = monitor_source_presentation(active_key, snapshot);
+        self.monitor_views.entry(active_key.clone()).or_default();
+        let presentation = monitor_source_presentation(active_key, snapshot, error);
 
         egui::SidePanel::left("sidebar")
             .exact_width(panel_width)
@@ -310,13 +449,16 @@ impl Sidebar {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
                         let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().circle_filled(r.center(), 4.0, egui::Color32::from_rgb(0x58, 0xa6, 0xff));
-                        ui.label(egui::RichText::new(&presentation.source).size(11.0).color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)));
+                        ui.painter().circle_filled(r.center(), 4.0, presentation.dot.color());
+                        ui.label(egui::RichText::new(&presentation.title).size(11.0).color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)));
                         if !presentation.detail.is_empty() {
                             ui.label(egui::RichText::new(&presentation.detail).size(10.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)));
                         }
                     });
-                    ui.label(egui::RichText::new(&presentation.snapshot).size(10.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)));
+                    if let Some(warning) = &presentation.warning {
+                        ui.label(egui::RichText::new(warning).size(10.0).color(egui::Color32::from_rgb(0xd2, 0x99, 0x22)));
+                    }
+                    ui.label(egui::RichText::new(&presentation.message).size(10.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)));
                 });
             });
 
@@ -718,6 +860,34 @@ fn generate_ssh_key(key_type: &str, comment: &str) -> Result<String, String> {
 mod tests {
     use super::SshConnection;
 
+    fn monitor_with_rate(
+        iface: &str,
+        rx_rate: u64,
+        tx_rate: u64,
+    ) -> crate::monitor::MonitorData {
+        crate::monitor::MonitorData {
+            cpu_percent: 10.0,
+            cpu_name: "Test CPU".into(),
+            memory_used: 1,
+            memory_total: 2,
+            memory_text: "1G / 2G".into(),
+            memory_percent: 50.0,
+            swap_used: 0,
+            swap_total: 0,
+            swap_text: "0K / 0K".into(),
+            swap_percent: 0.0,
+            uptime_text: "1分钟".into(),
+            load_text: "0.1, 0.2, 0.3".into(),
+            disk_items: Vec::new(),
+            processes: Vec::new(),
+            net_interfaces: vec![crate::monitor::NetIfaceInfo {
+                name: iface.into(),
+                rx_rate,
+                tx_rate,
+            }],
+        }
+    }
+
     #[test]
     fn ssh_connection_debug_redacts_key_path_and_password() {
         let connection = SshConnection {
@@ -746,12 +916,14 @@ mod tests {
         let presentation = super::monitor_source_presentation(
             &crate::monitor::MonitorKey::remote("alice", "alpha.example", 22),
             None,
+            None,
         );
 
-        assert_eq!(presentation.source, "已连接");
+        assert_eq!(presentation.title, "已连接");
         assert_eq!(presentation.detail, "alice@alpha.example:22");
-        assert_eq!(presentation.snapshot, "正在采集");
-        assert_ne!(presentation.source, "本机");
+        assert_eq!(presentation.message, "正在采集");
+        assert_eq!(presentation.dot, super::MonitorDot::Remote);
+        assert_ne!(presentation.title, "本机");
     }
 
     #[test]
@@ -777,9 +949,95 @@ mod tests {
         let presentation = super::monitor_source_presentation(
             &crate::monitor::MonitorKey::Local,
             Some(&snapshot),
+            None,
         );
 
-        assert_eq!(presentation.snapshot, "CPU -- · 1G / 2G");
-        assert!(!presentation.snapshot.contains("NaN"));
+        assert_eq!(presentation.message, "CPU -- · 1G / 2G");
+        assert!(!presentation.message.contains("NaN"));
+    }
+
+    #[test]
+    fn network_history_is_isolated_between_remote_monitor_keys() {
+        let mut sidebar = super::Sidebar::new_for_test();
+        let a = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let b = crate::monitor::MonitorKey::remote("alice", "beta.example", 22);
+
+        sidebar.on_monitor_update(&a, &monitor_with_rate("eth0", 100, 200));
+        sidebar.on_monitor_update(&b, &monitor_with_rate("ens3", 300, 400));
+
+        assert_eq!(sidebar.monitor_view(&a).net_rx_history, [100.0]);
+        assert_eq!(sidebar.monitor_view(&a).net_tx_history, [200.0]);
+        assert_eq!(sidebar.monitor_view(&b).net_rx_history, [300.0]);
+        assert_eq!(sidebar.monitor_view(&b).net_tx_history, [400.0]);
+    }
+
+    #[test]
+    fn duplicate_tabs_share_monitor_view_history_for_the_same_key() {
+        let mut sidebar = super::Sidebar::new_for_test();
+        let key = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
+
+        sidebar.on_monitor_update(&key, &monitor_with_rate("eth0", 100, 200));
+        sidebar.on_monitor_update(&key, &monitor_with_rate("eth0", 150, 250));
+
+        assert_eq!(sidebar.monitor_view(&key).net_rx_history, [100.0, 150.0]);
+        assert_eq!(sidebar.monitor_view(&key).net_tx_history, [200.0, 250.0]);
+    }
+
+    #[test]
+    fn process_tab_and_interface_selection_are_isolated_by_monitor_key() {
+        let mut sidebar = super::Sidebar::new_for_test();
+        let local = crate::monitor::MonitorKey::Local;
+        let remote = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        sidebar.on_monitor_update(&local, &monitor_with_rate("lo0", 10, 20));
+        sidebar.on_monitor_update(&remote, &monitor_with_rate("eth0", 30, 40));
+
+        {
+            let local_view = sidebar.monitor_views.get_mut(&local).unwrap();
+            local_view.process_tab = 2;
+            local_view.selected_iface = Some("lo0".into());
+        }
+
+        assert_eq!(sidebar.monitor_view(&local).process_tab, 2);
+        assert_eq!(
+            sidebar.monitor_view(&local).selected_iface.as_deref(),
+            Some("lo0")
+        );
+        assert_eq!(sidebar.monitor_view(&remote).process_tab, 1);
+        assert_eq!(
+            sidebar.monitor_view(&remote).selected_iface.as_deref(),
+            Some("eth0")
+        );
+    }
+
+    #[test]
+    fn monitor_errors_distinguish_empty_and_retained_snapshots() {
+        let key = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let error_only = super::monitor_source_presentation(
+            &key,
+            None,
+            Some("监控更新失败：连接暂时不可用\n"),
+        );
+        assert_eq!(error_only.message, "采集失败：连接暂时不可用");
+        assert_eq!(error_only.warning, None);
+
+        let snapshot = monitor_with_rate("eth0", 100, 200);
+        let retained =
+            super::monitor_source_presentation(&key, Some(&snapshot), Some("连接暂时不可用"));
+        assert_eq!(retained.message, "CPU 10% · 1G / 2G");
+        assert_eq!(retained.warning.as_deref(), Some("监控暂时中断"));
+    }
+
+    #[test]
+    fn remove_monitor_view_only_removes_the_target_key() {
+        let mut sidebar = super::Sidebar::new_for_test();
+        let a = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let b = crate::monitor::MonitorKey::remote("alice", "beta.example", 22);
+        sidebar.on_monitor_update(&a, &monitor_with_rate("eth0", 100, 200));
+        sidebar.on_monitor_update(&b, &monitor_with_rate("ens3", 300, 400));
+
+        sidebar.remove_monitor_view(&a);
+
+        assert!(!sidebar.monitor_views.contains_key(&a));
+        assert_eq!(sidebar.monitor_view(&b).net_rx_history, [300.0]);
     }
 }
