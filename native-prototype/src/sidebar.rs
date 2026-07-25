@@ -268,20 +268,30 @@ impl Sidebar {
             return;
         }
         let view = self.monitor_views.entry(key.clone()).or_default();
-        let selected = view.selected_iface.clone().unwrap_or_else(|| {
-            monitor
-                .net_interfaces
-                .iter()
-                .find(|interface| {
-                    !interface.name.starts_with("br-")
-                        && !interface.name.starts_with("docker")
-                        && !interface.name.starts_with("veth")
-                })
-                .unwrap_or(&monitor.net_interfaces[0])
-                .name
-                .clone()
-        });
-        if view.selected_iface.is_none() {
+        let selected = view
+            .selected_iface
+            .as_ref()
+            .filter(|selected| {
+                monitor
+                    .net_interfaces
+                    .iter()
+                    .any(|interface| interface.name == **selected)
+            })
+            .cloned()
+            .unwrap_or_else(|| {
+                monitor
+                    .net_interfaces
+                    .iter()
+                    .find(|interface| {
+                        !interface.name.starts_with("br-")
+                            && !interface.name.starts_with("docker")
+                            && !interface.name.starts_with("veth")
+                    })
+                    .unwrap_or(&monitor.net_interfaces[0])
+                    .name
+                    .clone()
+            });
+        if view.selected_iface.as_ref() != Some(&selected) {
             view.selected_iface = Some(selected.clone());
         }
         if view.last_chart_iface.as_ref() != Some(&selected) {
@@ -311,6 +321,15 @@ impl Sidebar {
         }
     }
 
+    pub fn retain_monitor_views(
+        &mut self,
+        referenced: &std::collections::HashSet<crate::monitor::MonitorKey>,
+    ) {
+        self.monitor_views.retain(|key, _| {
+            matches!(key, crate::monitor::MonitorKey::Local) || referenced.contains(key)
+        });
+    }
+
     #[cfg(test)]
     fn new_for_test() -> Self {
         Self::new()
@@ -334,6 +353,14 @@ impl Sidebar {
                 view.net_tx_history.as_slice(),
             )
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_monitor_view_for_test(
+        &self,
+        key: &crate::monitor::MonitorKey,
+    ) -> bool {
+        self.monitor_views.contains_key(key)
     }
 
     pub fn ui_with_monitor(
@@ -1039,5 +1066,20 @@ mod tests {
 
         assert!(!sidebar.monitor_views.contains_key(&a));
         assert_eq!(sidebar.monitor_view(&b).net_rx_history, [300.0]);
+    }
+
+    #[test]
+    fn missing_selected_interface_falls_back_and_resets_history() {
+        let mut sidebar = super::Sidebar::new_for_test();
+        let key = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        sidebar.on_monitor_update(&key, &monitor_with_rate("eth0", 100, 200));
+
+        sidebar.on_monitor_update(&key, &monitor_with_rate("ens3", 300, 400));
+
+        let view = sidebar.monitor_view(&key);
+        assert_eq!(view.selected_iface.as_deref(), Some("ens3"));
+        assert_eq!(view.last_chart_iface.as_deref(), Some("ens3"));
+        assert_eq!(view.net_rx_history, [300.0]);
+        assert_eq!(view.net_tx_history, [400.0]);
     }
 }

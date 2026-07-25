@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use winit::{
@@ -217,6 +217,14 @@ fn remove_monitor_slots(
     for key in keys { slots.remove(key); }
 }
 
+fn monitor_keys_in_tabs(tab_manager: &TabManager) -> HashSet<monitor::MonitorKey> {
+    tab_manager.tabs.iter().map(|tab| tab.monitor_key()).collect()
+}
+
+fn prune_sidebar_monitor_views(sidebar: &mut Sidebar, tab_manager: &TabManager) {
+    sidebar.retain_monitor_views(&monitor_keys_in_tabs(tab_manager));
+}
+
 fn close_other_tabs_reconcile_actions(
     tab_manager: &mut TabManager,
     keep_index: usize,
@@ -422,6 +430,7 @@ impl App {
                 Err(_) => eprintln!("[MONITOR] 启动远端监控 worker 失败"),
             }
         }
+        prune_sidebar_monitor_views(&mut self.sidebar, &self.tab_manager);
     }
 
     fn shutdown_remote_monitors(&mut self) {
@@ -1697,6 +1706,67 @@ mod completion_tests {
         ));
         assert!(slots[&key].data.is_some());
         assert!(slots[&key].error.as_deref().is_some());
+    }
+
+    fn placeholder_connection(host: &str) -> crate::sidebar::SshConnection {
+        crate::sidebar::SshConnection {
+            label: host.into(),
+            host: host.into(),
+            port: 22,
+            user: "alice".into(),
+            auth: "key".into(),
+            key_path: String::new(),
+            password: String::new(),
+            group: "test".into(),
+            group_color: [0x58, 0xa6, 0xff],
+        }
+    }
+
+    fn render_monitor_placeholder(
+        sidebar: &mut Sidebar,
+        key: &monitor::MonitorKey,
+    ) {
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |context| {
+            sidebar.ui_with_monitor(context, key, None, None);
+        });
+    }
+
+    #[test]
+    fn closing_last_placeholder_prunes_its_rendered_monitor_view() {
+        let mut manager = TabManager::new();
+        manager.new_ssh_placeholder(&placeholder_connection("alpha.example"));
+        let key = manager.tabs[0].monitor_key();
+        let mut sidebar = Sidebar::new();
+        render_monitor_placeholder(&mut sidebar, &key);
+        assert!(sidebar.has_monitor_view_for_test(&key));
+
+        manager.close(0);
+        prune_sidebar_monitor_views(&mut sidebar, &manager);
+
+        assert!(!sidebar.has_monitor_view_for_test(&key));
+    }
+
+    #[test]
+    fn pruning_placeholder_views_keeps_shared_keys_and_local_but_removes_only_distinct_target() {
+        let mut manager = TabManager::new();
+        manager.new_ssh_placeholder(&placeholder_connection("alpha.example"));
+        manager.new_ssh_placeholder(&placeholder_connection("alpha.example"));
+        manager.new_ssh_placeholder(&placeholder_connection("beta.example"));
+        let shared = manager.tabs[0].monitor_key();
+        let distinct = manager.tabs[2].monitor_key();
+        let local = monitor::MonitorKey::Local;
+        let mut sidebar = Sidebar::new();
+        render_monitor_placeholder(&mut sidebar, &shared);
+        render_monitor_placeholder(&mut sidebar, &distinct);
+        render_monitor_placeholder(&mut sidebar, &local);
+
+        manager.close_others(0);
+        prune_sidebar_monitor_views(&mut sidebar, &manager);
+
+        assert!(sidebar.has_monitor_view_for_test(&shared));
+        assert!(!sidebar.has_monitor_view_for_test(&distinct));
+        assert!(sidebar.has_monitor_view_for_test(&local));
     }
 
     #[test]
