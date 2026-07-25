@@ -5,7 +5,7 @@ use crate::smart_completion::{CompletionSessionKey, CompletionState};
 use crate::terminal::TerminalState;
 use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum TabType {
     Local {
         shell_path: String,
@@ -14,6 +14,24 @@ pub enum TabType {
         label: String,
         params: crate::ssh::ConnectionParams,
     },
+}
+
+impl std::fmt::Debug for TabType {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local { shell_path } => formatter
+                .debug_struct("Local")
+                .field("shell_path", shell_path)
+                .finish(),
+            Self::Ssh { label, params } => formatter
+                .debug_struct("Ssh")
+                .field("label", label)
+                .field("user", &params.user)
+                .field("host", &params.host)
+                .field("port", &params.port)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 pub struct Tab {
@@ -280,6 +298,20 @@ mod tests {
         }
     }
 
+    fn test_ssh_connection_for(host: &str, user: &str, port: u16) -> SshConnection {
+        SshConnection {
+            label: format!("{user}@{host}"),
+            host: host.into(),
+            port,
+            user: user.into(),
+            auth: "key".into(),
+            key_path: String::new(),
+            password: String::new(),
+            group: String::new(),
+            group_color: [0, 0, 0],
+        }
+    }
+
     fn test_ssh_handle(
         bash_runtime: Option<RemoteBashRuntime>,
     ) -> (crate::ssh::SshHandle, mpsc::Receiver<()>) {
@@ -437,5 +469,51 @@ mod tests {
         manager.new_local("sh", 80, 24);
         assert_eq!(manager.tabs[0].monitor_key(), MonitorKey::Local);
         assert_eq!(manager.active_monitor_key(), MonitorKey::Local);
+    }
+
+    #[test]
+    fn tab_type_debug_does_not_expose_ssh_credentials() {
+        let mut connection = test_ssh_connection();
+        connection.password = "password-sentinel".into();
+        connection.key_path = "key-path-sentinel".into();
+        let mut manager = TabManager::new();
+        manager.new_ssh_placeholder(&connection);
+
+        let debug = format!("{:?}", manager.tabs[0].tab_type);
+
+        assert!(!debug.contains("password-sentinel"));
+        assert!(!debug.contains("key-path-sentinel"));
+    }
+
+    #[test]
+    fn active_monitor_key_follows_the_active_tab_and_handles_invalid_indices() {
+        let mut manager = TabManager::new();
+        let ssh_a = test_ssh_connection_for("alpha.example", "alice", 22);
+        let ssh_b = test_ssh_connection_for("beta.example", "bob", 2200);
+
+        manager.new_local("sh", 80, 24);
+        manager.new_ssh_placeholder(&ssh_a);
+        manager.new_ssh_placeholder(&ssh_b);
+
+        manager.switch_to(0);
+        assert_eq!(manager.active_monitor_key(), MonitorKey::Local);
+        manager.switch_to(1);
+        assert_eq!(
+            manager.active_monitor_key(),
+            MonitorKey::remote("alice", "alpha.example", 22)
+        );
+        manager.switch_to(2);
+        assert_eq!(
+            manager.active_monitor_key(),
+            MonitorKey::remote("bob", "beta.example", 2200)
+        );
+        manager.switch_to(99);
+        assert_eq!(
+            manager.active_monitor_key(),
+            MonitorKey::remote("bob", "beta.example", 2200)
+        );
+
+        let empty = TabManager::new();
+        assert_eq!(empty.active_monitor_key(), MonitorKey::Local);
     }
 }

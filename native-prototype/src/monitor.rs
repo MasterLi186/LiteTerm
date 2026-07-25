@@ -26,7 +26,15 @@ impl MonitorKey {
     pub fn status_text(&self) -> String {
         match self {
             Self::Local => "本机".to_string(),
-            Self::Remote { user, host, port } => format!("{user}@{host}:{port}"),
+            Self::Remote { user, host, port } => {
+                let host = if host.contains(':') && !(host.starts_with('[') && host.ends_with(']'))
+                {
+                    format!("[{host}]")
+                } else {
+                    host.clone()
+                };
+                format!("{user}@{host}:{port}")
+            }
         }
     }
 }
@@ -329,6 +337,18 @@ mod tests {
         assert_eq!(
             MonitorKey::remote("alice", "server.example", 2200).status_text(),
             "alice@server.example:2200"
+        );
+    }
+
+    #[test]
+    fn monitor_key_status_text_brackets_unbracketed_ipv6_hosts() {
+        assert_eq!(
+            MonitorKey::remote("alice", "2001:db8::1", 2200).status_text(),
+            "alice@[2001:db8::1]:2200"
+        );
+        assert_eq!(
+            MonitorKey::remote("alice", "[2001:db8::1]", 2200).status_text(),
+            "alice@[2001:db8::1]:2200"
         );
     }
 }
