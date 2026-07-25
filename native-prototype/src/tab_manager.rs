@@ -43,6 +43,7 @@ pub struct Tab {
     pub read_thread_started: bool,
     pub completion: CompletionState,
     pub ssh_connected: bool,
+    pub remote_monitor_leased: bool,
 }
 
 impl Tab {
@@ -123,6 +124,7 @@ impl TabManager {
             read_thread_started: false,
             completion,
             ssh_connected: false,
+            remote_monitor_leased: false,
         };
         self.tabs.push(tab);
         self.active_idx = self.tabs.len() - 1;
@@ -144,6 +146,7 @@ impl TabManager {
             read_thread_started: false,
             completion: CompletionState::new(CompletionSessionKey::new(1)),
             ssh_connected: false,
+            remote_monitor_leased: false,
         };
         self.tabs.push(tab);
         self.active_idx = self.tabs.len() - 1;
@@ -179,6 +182,7 @@ impl TabManager {
             term.apply_ssh_handle(handle, cols, rows);
         }
         tab.ssh_connected = true;
+        tab.remote_monitor_leased = true;
         // Update label to remove "(连接中...)"
         if let TabType::Ssh { ref label, .. } = tab.tab_type {
             tab.label = label.clone();
@@ -263,7 +267,7 @@ impl TabManager {
     pub fn remote_monitor_requirements(&self) -> HashMap<MonitorKey, crate::ssh::ConnectionParams> {
         let mut requirements = HashMap::new();
         for tab in &self.tabs {
-            if !tab.ssh_connected {
+            if !tab.remote_monitor_leased {
                 continue;
             }
             if let TabType::Ssh { params, .. } = &tab.tab_type {
@@ -597,6 +601,7 @@ mod tests {
             .local_bash_runtime
             .is_none());
         assert!(!manager.tabs[0].ssh_connected);
+        assert!(!manager.tabs[0].remote_monitor_leased);
     }
 
     #[test]
@@ -639,6 +644,7 @@ mod tests {
         assert!(shutdown_rx.try_recv().is_ok());
         assert_eq!(manager.tabs[0].completion.session(), &current);
         assert!(!manager.tabs[0].ssh_connected);
+        assert!(!manager.tabs[0].remote_monitor_leased);
         assert!(manager.remote_monitor_requirements().is_empty());
     }
 
@@ -704,6 +710,8 @@ mod tests {
         let second_id = manager.new_ssh_placeholder(&connection);
         manager.tabs[0].ssh_connected = true;
         manager.tabs[1].ssh_connected = true;
+        manager.tabs[0].remote_monitor_leased = true;
+        manager.tabs[1].remote_monitor_leased = true;
 
         manager.close_others(1);
 
@@ -718,6 +726,7 @@ mod tests {
         let connection = test_ssh_connection();
         manager.new_ssh_placeholder(&connection);
         manager.tabs[0].ssh_connected = true;
+        manager.tabs[0].remote_monitor_leased = true;
         manager.new_local("sh", 80, 24);
 
         manager.close_others(1);
@@ -763,6 +772,40 @@ mod tests {
     }
 
     #[test]
+    fn monitor_requirement_owner_is_tab_ordered_not_connection_ordered() {
+        let mut manager = TabManager::new();
+        let mut owner = test_ssh_connection_for("shared.example", "alice", 22);
+        owner.key_path = "owner-key-sentinel".into();
+        owner.password = "owner-password-sentinel".into();
+        let mut fallback = test_ssh_connection_for("shared.example", "alice", 22);
+        fallback.key_path = "fallback-key-sentinel".into();
+        fallback.password = "fallback-password-sentinel".into();
+        let owner_id = manager.new_ssh_placeholder(&owner);
+        let fallback_id = manager.new_ssh_placeholder(&fallback);
+        let owner_session = manager.tabs[0].completion.session().clone();
+        let fallback_session = manager.tabs[1].completion.session().clone();
+
+        assert!(manager
+            .apply_ssh(&fallback_id, &fallback_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        assert!(manager
+            .apply_ssh(&owner_id, &owner_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        let key = MonitorKey::remote("alice", "shared.example", 22);
+        assert_eq!(
+            manager.remote_monitor_requirements().get(&key),
+            Some(&crate::ssh::ConnectionParams::from(&owner))
+        );
+
+        manager.close(0);
+
+        assert_eq!(
+            manager.remote_monitor_requirements().get(&key),
+            Some(&crate::ssh::ConnectionParams::from(&fallback))
+        );
+    }
+
+    #[test]
     fn reconnect_reset_marks_an_applied_ssh_tab_disconnected() {
         let mut manager = TabManager::new();
         let connection = test_ssh_connection();
@@ -777,6 +820,100 @@ mod tests {
         manager.reset_ssh_for_reconnect(0).unwrap();
 
         assert!(!manager.tabs[0].ssh_connected);
+        assert!(manager.tabs[0].remote_monitor_leased);
+        assert_eq!(manager.remote_monitor_requirements().len(), 1);
+    }
+
+    #[test]
+    fn reconnect_lease_survives_closing_an_unrelated_local_tab() {
+        let mut manager = TabManager::new();
+        let connection = test_ssh_connection();
+        let tab_id = manager.new_ssh_placeholder(&connection);
+        let session = manager.tabs[0].completion.session().clone();
+        assert!(manager
+            .apply_ssh(&tab_id, &session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        manager.new_local("sh", 80, 24);
+
+        manager.reset_ssh_for_reconnect(0).unwrap();
+        manager.close(1);
+
+        assert_eq!(manager.remote_monitor_requirements().len(), 1);
+    }
+
+    #[test]
+    fn failed_reconnect_keeps_the_existing_remote_monitor_lease() {
+        let mut manager = TabManager::new();
+        let connection = test_ssh_connection();
+        let tab_id = manager.new_ssh_placeholder(&connection);
+        let session = manager.tabs[0].completion.session().clone();
+        assert!(manager
+            .apply_ssh(&tab_id, &session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+
+        manager.reset_ssh_for_reconnect(0).unwrap();
+        manager.ssh_failed(&tab_id, "reconnect failed");
+
+        assert!(!manager.tabs[0].ssh_connected);
+        assert!(manager.tabs[0].remote_monitor_leased);
+        assert_eq!(manager.remote_monitor_requirements().len(), 1);
+    }
+
+    #[test]
+    fn reconnect_lease_and_new_remote_key_both_remain_required() {
+        let mut manager = TabManager::new();
+        let a = test_ssh_connection_for("alpha.example", "alice", 22);
+        let b = test_ssh_connection_for("beta.example", "bob", 2200);
+        let a_id = manager.new_ssh_placeholder(&a);
+        let a_session = manager.tabs[0].completion.session().clone();
+        assert!(manager
+            .apply_ssh(&a_id, &a_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        manager.reset_ssh_for_reconnect(0).unwrap();
+
+        let b_id = manager.new_ssh_placeholder(&b);
+        let b_session = manager.tabs[1].completion.session().clone();
+        assert!(manager
+            .apply_ssh(&b_id, &b_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+
+        assert_eq!(manager.remote_monitor_requirements().len(), 2);
+    }
+
+    #[test]
+    fn reconnect_lease_remains_after_closing_a_connected_same_key_sibling() {
+        let mut manager = TabManager::new();
+        let connection = test_ssh_connection();
+        let a_id = manager.new_ssh_placeholder(&connection);
+        let b_id = manager.new_ssh_placeholder(&connection);
+        let a_session = manager.tabs[0].completion.session().clone();
+        let b_session = manager.tabs[1].completion.session().clone();
+        assert!(manager
+            .apply_ssh(&a_id, &a_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        assert!(manager
+            .apply_ssh(&b_id, &b_session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+
+        manager.reset_ssh_for_reconnect(0).unwrap();
+        manager.close(1);
+
+        assert_eq!(manager.remote_monitor_requirements().len(), 1);
+    }
+
+    #[test]
+    fn closing_the_last_leased_remote_removes_its_requirement() {
+        let mut manager = TabManager::new();
+        let connection = test_ssh_connection();
+        let tab_id = manager.new_ssh_placeholder(&connection);
+        let session = manager.tabs[0].completion.session().clone();
+        assert!(manager
+            .apply_ssh(&tab_id, &session, test_ssh_handle(None).0, 80, 24)
+            .is_some());
+        manager.new_local("sh", 80, 24);
+
+        manager.close_others(1);
+
         assert!(manager.remote_monitor_requirements().is_empty());
     }
 
