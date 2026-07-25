@@ -1,11 +1,338 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::{
+    fmt,
+    io::Read,
+    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::monitor::{
-    format_bytes, format_uptime, DiskItem, MonitorData, NetIfaceInfo, ProcessInfo,
+    format_bytes, format_uptime, DiskItem, MonitorData, MonitorKey, NetIfaceInfo, ProcessInfo,
 };
 
 pub const REMOTE_SNAPSHOT_COMMAND: &str = "LC_ALL=C; export LC_ALL; printf '%s\\n' STAT; cat /proc/stat; printf '%s\\n' MEM; cat /proc/meminfo; printf '%s\\n' DISK; df -Pk; printf '%s\\n' NET; cat /proc/net/dev; printf '%s\\n' LOAD; cat /proc/loadavg; printf '%s\\n' UPTIME; cat /proc/uptime; printf '%s\\n' PS; ps -eo rss=,pcpu=,comm= --sort=-pcpu | head -n 24; printf '%s\\n' CPUINFO; (grep -m1 -E '^(model name|Hardware|Processor)[[:space:]]*:' /proc/cpuinfo || true); printf '%s\\n' END";
+
+pub(crate) const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
+
+pub(crate) enum RemoteMonitorCommand {
+    Shutdown,
+}
+
+pub(crate) enum RemoteMonitorEvent {
+    Update {
+        key: MonitorKey,
+        generation: u64,
+        data: Box<MonitorData>,
+    },
+    Failed {
+        key: MonitorKey,
+        generation: u64,
+        error: String,
+    },
+}
+
+impl fmt::Debug for RemoteMonitorEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Update {
+                key, generation, ..
+            } => f
+                .debug_struct("RemoteMonitorEvent::Update")
+                .field("key", key)
+                .field("generation", generation)
+                .finish(),
+            Self::Failed {
+                key, generation, ..
+            } => f
+                .debug_struct("RemoteMonitorEvent::Failed")
+                .field("key", key)
+                .field("generation", generation)
+                .finish(),
+        }
+    }
+}
+
+pub(crate) struct RemoteMonitorHandle {
+    generation: u64,
+    tx: Sender<RemoteMonitorCommand>,
+}
+
+impl RemoteMonitorHandle {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn shutdown(&self) {
+        let _ = self.tx.send(RemoteMonitorCommand::Shutdown);
+    }
+}
+
+trait SnapshotSource {
+    fn collect(&mut self) -> Result<String, String>;
+}
+
+struct SshSnapshotSource {
+    session: ssh2::Session,
+}
+
+impl SshSnapshotSource {
+    fn connect(params: &crate::ssh::ConnectionParams) -> Result<Self, String> {
+        crate::ssh::connect_authenticated(params).map(|session| Self { session })
+    }
+}
+
+impl SnapshotSource for SshSnapshotSource {
+    fn collect(&mut self) -> Result<String, String> {
+        let mut channel = self
+            .session
+            .channel_session()
+            .map_err(|error| format!("创建远端监控通道失败: {error}"))?;
+        let result = (|| {
+            channel
+                .exec(REMOTE_SNAPSHOT_COMMAND)
+                .map_err(|error| format!("执行远端监控命令失败: {error}"))?;
+            read_snapshot_bounded(&mut channel)
+        })();
+        let _ = channel.close();
+        let _ = channel.wait_close();
+        result
+    }
+}
+
+fn read_snapshot_bounded(mut reader: impl Read) -> Result<String, String> {
+    let mut bytes = Vec::with_capacity(8 * 1024);
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let remaining = MAX_SNAPSHOT_BYTES + 1 - bytes.len();
+        let read_len = buffer.len().min(remaining);
+        let count = reader
+            .read(&mut buffer[..read_len])
+            .map_err(|error| format!("读取远端监控数据失败: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if bytes.len() > MAX_SNAPSHOT_BYTES {
+            return Err("远端监控数据超过 2MiB 限制".to_string());
+        }
+    }
+    String::from_utf8(bytes).map_err(|_| "远端监控数据不是有效 UTF-8".to_string())
+}
+
+pub(crate) trait EventSink: Send + 'static {
+    fn send(&self, event: RemoteMonitorEvent) -> Result<(), ()>;
+}
+
+impl EventSink for Sender<RemoteMonitorEvent> {
+    fn send(&self, event: RemoteMonitorEvent) -> Result<(), ()> {
+        self.send(event).map_err(|_| ())
+    }
+}
+
+impl<F> EventSink for F
+where
+    F: Fn(RemoteMonitorEvent) -> Result<(), ()> + Send + 'static,
+{
+    fn send(&self, event: RemoteMonitorEvent) -> Result<(), ()> {
+        self(event)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WorkerTiming {
+    healthy_wait: Duration,
+    retry_wait: Duration,
+}
+
+impl WorkerTiming {
+    fn new(healthy_wait: Duration, retry_wait: Duration) -> Self {
+        Self {
+            healthy_wait,
+            retry_wait,
+        }
+    }
+}
+
+impl Default for WorkerTiming {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(2), Duration::from_secs(5))
+    }
+}
+
+pub(crate) fn start_ssh_worker_with_sink<E>(
+    key: MonitorKey,
+    generation: u64,
+    params: crate::ssh::ConnectionParams,
+    sink: E,
+) -> RemoteMonitorHandle
+where
+    E: EventSink,
+{
+    start_worker_with_sink(
+        key,
+        generation,
+        move || SshSnapshotSource::connect(&params),
+        sink,
+        WorkerTiming::default(),
+    )
+}
+
+fn start_worker_with_sink<S, F, E>(
+    key: MonitorKey,
+    generation: u64,
+    source_factory: F,
+    sink: E,
+    timing: WorkerTiming,
+) -> RemoteMonitorHandle
+where
+    S: SnapshotSource + Send + 'static,
+    F: FnMut() -> Result<S, String> + Send + 'static,
+    E: EventSink,
+{
+    start_worker_with_optional_done(key, generation, source_factory, sink, timing, None)
+}
+
+fn start_worker_with_optional_done<S, F, E>(
+    key: MonitorKey,
+    generation: u64,
+    mut source_factory: F,
+    sink: E,
+    timing: WorkerTiming,
+    done: Option<Sender<()>>,
+) -> RemoteMonitorHandle
+where
+    S: SnapshotSource + Send + 'static,
+    F: FnMut() -> Result<S, String> + Send + 'static,
+    E: EventSink,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        run_worker(key, generation, &mut source_factory, &sink, timing, &rx);
+        if let Some(done) = done {
+            let _ = done.send(());
+        }
+    });
+    RemoteMonitorHandle { generation, tx }
+}
+
+fn run_worker<S, F, E>(
+    key: MonitorKey,
+    generation: u64,
+    source_factory: &mut F,
+    sink: &E,
+    timing: WorkerTiming,
+    commands: &Receiver<RemoteMonitorCommand>,
+) where
+    S: SnapshotSource,
+    F: FnMut() -> Result<S, String>,
+    E: EventSink,
+{
+    let mut source = None;
+    let mut parser = RemoteSnapshotParser::default();
+    let mut previous_sample_at = None;
+
+    loop {
+        if shutdown_requested(commands) {
+            return;
+        }
+
+        if source.is_none() {
+            match source_factory() {
+                Ok(new_source) => {
+                    source = Some(new_source);
+                    parser = RemoteSnapshotParser::default();
+                    previous_sample_at = None;
+                }
+                Err(error) => {
+                    if !send_failed(sink, &key, generation, error)
+                        || wait_for_shutdown(commands, timing.retry_wait)
+                    {
+                        return;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let now = Instant::now();
+        let elapsed = previous_sample_at
+            .map(|previous| now.saturating_duration_since(previous))
+            .unwrap_or(Duration::ZERO);
+        let result = source
+            .as_mut()
+            .expect("source is initialized")
+            .collect()
+            .and_then(|snapshot| parser.parse(&snapshot, elapsed));
+
+        match result {
+            Ok(data) => {
+                previous_sample_at = Some(now);
+                if sink
+                    .send(RemoteMonitorEvent::Update {
+                        key: key.clone(),
+                        generation,
+                        data: Box::new(data),
+                    })
+                    .is_err()
+                    || wait_for_shutdown(commands, timing.healthy_wait)
+                {
+                    return;
+                }
+            }
+            Err(error) => {
+                source = None;
+                parser = RemoteSnapshotParser::default();
+                previous_sample_at = None;
+                if !send_failed(sink, &key, generation, error)
+                    || wait_for_shutdown(commands, timing.retry_wait)
+                {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn send_failed<E: EventSink>(sink: &E, key: &MonitorKey, generation: u64, error: String) -> bool {
+    sink.send(RemoteMonitorEvent::Failed {
+        key: key.clone(),
+        generation,
+        error,
+    })
+    .is_ok()
+}
+
+fn shutdown_requested(commands: &Receiver<RemoteMonitorCommand>) -> bool {
+    matches!(
+        commands.try_recv(),
+        Ok(RemoteMonitorCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected)
+    )
+}
+
+fn wait_for_shutdown(commands: &Receiver<RemoteMonitorCommand>, duration: Duration) -> bool {
+    matches!(
+        commands.recv_timeout(duration),
+        Ok(RemoteMonitorCommand::Shutdown) | Err(RecvTimeoutError::Disconnected)
+    )
+}
+
+#[cfg(test)]
+fn start_worker_with_sink_for_test<S, F, E>(
+    key: MonitorKey,
+    generation: u64,
+    source_factory: F,
+    sink: E,
+    timing: WorkerTiming,
+    done: Sender<()>,
+) -> RemoteMonitorHandle
+where
+    S: SnapshotSource + Send + 'static,
+    F: FnMut() -> Result<S, String> + Send + 'static,
+    E: EventSink,
+{
+    start_worker_with_optional_done(key, generation, source_factory, sink, timing, Some(done))
+}
 
 #[derive(Default)]
 pub struct RemoteSnapshotParser {
@@ -316,9 +643,23 @@ fn percent(used: u64, total: u64) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        collections::VecDeque,
+        io::Cursor,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc,
+        },
+        time::{Duration, Instant},
+    };
 
-    use super::{RemoteSnapshotParser, REMOTE_SNAPSHOT_COMMAND};
+    use crate::monitor::MonitorKey;
+
+    use super::{
+        read_snapshot_bounded, start_worker_with_sink_for_test, RemoteMonitorEvent,
+        RemoteSnapshotParser, SnapshotSource, WorkerTiming, MAX_SNAPSHOT_BYTES,
+        REMOTE_SNAPSHOT_COMMAND,
+    };
 
     const SAMPLE: &str = "STAT\ncpu  100 0 50 800 50 0 0 0 0 0\ncpu0 50 0 25 400 25 0 0 0 0 0\nMEM\nMemTotal:       2097152 kB\nMemAvailable:   1073152 kB\nSwapTotal:       512000 kB\nSwapFree:        256000 kB\nDISK\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1048576 524288 524288 50% /\nNET\nInter-|   Receive                                                |  Transmit\n eth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n lo: 999 0 0 0 0 0 0 0 999 0 0 0 0 0 0 0\nLOAD\n0.10 0.20 0.30 1/100 100\nUPTIME\n90060.00 0.00\nPS\n10240 12.5 /usr/bin/test process\nCPUINFO\nmodel name : Example CPU\nEND\n";
 
@@ -609,5 +950,231 @@ mod tests {
         assert!(!REMOTE_SNAPSHOT_COMMAND.contains("{host}"));
         assert!(!REMOTE_SNAPSHOT_COMMAND.contains("$USER"));
         assert!(!REMOTE_SNAPSHOT_COMMAND.contains("$HOST"));
+    }
+
+    struct FakeSource {
+        results: VecDeque<Result<String, String>>,
+        collects: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl SnapshotSource for FakeSource {
+        fn collect(&mut self) -> Result<String, String> {
+            self.collects.fetch_add(1, Ordering::SeqCst);
+            self.results
+                .pop_front()
+                .unwrap_or_else(|| Err("fake source exhausted".to_string()))
+        }
+    }
+
+    impl Drop for FakeSource {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn timing() -> WorkerTiming {
+        WorkerTiming::new(Duration::from_millis(10), Duration::from_millis(10))
+    }
+
+    fn source(
+        results: impl IntoIterator<Item = Result<String, String>>,
+        collects: &Arc<AtomicUsize>,
+        drops: &Arc<AtomicUsize>,
+    ) -> FakeSource {
+        FakeSource {
+            results: results.into_iter().collect(),
+            collects: Arc::clone(collects),
+            drops: Arc::clone(drops),
+        }
+    }
+
+    #[test]
+    fn remote_event_debug_never_leaks_error_or_monitor_data() {
+        let mut data = RemoteSnapshotParser::default()
+            .parse(SAMPLE, Duration::ZERO)
+            .unwrap();
+        data.cpu_name = "RAW_MONITOR_SENTINEL".to_string();
+        let update = format!(
+            "{:?}",
+            RemoteMonitorEvent::Update {
+                key: MonitorKey::remote("user", "host", 22),
+                generation: 7,
+                data: Box::new(data),
+            }
+        );
+        let failed = format!(
+            "{:?}",
+            RemoteMonitorEvent::Failed {
+                key: MonitorKey::remote("user", "host", 22),
+                generation: 8,
+                error: "RAW_PASSWORD_SENTINEL".to_string(),
+            }
+        );
+
+        assert!(update.contains("Update"));
+        assert!(failed.contains("Failed"));
+        assert!(!update.contains("RAW_MONITOR_SENTINEL"));
+        assert!(!failed.contains("RAW_PASSWORD_SENTINEL"));
+    }
+
+    #[test]
+    fn bounded_reader_accepts_limit_and_rejects_one_byte_over() {
+        let at_limit = vec![b'x'; MAX_SNAPSHOT_BYTES];
+        assert_eq!(
+            read_snapshot_bounded(Cursor::new(at_limit)).unwrap().len(),
+            MAX_SNAPSHOT_BYTES
+        );
+
+        let too_large = vec![b'x'; MAX_SNAPSHOT_BYTES + 1];
+        assert!(read_snapshot_bounded(Cursor::new(too_large)).is_err());
+    }
+
+    #[test]
+    fn shutdown_does_not_block_and_prevents_a_second_collect() {
+        let collects = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (events_tx, events_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let source = source([Ok(SAMPLE.to_string())], &collects, &drops);
+        let mut sources = VecDeque::from([Ok(source)]);
+        let handle = start_worker_with_sink_for_test(
+            MonitorKey::remote("user", "host", 22),
+            1,
+            move || {
+                sources
+                    .pop_front()
+                    .unwrap_or_else(|| Err("no source".to_string()))
+            },
+            events_tx,
+            timing(),
+            done_tx,
+        );
+
+        assert!(matches!(
+            events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RemoteMonitorEvent::Update { .. }
+        ));
+        let started = Instant::now();
+        handle.shutdown();
+        assert!(started.elapsed() < Duration::from_millis(100));
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(collects.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn connect_failure_reports_then_retries_to_update() {
+        let collects = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (events_tx, events_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let source = source([Ok(SAMPLE.to_string())], &collects, &drops);
+        let mut sources = VecDeque::from([Err("SSH 连接失败".to_string()), Ok(source)]);
+        let handle = start_worker_with_sink_for_test(
+            MonitorKey::remote("user", "host", 22),
+            2,
+            move || {
+                sources
+                    .pop_front()
+                    .unwrap_or_else(|| Err("no source".to_string()))
+            },
+            events_tx,
+            timing(),
+            done_tx,
+        );
+
+        assert!(matches!(
+            events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RemoteMonitorEvent::Failed { .. }
+        ));
+        assert!(matches!(
+            events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RemoteMonitorEvent::Update { .. }
+        ));
+        handle.shutdown();
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
+    fn collect_failure_drops_source_and_reconnect_resets_parser() {
+        let collects = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (events_tx, events_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let first = source(
+            [
+                Ok(SAMPLE.to_string()),
+                Err("channel read failed".to_string()),
+            ],
+            &collects,
+            &drops,
+        );
+        let second_snapshot = SAMPLE
+            .replace(
+                "cpu  100 0 50 800 50 0 0 0 0 0",
+                "cpu  120 0 60 870 50 0 0 0 0 0",
+            )
+            .replace("eth0: 1000", "eth0: 5000")
+            .replace("0 0 0 0 2000", "0 0 0 0 10000");
+        let second = source([Ok(second_snapshot)], &collects, &drops);
+        let mut sources = VecDeque::from([Ok(first), Ok(second)]);
+        let handle = start_worker_with_sink_for_test(
+            MonitorKey::remote("user", "host", 22),
+            3,
+            move || {
+                sources
+                    .pop_front()
+                    .unwrap_or_else(|| Err("no source".to_string()))
+            },
+            events_tx,
+            timing(),
+            done_tx,
+        );
+
+        assert!(matches!(
+            events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RemoteMonitorEvent::Update { .. }
+        ));
+        assert!(matches!(
+            events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RemoteMonitorEvent::Failed { .. }
+        ));
+        let update = events_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let RemoteMonitorEvent::Update { data, .. } = update else {
+            panic!("expected update")
+        };
+        assert_eq!(data.cpu_percent, 0.0);
+        assert!(data
+            .net_interfaces
+            .iter()
+            .all(|iface| iface.rx_rate == 0 && iface.tx_rate == 0));
+        assert!(drops.load(Ordering::SeqCst) >= 1);
+        handle.shutdown();
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
+    fn closed_sink_stops_worker() {
+        let collects = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let (done_tx, done_rx) = mpsc::channel();
+        let source = source([Ok(SAMPLE.to_string())], &collects, &drops);
+        let mut sources = VecDeque::from([Ok(source)]);
+        let handle = start_worker_with_sink_for_test(
+            MonitorKey::remote("user", "host", 22),
+            4,
+            move || {
+                sources
+                    .pop_front()
+                    .unwrap_or_else(|| Err("no source".to_string()))
+            },
+            |_event| Err(()),
+            timing(),
+            done_tx,
+        );
+
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(collects.load(Ordering::SeqCst), 1);
+        drop(handle);
     }
 }
