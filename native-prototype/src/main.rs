@@ -523,14 +523,16 @@ impl App {
         refresh_active_completion(&mut self.tab_manager, active_input.as_deref());
 
         let active_monitor_key = self.tab_manager.active_monitor_key();
-        let _active_monitor_snapshot = active_monitor_snapshot(&self.monitor_slots, &active_monitor_key);
+        let active_monitor_snapshot = active_monitor_snapshot(&self.monitor_slots, &active_monitor_key);
 
         // 1. Run egui (tab bar + sidebar + dialogs)
         let egui_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
         let mut tab_action = tab_bar::TabBarAction { switch_to: None, close: None, new_tab: false };
         let egui_output = self.egui_ctx.run(egui_input, |ctx| {
             tab_action = tab_bar::render_tab_bar(ctx, &self.tab_manager);
-            self.sidebar_width = self.sidebar.ui(ctx);
+            self.sidebar_width = self
+                .sidebar
+                .ui_with_monitor(ctx, &active_monitor_key, active_monitor_snapshot);
         });
 
         self.egui_state.as_mut().unwrap().handle_platform_output(&window, egui_output.platform_output);

@@ -1,6 +1,35 @@
 use egui;
 use crate::connections::{ConnectionStore, HostConfig, AuthMethod};
 
+#[derive(Debug, PartialEq, Eq)]
+struct MonitorSourcePresentation {
+    source: String,
+    detail: String,
+    snapshot: String,
+}
+
+fn safe_monitor_text(value: &str, max_chars: usize) -> String {
+    value.chars().filter(|character| !character.is_control()).take(max_chars).collect()
+}
+
+fn monitor_source_presentation(
+    key: &crate::monitor::MonitorKey,
+    snapshot: Option<&crate::monitor::MonitorData>,
+) -> MonitorSourcePresentation {
+    let (source, detail) = match key {
+        crate::monitor::MonitorKey::Local => ("本机".into(), String::new()),
+        crate::monitor::MonitorKey::Remote { .. } => (
+            "已连接".into(),
+            safe_monitor_text(&key.status_text(), 96),
+        ),
+    };
+    let snapshot = snapshot.map_or_else(
+        || "正在采集".into(),
+        |data| format!("CPU {:.0}% · {}", data.cpu_percent, safe_monitor_text(&data.memory_text, 48)),
+    );
+    MonitorSourcePresentation { source, detail, snapshot }
+}
+
 #[derive(Clone)]
 pub struct SshConnection {
     pub label: String,
@@ -163,9 +192,15 @@ impl Sidebar {
         self.on_connect.take()
     }
 
-    pub fn ui(&mut self, ctx: &egui::Context) -> f32 {
+    pub fn ui_with_monitor(
+        &mut self,
+        ctx: &egui::Context,
+        active_key: &crate::monitor::MonitorKey,
+        snapshot: Option<&crate::monitor::MonitorData>,
+    ) -> f32 {
         if !self.visible { return 0.0; }
         let panel_width = self.width;
+        let presentation = monitor_source_presentation(active_key, snapshot);
 
         egui::SidePanel::left("sidebar")
             .exact_width(panel_width)
@@ -261,7 +296,7 @@ impl Sidebar {
                     });
                 }
 
-                // Bottom: 本机
+                // Bottom: 当前标签监控来源
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.add_space(8.0);
                     ui.separator();
@@ -269,8 +304,12 @@ impl Sidebar {
                         ui.add_space(12.0);
                         let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                         ui.painter().circle_filled(r.center(), 4.0, egui::Color32::from_rgb(0x58, 0xa6, 0xff));
-                        ui.label(egui::RichText::new("本机").size(11.0).color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)));
+                        ui.label(egui::RichText::new(&presentation.source).size(11.0).color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)));
+                        if !presentation.detail.is_empty() {
+                            ui.label(egui::RichText::new(&presentation.detail).size(10.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)));
+                        }
                     });
+                    ui.label(egui::RichText::new(&presentation.snapshot).size(10.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)));
                 });
             });
 
@@ -693,5 +732,18 @@ mod tests {
         assert!(debug.contains("deploy"));
         assert!(!debug.contains("KEY_PATH_SENTINEL"));
         assert!(!debug.contains("PASSWORD_SENTINEL"));
+    }
+
+    #[test]
+    fn remote_monitor_presentation_without_snapshot_never_falls_back_to_local() {
+        let presentation = super::monitor_source_presentation(
+            &crate::monitor::MonitorKey::remote("alice", "alpha.example", 22),
+            None,
+        );
+
+        assert_eq!(presentation.source, "已连接");
+        assert_eq!(presentation.detail, "alice@alpha.example:22");
+        assert_eq!(presentation.snapshot, "正在采集");
+        assert_ne!(presentation.source, "本机");
     }
 }
