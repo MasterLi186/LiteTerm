@@ -1,7 +1,7 @@
 use egui;
 use crate::connections::{ConnectionStore, HostConfig, AuthMethod};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SshConnection {
     pub label: String,
     pub host: String,
@@ -12,6 +12,21 @@ pub struct SshConnection {
     pub password: String,
     pub group: String,
     pub group_color: [u8; 3],
+}
+
+impl std::fmt::Debug for SshConnection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SshConnection")
+            .field("label", &self.label)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("auth", &self.auth)
+            .field("group", &self.group)
+            .field("group_color", &self.group_color)
+            .finish_non_exhaustive()
+    }
 }
 
 /// SSH key info (from ~/.ssh/)
@@ -651,4 +666,32 @@ fn generate_ssh_key(key_type: &str, comment: &str) -> Result<String, String> {
         return Err(format!("ssh-keygen 失败: {}", String::from_utf8_lossy(&output.stderr)));
     }
     std::fs::read_to_string(key_path.with_extension("pub")).map_err(|e| format!("读取公钥失败: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SshConnection;
+
+    #[test]
+    fn ssh_connection_debug_redacts_key_path_and_password() {
+        let connection = SshConnection {
+            label: "生产机".into(),
+            host: "server.example.com".into(),
+            port: 2222,
+            user: "deploy".into(),
+            auth: "key".into(),
+            key_path: "KEY_PATH_SENTINEL".into(),
+            password: "PASSWORD_SENTINEL".into(),
+            group: "生产".into(),
+            group_color: [1, 2, 3],
+        };
+
+        let debug = format!("{connection:?}");
+
+        assert!(debug.contains("生产机"));
+        assert!(debug.contains("server.example.com"));
+        assert!(debug.contains("deploy"));
+        assert!(!debug.contains("KEY_PATH_SENTINEL"));
+        assert!(!debug.contains("PASSWORD_SENTINEL"));
+    }
 }

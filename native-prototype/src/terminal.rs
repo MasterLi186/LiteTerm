@@ -10,7 +10,9 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::StdSyncHandler;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
-use crate::bash_integration::{is_bash_path, LocalBashRuntime, MarkerDecoder, MarkerKind};
+use crate::bash_integration::{
+    is_bash_path, LocalBashRuntime, MarkerDecoder, MarkerKind, RemoteBashRuntime,
+};
 use crate::smart_completion::CompletionSessionKey;
 
 type Processor = alacritty_terminal::vte::ansi::Processor<StdSyncHandler>;
@@ -82,11 +84,15 @@ pub struct TerminalState {
     writer: Option<mpsc::Sender<Vec<u8>>>,
     pty_reader: Option<Box<dyn Read + Send>>,
     pty_master: Option<Box<dyn MasterPty + Send>>,
+    ssh_resize_tx: Option<mpsc::Sender<(u16, u16)>>,
+    ssh_shutdown_tx: Option<mpsc::Sender<()>>,
+    ssh_io_done_rx: Option<mpsc::Receiver<()>>,
     pty_write_rx: Option<mpsc::Receiver<String>>,
     cols: u16,
     rows: u16,
     pub scroll_offset: i32,
     pub local_bash_runtime: Option<LocalBashRuntime>,
+    pub remote_bash_runtime: Option<RemoteBashRuntime>,
     prompt_tracking: Option<PromptTracking>,
 }
 
@@ -97,11 +103,15 @@ impl TerminalState {
             writer: None,
             pty_reader: None,
             pty_master: None,
+            ssh_resize_tx: None,
+            ssh_shutdown_tx: None,
+            ssh_io_done_rx: None,
             pty_write_rx: None,
             cols: 80,
             rows: 24,
             scroll_offset: 0,
             local_bash_runtime: None,
+            remote_bash_runtime: None,
             prompt_tracking: None,
         }
     }
@@ -131,8 +141,10 @@ impl TerminalState {
         rows: u16,
         session: CompletionSessionKey,
     ) {
+        self.shutdown();
         self.init_term(cols, rows);
         self.local_bash_runtime = None;
+        self.remote_bash_runtime = None;
 
         let local_bash_runtime = if is_bash_path(shell) {
             match LocalBashRuntime::create(session) {
@@ -187,12 +199,29 @@ impl TerminalState {
 
     /// 设置 SSH 连接结果（由异步回调调用）
     pub fn apply_ssh_handle(&mut self, handle: crate::ssh::SshHandle, cols: u16, rows: u16) {
+        self.shutdown();
         self.init_term(cols, rows);
-        self.pty_reader = Some(handle.reader);
-        self.writer = Some(handle.write_tx);
+        let crate::ssh::SshHandle {
+            reader,
+            write_tx,
+            resize_tx,
+            shutdown_tx,
+            io_done_rx,
+            bash_runtime,
+        } = handle;
+        self.pty_reader = Some(reader);
+        self.writer = Some(write_tx);
+        self.ssh_resize_tx = Some(resize_tx);
+        self.ssh_shutdown_tx = Some(shutdown_tx);
+        self.ssh_io_done_rx = Some(io_done_rx);
         self.pty_master = None;
         self.local_bash_runtime = None;
-        self.prompt_tracking = None;
+        self.prompt_tracking = bash_runtime.as_ref().map(|runtime| PromptTracking {
+            decoder: MarkerDecoder::new(runtime.session.clone()),
+            session: runtime.session.clone(),
+            anchor: None,
+        });
+        self.remote_bash_runtime = bash_runtime;
     }
 
     pub fn write_input(&mut self, text: &str) {
@@ -227,7 +256,9 @@ impl TerminalState {
                 pixel_height: 0,
             });
         }
-        // TODO: SSH resize (would need to send window-change request through channel)
+        if let Some(resize_tx) = &self.ssh_resize_tx {
+            let _ = resize_tx.send((cols, rows));
+        }
     }
 
     pub fn scroll(&mut self, delta: i32) {
@@ -363,8 +394,24 @@ impl TerminalState {
     }
 
     pub fn finish_session(&mut self) {
+        self.shutdown();
         self.prompt_tracking = None;
         self.local_bash_runtime = None;
+        self.remote_bash_runtime = None;
+    }
+
+    pub fn shutdown(&mut self) {
+        if let Some(shutdown_tx) = self.ssh_shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        self.writer = None;
+        self.pty_reader = None;
+        self.pty_master = None;
+        self.ssh_resize_tx = None;
+        self.ssh_io_done_rx = None;
+        self.local_bash_runtime = None;
+        self.remote_bash_runtime = None;
+        self.prompt_tracking = None;
     }
 
     fn invalidate_ambiguous_prompt(&mut self) {
@@ -427,6 +474,12 @@ impl TerminalState {
     }
     pub fn rows(&self) -> u16 {
         self.rows
+    }
+}
+
+impl Drop for TerminalState {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -1020,5 +1073,143 @@ mod tests {
 
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         release_tx.send(()).unwrap();
+    }
+
+    #[test]
+    fn applied_ssh_handle_keeps_all_control_channels_and_runtime_alive() {
+        let session = completion_session();
+        let runtime = RemoteBashRuntime {
+            session: session.clone(),
+            bash_path: "/bin/bash".into(),
+            rc_path: "/tmp/session.rc".into(),
+            candidate_path: "/tmp/session.candidate".into(),
+            widget_sequence: "\x1b[777;1~".into(),
+        };
+        let (write_tx, write_rx) = mpsc::channel();
+        let (resize_tx, resize_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (io_done_tx, io_done_rx) = mpsc::channel();
+        let mut terminal = TerminalState::new();
+
+        terminal.apply_ssh_handle(
+            crate::ssh::SshHandle {
+                reader: Box::new(std::io::empty()),
+                write_tx,
+                resize_tx,
+                shutdown_tx,
+                io_done_rx,
+                bash_runtime: Some(runtime.clone()),
+            },
+            80,
+            24,
+        );
+
+        assert!(matches!(
+            write_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            resize_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            shutdown_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        io_done_tx
+            .send(())
+            .expect("TerminalState 必须持有 SSH I/O 完成通知接收端");
+        assert_eq!(terminal.remote_bash_runtime.as_ref(), Some(&runtime));
+        assert_eq!(
+            terminal
+                .prompt_tracking
+                .as_ref()
+                .map(|tracking| &tracking.session),
+            Some(&session)
+        );
+    }
+
+    #[test]
+    fn terminal_resize_forwards_dimensions_to_ssh_worker() {
+        let (write_tx, _write_rx) = mpsc::channel();
+        let (resize_tx, resize_rx) = mpsc::channel();
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel();
+        let (_io_done_tx, io_done_rx) = mpsc::channel();
+        let mut terminal = TerminalState::new();
+        terminal.apply_ssh_handle(
+            crate::ssh::SshHandle {
+                reader: Box::new(std::io::empty()),
+                write_tx,
+                resize_tx,
+                shutdown_tx,
+                io_done_rx,
+                bash_runtime: None,
+            },
+            80,
+            24,
+        );
+
+        terminal.resize(132, 43);
+
+        assert_eq!(resize_rx.try_recv().unwrap(), (132, 43));
+    }
+
+    #[test]
+    fn terminal_shutdown_signals_ssh_and_clears_control_channels() {
+        let (write_tx, write_rx) = mpsc::channel();
+        let (resize_tx, resize_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (io_done_tx, io_done_rx) = mpsc::channel();
+        let mut terminal = TerminalState::new();
+        terminal.apply_ssh_handle(
+            crate::ssh::SshHandle {
+                reader: Box::new(std::io::empty()),
+                write_tx,
+                resize_tx,
+                shutdown_tx,
+                io_done_rx,
+                bash_runtime: None,
+            },
+            80,
+            24,
+        );
+
+        terminal.shutdown();
+
+        assert!(shutdown_rx.try_recv().is_ok());
+        assert!(matches!(
+            write_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            resize_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(io_done_tx.send(()).is_err());
+    }
+
+    #[test]
+    fn dropping_terminal_signals_ssh_shutdown() {
+        let (write_tx, _write_rx) = mpsc::channel();
+        let (resize_tx, _resize_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (_io_done_tx, io_done_rx) = mpsc::channel();
+        let mut terminal = TerminalState::new();
+        terminal.apply_ssh_handle(
+            crate::ssh::SshHandle {
+                reader: Box::new(std::io::empty()),
+                write_tx,
+                resize_tx,
+                shutdown_tx,
+                io_done_rx,
+                bash_runtime: None,
+            },
+            80,
+            24,
+        );
+
+        drop(terminal);
+
+        assert!(shutdown_rx.try_recv().is_ok());
     }
 }
