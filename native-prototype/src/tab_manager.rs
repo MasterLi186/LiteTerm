@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use crate::smart_completion::{CompletionSessionKey, CompletionState};
 use crate::terminal::TerminalState;
 use crate::sidebar::SshConnection;
 
@@ -14,6 +15,7 @@ pub struct Tab {
     pub tab_type: TabType,
     pub terminal: Arc<Mutex<TerminalState>>,
     pub read_thread_started: bool,
+    pub completion: CompletionState,
 }
 
 pub struct TabManager {
@@ -38,10 +40,12 @@ impl TabManager {
         let id = uuid::Uuid::new_v4().to_string();
         let label = format!("终端 {}", self.local_counter);
         let terminal = Arc::new(Mutex::new(TerminalState::new()));
+        let session = CompletionSessionKey::new(1);
+        let completion = CompletionState::new(session.clone());
 
         {
             let mut term = terminal.lock().unwrap();
-            term.spawn_shell_with_path(shell, cols, rows);
+            term.spawn_shell_with_path(shell, cols, rows, session);
         }
 
         let tab = Tab {
@@ -50,6 +54,7 @@ impl TabManager {
             tab_type: TabType::Local { shell_path: shell.to_string() },
             terminal: terminal.clone(),
             read_thread_started: false,
+            completion,
         };
         self.tabs.push(tab);
         self.active_idx = self.tabs.len() - 1;
@@ -71,6 +76,7 @@ impl TabManager {
             },
             terminal,
             read_thread_started: false,
+            completion: CompletionState::new(CompletionSessionKey::new(1)),
         };
         self.tabs.push(tab);
         self.active_idx = self.tabs.len() - 1;
@@ -151,5 +157,46 @@ impl TabManager {
 
     pub fn len(&self) -> usize {
         self.tabs.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_bash_tab_shares_one_generation_one_session_with_runtime() {
+        let mut manager = TabManager::new();
+        let (_, terminal) = manager.new_local("bash", 80, 24);
+        let terminal = terminal.lock().unwrap();
+        let runtime = terminal.local_bash_runtime.as_ref().unwrap();
+
+        assert_eq!(manager.tabs[0].completion.session().generation, 1);
+        assert_eq!(manager.tabs[0].completion.session(), runtime.session());
+    }
+
+    #[test]
+    fn ssh_placeholder_starts_with_generation_one_completion() {
+        let connection = SshConnection {
+            label: "测试主机".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 22,
+            user: "tester".to_owned(),
+            auth: "password".to_owned(),
+            key_path: String::new(),
+            group: String::new(),
+            group_color: [0, 0, 0],
+        };
+        let mut manager = TabManager::new();
+
+        manager.new_ssh_placeholder(&connection);
+
+        assert_eq!(manager.tabs[0].completion.session().generation, 1);
+        assert!(manager.tabs[0]
+            .terminal
+            .lock()
+            .unwrap()
+            .local_bash_runtime
+            .is_none());
     }
 }

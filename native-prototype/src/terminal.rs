@@ -7,6 +7,9 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::term::Config as TermConfig;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system, MasterPty};
 
+use crate::bash_integration::{is_bash_path, LocalBashRuntime};
+use crate::smart_completion::CompletionSessionKey;
+
 struct TermDimensions {
     cols: usize,
     rows: usize,
@@ -39,6 +42,7 @@ pub struct TerminalState {
     cols: u16,
     rows: u16,
     pub scroll_offset: i32,
+    pub local_bash_runtime: Option<LocalBashRuntime>,
 }
 
 impl TerminalState {
@@ -51,6 +55,7 @@ impl TerminalState {
             cols: 80,
             rows: 24,
             scroll_offset: 0,
+            local_bash_runtime: None,
         }
     }
 
@@ -64,11 +69,30 @@ impl TerminalState {
 
     pub fn spawn_shell(&mut self, cols: u16, rows: u16) {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        self.spawn_shell_with_path(&shell, cols, rows);
+        self.spawn_shell_with_path(&shell, cols, rows, CompletionSessionKey::new(1));
     }
 
-    pub fn spawn_shell_with_path(&mut self, shell: &str, cols: u16, rows: u16) {
+    pub fn spawn_shell_with_path(
+        &mut self,
+        shell: &str,
+        cols: u16,
+        rows: u16,
+        session: CompletionSessionKey,
+    ) {
         self.init_term(cols, rows);
+        self.local_bash_runtime = None;
+
+        let local_bash_runtime = if is_bash_path(shell) {
+            match LocalBashRuntime::create(session) {
+                Ok(runtime) => Some(runtime),
+                Err(error) => {
+                    log::warn!("创建 Bash 智能补全运行环境失败，将使用普通 shell: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let pty_system = native_pty_system();
         let pty_pair = pty_system
@@ -77,6 +101,11 @@ impl TerminalState {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
+        if let Some(runtime) = &local_bash_runtime {
+            cmd.arg("--rcfile");
+            cmd.arg(runtime.rc_path());
+            cmd.arg("-i");
+        }
         pty_pair.slave.spawn_command(cmd).expect("启动 shell 失败");
 
         let reader = pty_pair.master.try_clone_reader().expect("克隆 PTY reader 失败");
@@ -85,6 +114,7 @@ impl TerminalState {
         self.pty_reader = Some(reader);
         self.writer = Some(WriterKind::Direct(writer));
         self.pty_master = Some(pty_pair.master);
+        self.local_bash_runtime = local_bash_runtime;
     }
 
     /// 设置 SSH 连接结果（由异步回调调用）
@@ -93,6 +123,7 @@ impl TerminalState {
         self.pty_reader = Some(handle.reader);
         self.writer = Some(WriterKind::Channel(handle.write_tx));
         self.pty_master = None;
+        self.local_bash_runtime = None;
     }
 
     pub fn write_input(&mut self, text: &str) {
@@ -143,6 +174,16 @@ impl TerminalState {
 
     pub fn cols(&self) -> u16 { self.cols }
     pub fn rows(&self) -> u16 { self.rows }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_terminal_has_no_local_bash_runtime() {
+        assert!(TerminalState::new().local_bash_runtime.is_none());
+    }
 }
 
 pub fn read_loop<F>(terminal: Arc<Mutex<TerminalState>>, request_redraw: F)
