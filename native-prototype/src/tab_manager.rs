@@ -697,6 +697,35 @@ mod tests {
     }
 
     #[test]
+    fn close_others_keeps_the_shared_remote_monitor_requirement() {
+        let mut manager = TabManager::new();
+        let connection = test_ssh_connection();
+        let first_id = manager.new_ssh_placeholder(&connection);
+        let second_id = manager.new_ssh_placeholder(&connection);
+        manager.tabs[0].ssh_connected = true;
+        manager.tabs[1].ssh_connected = true;
+
+        manager.close_others(1);
+
+        assert_ne!(first_id, second_id);
+        assert_eq!(manager.len(), 1);
+        assert_eq!(manager.remote_monitor_requirements().len(), 1);
+    }
+
+    #[test]
+    fn close_others_removing_the_last_remote_leaves_no_requirement() {
+        let mut manager = TabManager::new();
+        let connection = test_ssh_connection();
+        manager.new_ssh_placeholder(&connection);
+        manager.tabs[0].ssh_connected = true;
+        manager.new_local("sh", 80, 24);
+
+        manager.close_others(1);
+
+        assert!(manager.remote_monitor_requirements().is_empty());
+    }
+
+    #[test]
     fn remote_monitor_requirements_include_each_connected_remote_once() {
         let mut manager = TabManager::new();
         let shared = test_ssh_connection_for("shared.example", "alice", 22);

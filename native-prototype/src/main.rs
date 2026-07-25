@@ -111,6 +111,21 @@ fn next_remote_monitor_generation(counter: &mut u64) -> u64 {
     *counter
 }
 
+fn close_other_tabs_reconcile_actions(
+    tab_manager: &mut TabManager,
+    keep_index: usize,
+    running: &HashSet<monitor::MonitorKey>,
+) -> Option<RemoteMonitorReconcileActions> {
+    if keep_index >= tab_manager.len() {
+        return None;
+    }
+    tab_manager.close_others(keep_index);
+    Some(reconcile_actions(
+        &tab_manager.remote_monitor_requirements(),
+        running,
+    ))
+}
+
 fn completion_event_is_current(
     current: &CompletionSessionKey,
     session: &CompletionSessionKey,
@@ -268,6 +283,10 @@ impl App {
         let required = self.tab_manager.remote_monitor_requirements();
         let running = self.remote_monitors.keys().cloned().collect::<HashSet<_>>();
         let actions = reconcile_actions(&required, &running);
+        self.apply_remote_monitor_actions(actions);
+    }
+
+    fn apply_remote_monitor_actions(&mut self, actions: RemoteMonitorReconcileActions) {
         for key in actions.stops {
             if let Some(handle) = self.remote_monitors.remove(&key) {
                 handle.shutdown();
@@ -291,6 +310,19 @@ impl App {
             handle.shutdown();
         }
         self.remote_monitor_generations.clear();
+    }
+
+    #[allow(dead_code)]
+    fn close_other_tabs(&mut self, keep_index: usize) {
+        let running = self.remote_monitors.keys().cloned().collect::<HashSet<_>>();
+        let Some(actions) = close_other_tabs_reconcile_actions(
+            &mut self.tab_manager,
+            keep_index,
+            &running,
+        ) else {
+            return;
+        };
+        self.apply_remote_monitor_actions(actions);
     }
 
     /// Start a read_loop for a terminal on a background thread
@@ -1055,6 +1087,92 @@ impl ApplicationHandler<UserEvent> for App {
 #[cfg(test)]
 mod completion_tests {
     use super::*;
+
+    #[test]
+    fn close_other_tabs_reconciles_after_closing_local_tabs() {
+        let mut tab_manager = TabManager::new();
+        tab_manager.new_local("sh", 80, 24);
+        tab_manager.new_local("sh", 80, 24);
+
+        let actions = close_other_tabs_reconcile_actions(
+            &mut tab_manager,
+            1,
+            &std::collections::HashSet::new(),
+        );
+
+        assert_eq!(tab_manager.len(), 1);
+        assert_eq!(actions, Some(RemoteMonitorReconcileActions {
+            starts: Vec::new(),
+            stops: Vec::new(),
+        }));
+    }
+
+    fn monitor_params(user: &str, host: &str, port: u16) -> ssh::ConnectionParams {
+        ssh::ConnectionParams {
+            user: user.into(),
+            host: host.into(),
+            port,
+            auth: "key".into(),
+            key_path: "key-sentinel".into(),
+            password: "password-sentinel".into(),
+        }
+    }
+
+    #[test]
+    fn reconcile_actions_deduplicates_and_sorts_required_starts() {
+        let alpha = monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let beta = monitor::MonitorKey::remote("bob", "beta.example", 2200);
+        let mut required = std::collections::HashMap::new();
+        required.insert(beta.clone(), monitor_params("bob", "beta.example", 2200));
+        required.insert(alpha.clone(), monitor_params("alice", "alpha.example", 22));
+
+        let actions = reconcile_actions(&required, &std::collections::HashSet::new());
+
+        assert_eq!(actions.starts.len(), 2);
+        assert_eq!(actions.starts[0].0, alpha);
+        assert_eq!(actions.starts[1].0, beta);
+        assert!(actions.stops.is_empty());
+    }
+
+    #[test]
+    fn reconcile_actions_stops_only_the_key_without_a_remaining_reference() {
+        let retained = monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let removed = monitor::MonitorKey::remote("bob", "beta.example", 2200);
+        let required = std::collections::HashMap::from([(
+            retained.clone(),
+            monitor_params("alice", "alpha.example", 22),
+        )]);
+
+        let actions = reconcile_actions(
+            &required,
+            &std::collections::HashSet::from([retained, removed.clone()]),
+        );
+
+        assert!(actions.starts.is_empty());
+        assert_eq!(actions.stops, vec![removed]);
+    }
+
+    #[test]
+    fn reconcile_actions_keeps_running_required_workers_unchanged() {
+        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let required = std::collections::HashMap::from([(
+            key.clone(),
+            monitor_params("alice", "alpha.example", 22),
+        )]);
+
+        let actions = reconcile_actions(&required, &std::collections::HashSet::from([key]));
+
+        assert!(actions.starts.is_empty());
+        assert!(actions.stops.is_empty());
+    }
+
+    #[test]
+    fn remote_monitor_generation_starts_at_one_and_skips_zero_when_wrapping() {
+        let mut next = 0;
+        assert_eq!(next_remote_monitor_generation(&mut next), 1);
+        next = u64::MAX;
+        assert_eq!(next_remote_monitor_generation(&mut next), 1);
+    }
 
     #[test]
     fn completion_event_matches_tab_generation_and_token() {
