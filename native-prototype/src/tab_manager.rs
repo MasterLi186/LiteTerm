@@ -70,6 +70,13 @@ fn default_bash_history_path(home: Option<std::path::PathBuf>) -> Option<std::pa
     Some(home.join(".bash_history"))
 }
 
+fn shutdown_terminal(terminal: &Arc<Mutex<TerminalState>>) {
+    terminal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .shutdown();
+}
+
 impl TabManager {
     pub fn new() -> Self {
         Self {
@@ -180,6 +187,7 @@ impl TabManager {
         };
         let session = tab.completion.session().successor();
         tab.completion.reset_session(session.clone());
+        shutdown_terminal(&tab.terminal);
         let old_terminal = std::mem::replace(
             &mut tab.terminal,
             Arc::new(Mutex::new(TerminalState::new())),
@@ -206,6 +214,7 @@ impl TabManager {
         if idx >= self.tabs.len() {
             return;
         }
+        shutdown_terminal(&self.tabs[idx].terminal);
         self.tabs.remove(idx);
         if self.tabs.is_empty() {
             // Never leave empty — will be handled by caller
@@ -221,6 +230,11 @@ impl TabManager {
     pub fn close_others(&mut self, keep_idx: usize) {
         if keep_idx >= self.tabs.len() {
             return;
+        }
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if index != keep_idx {
+                shutdown_terminal(&tab.terminal);
+            }
         }
         let kept = self.tabs.remove(keep_idx);
         self.tabs.clear();
@@ -282,7 +296,10 @@ mod tests {
     use super::*;
     use crate::bash_integration::RemoteBashRuntime;
     use crate::monitor::MonitorKey;
+    use std::io::{self, Read};
     use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     fn test_ssh_connection() -> SshConnection {
         SshConnection {
@@ -330,6 +347,160 @@ mod tests {
             },
             shutdown_rx,
         )
+    }
+
+    struct ReadStarted<R> {
+        reader: R,
+        started_tx: Option<mpsc::Sender<()>>,
+    }
+
+    impl<R: Read> Read for ReadStarted<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if let Some(started_tx) = self.started_tx.take() {
+                let _ = started_tx.send(());
+            }
+            self.reader.read(buffer)
+        }
+    }
+
+    struct BlockingSshProbe {
+        terminal: Arc<Mutex<TerminalState>>,
+        shutdown_seen_rx: mpsc::Receiver<()>,
+        release_worker_tx: mpsc::Sender<()>,
+        read_done_rx: mpsc::Receiver<()>,
+        worker_thread: thread::JoinHandle<()>,
+        read_thread: thread::JoinHandle<()>,
+    }
+
+    impl BlockingSshProbe {
+        fn finish(self) -> bool {
+            let shutdown_requested = self
+                .shutdown_seen_rx
+                .recv_timeout(Duration::from_millis(250))
+                .is_ok();
+            if !shutdown_requested {
+                self.terminal.lock().unwrap().shutdown();
+                self.shutdown_seen_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("测试清理必须送达 SSH shutdown");
+            }
+            let _ = self.release_worker_tx.send(());
+            self.read_done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("SSH pipe 关闭后 read_loop 必须有界退出");
+            self.worker_thread.join().unwrap();
+            self.read_thread.join().unwrap();
+            shutdown_requested
+        }
+    }
+
+    fn add_blocked_ssh_tab(manager: &mut TabManager) -> BlockingSshProbe {
+        let tab_id = manager.new_ssh_placeholder(&test_ssh_connection());
+        let (pipe_read, pipe_write) = os_pipe::pipe().unwrap();
+        let (read_started_tx, read_started_rx) = mpsc::channel();
+        let (write_tx, write_rx) = mpsc::channel();
+        let (resize_tx, resize_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (io_done_tx, io_done_rx) = mpsc::channel();
+        let (shutdown_seen_tx, shutdown_seen_rx) = mpsc::channel();
+        let (release_worker_tx, release_worker_rx) = mpsc::channel();
+        let handle = crate::ssh::SshHandle {
+            reader: Box::new(ReadStarted {
+                reader: pipe_read,
+                started_tx: Some(read_started_tx),
+            }),
+            write_tx,
+            resize_tx,
+            shutdown_tx,
+            io_done_rx,
+            bash_runtime: None,
+        };
+        let terminal = manager.apply_ssh(&tab_id, handle, 80, 24).unwrap();
+        let read_terminal = terminal.clone();
+        let (read_done_tx, read_done_rx) = mpsc::channel();
+        let read_thread = thread::spawn(move || {
+            crate::terminal::read_loop(read_terminal, || {}, |_| {});
+            let _ = read_done_tx.send(());
+        });
+        let worker_thread = thread::spawn(move || {
+            let _write_rx = write_rx;
+            let _resize_rx = resize_rx;
+            shutdown_rx.recv().unwrap();
+            let _ = shutdown_seen_tx.send(());
+            let _ = release_worker_rx.recv();
+            drop(pipe_write);
+            let _ = io_done_tx.send(());
+        });
+        read_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("read_loop 必须先进入阻塞 pipe read");
+
+        BlockingSshProbe {
+            terminal,
+            shutdown_seen_rx,
+            release_worker_tx,
+            read_done_rx,
+            worker_thread,
+            read_thread,
+        }
+    }
+
+    #[test]
+    fn close_shuts_down_arc_held_ssh_before_removing_tab() {
+        let mut manager = TabManager::new();
+        let probe = add_blocked_ssh_tab(&mut manager);
+        let (close_done_tx, close_done_rx) = mpsc::channel();
+        let close_thread = thread::spawn(move || {
+            manager.close(0);
+            let _ = close_done_tx.send(());
+        });
+
+        close_done_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("close 不得等待 SSH worker 或 read_loop");
+        let shutdown_requested = probe.finish();
+        close_thread.join().unwrap();
+
+        assert!(shutdown_requested);
+    }
+
+    #[test]
+    fn close_others_shuts_down_removed_arc_held_ssh_tabs() {
+        let mut manager = TabManager::new();
+        let probe = add_blocked_ssh_tab(&mut manager);
+        manager.new_ssh_placeholder(&test_ssh_connection_for("keep.example", "keeper", 22));
+        let (close_done_tx, close_done_rx) = mpsc::channel();
+        let close_thread = thread::spawn(move || {
+            manager.close_others(1);
+            let _ = close_done_tx.send(());
+        });
+
+        close_done_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("close_others 不得等待 SSH worker 或 read_loop");
+        let shutdown_requested = probe.finish();
+        close_thread.join().unwrap();
+
+        assert!(shutdown_requested);
+    }
+
+    #[test]
+    fn reconnect_reset_shuts_down_replaced_arc_held_ssh() {
+        let mut manager = TabManager::new();
+        let probe = add_blocked_ssh_tab(&mut manager);
+        let (reset_done_tx, reset_done_rx) = mpsc::channel();
+        let reset_thread = thread::spawn(move || {
+            let plan = manager.reset_ssh_for_reconnect(0);
+            let _ = reset_done_tx.send(plan.is_some());
+        });
+
+        assert!(reset_done_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("reset 不得等待 SSH worker 或 read_loop"));
+        let shutdown_requested = probe.finish();
+        reset_thread.join().unwrap();
+
+        assert!(shutdown_requested);
     }
 
     #[test]
