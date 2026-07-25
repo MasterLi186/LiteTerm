@@ -46,7 +46,7 @@ enum UserEvent {
         tab_id: String,
         event: terminal::IntegrationEvent,
     },
-    RemoteMonitor(remote_monitor::RemoteMonitorEvent),
+    Monitor(monitor::MonitorEvent),
 }
 
 impl std::fmt::Debug for UserEvent {
@@ -67,7 +67,7 @@ impl std::fmt::Debug for UserEvent {
                 };
                 write!(f, "TerminalIntegration({}, {})", tab_id, kind)
             }
-            UserEvent::RemoteMonitor(_) => write!(f, "RemoteMonitor"),
+            UserEvent::Monitor(event) => write!(f, "Monitor({event:?})"),
         }
     }
 }
@@ -109,6 +109,79 @@ fn reconcile_actions(
 fn next_remote_monitor_generation(counter: &mut u64) -> u64 {
     *counter = counter.wrapping_add(1).max(1);
     *counter
+}
+
+fn monitor_event_from_remote(event: remote_monitor::RemoteMonitorEvent) -> monitor::MonitorEvent {
+    match event {
+        remote_monitor::RemoteMonitorEvent::Update { key, generation, data } => {
+            monitor::MonitorEvent { key, generation, result: Ok(data) }
+        }
+        remote_monitor::RemoteMonitorEvent::Failed { key, generation, error } => {
+            monitor::MonitorEvent { key, generation, result: Err(error) }
+        }
+    }
+}
+
+fn monitor_event_is_current(
+    key: &monitor::MonitorKey,
+    generation: u64,
+    remote_generations: &HashMap<monitor::MonitorKey, u64>,
+) -> bool {
+    match key {
+        monitor::MonitorKey::Local => generation == 0,
+        monitor::MonitorKey::Remote { .. } => remote_generations.get(key) == Some(&generation),
+    }
+}
+
+fn safe_monitor_error(error: String) -> String {
+    const PREFIX: &str = "监控更新失败：";
+    const MAX_CHARS: usize = 160;
+    let detail = error
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_CHARS - PREFIX.chars().count())
+        .collect::<String>();
+    if detail.is_empty() { "监控更新失败".into() } else { format!("{PREFIX}{detail}") }
+}
+
+fn apply_monitor_event(
+    slots: &mut HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
+    event: monitor::MonitorEvent,
+    remote_generations: &HashMap<monitor::MonitorKey, u64>,
+) -> bool {
+    if !monitor_event_is_current(&event.key, event.generation, remote_generations) {
+        return false;
+    }
+    let slot = slots.entry(event.key).or_default();
+    match event.result {
+        Ok(data) => {
+            slot.data = Some(*data);
+            slot.error = None;
+        }
+        Err(error) => slot.error = Some(safe_monitor_error(error)),
+    }
+    true
+}
+
+fn active_monitor_slot<'a>(
+    slots: &'a HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
+    active_key: &monitor::MonitorKey,
+) -> Option<&'a monitor::MonitorSlot> {
+    slots.get(active_key)
+}
+
+fn active_monitor_snapshot<'a>(
+    slots: &'a HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
+    active_key: &monitor::MonitorKey,
+) -> Option<&'a monitor::MonitorData> {
+    active_monitor_slot(slots, active_key).and_then(|slot| slot.data.as_ref())
+}
+
+fn remove_monitor_slots(
+    slots: &mut HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
+    keys: &[monitor::MonitorKey],
+) {
+    for key in keys { slots.remove(key); }
 }
 
 fn close_other_tabs_reconcile_actions(
@@ -205,6 +278,7 @@ struct App {
     remote_monitors: HashMap<monitor::MonitorKey, remote_monitor::RemoteMonitorHandle>,
     remote_monitor_params: HashMap<monitor::MonitorKey, ssh::ConnectionParams>,
     remote_monitor_generations: HashMap<monitor::MonitorKey, u64>,
+    monitor_slots: HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
     next_remote_monitor_generation: u64,
     cursor_visible: bool,
     cursor_timer: Instant,
@@ -240,6 +314,7 @@ impl App {
             remote_monitors: HashMap::new(),
             remote_monitor_params: HashMap::new(),
             remote_monitor_generations: HashMap::new(),
+            monitor_slots: HashMap::new(),
             next_remote_monitor_generation: 0,
             cursor_visible: true,
             cursor_timer: Instant::now(),
@@ -294,13 +369,14 @@ impl App {
             }
             self.remote_monitor_generations.remove(&key);
             self.remote_monitor_params.remove(&key);
+            remove_monitor_slots(&mut self.monitor_slots, std::slice::from_ref(&key));
         }
         for (key, params) in actions.starts {
             let generation = next_remote_monitor_generation(&mut self.next_remote_monitor_generation);
             let proxy = self.proxy.clone();
             let started_params = params.clone();
             let handle = remote_monitor::start_ssh_worker_with_sink(key.clone(), generation, params, move |event| {
-                proxy.send_event(UserEvent::RemoteMonitor(event)).map_err(|_| ())
+                proxy.send_event(UserEvent::Monitor(monitor_event_from_remote(event))).map_err(|_| ())
             });
             match handle {
                 Ok(handle) => {
@@ -309,7 +385,7 @@ impl App {
                     self.remote_monitor_params.insert(key.clone(), started_params);
                     self.remote_monitors.insert(key, handle);
                 }
-                Err(error) => eprintln!("[MONITOR] 启动远端监控 worker 失败: {error}"),
+                Err(_) => eprintln!("[MONITOR] 启动远端监控 worker 失败"),
             }
         }
     }
@@ -320,6 +396,7 @@ impl App {
         }
         self.remote_monitor_generations.clear();
         self.remote_monitor_params.clear();
+        self.monitor_slots.retain(|key, _| matches!(key, monitor::MonitorKey::Local));
     }
 
     #[allow(dead_code)]
@@ -444,6 +521,9 @@ impl App {
                 .and_then(|terminal| terminal.current_bash_input())
         });
         refresh_active_completion(&mut self.tab_manager, active_input.as_deref());
+
+        let active_monitor_key = self.tab_manager.active_monitor_key();
+        let _active_monitor_snapshot = active_monitor_snapshot(&self.monitor_slots, &active_monitor_key);
 
         // 1. Run egui (tab bar + sidebar + dialogs)
         let egui_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
@@ -719,6 +799,22 @@ impl ApplicationHandler<UserEvent> for App {
         // Create initial local terminal tab
         self.new_local_tab();
 
+        let proxy_mon = self.proxy.clone();
+        std::thread::spawn(move || {
+            let mut collector = monitor::MonitorCollector::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let data = collector.collect();
+                if proxy_mon.send_event(UserEvent::Monitor(monitor::MonitorEvent {
+                    key: monitor::MonitorKey::Local,
+                    generation: 0,
+                    result: Ok(Box::new(data)),
+                })).is_err() {
+                    break;
+                }
+            }
+        });
+
         // Cursor blink thread
         let proxy2 = self.proxy.clone();
         std::thread::spawn(move || {
@@ -738,8 +834,12 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Redraw => {}
-            UserEvent::RemoteMonitor(event) => {
-                let _ = event;
+            UserEvent::Monitor(event) => {
+                let _ = apply_monitor_event(
+                    &mut self.monitor_slots,
+                    event,
+                    &self.remote_monitor_generations,
+                );
                 if let Some(window) = &self.window { window.request_redraw(); }
             }
             UserEvent::CompletionHistory {
@@ -1382,6 +1482,134 @@ mod completion_tests {
         refresh_active_completion(&mut manager, Some("git"));
         refresh_active_completion(&mut manager, Some(""));
         assert!(manager.tabs[0].completion.candidates().is_empty());
+    }
+
+    fn monitor_data(name: &str) -> monitor::MonitorData {
+        monitor::MonitorData {
+            cpu_percent: 0.0,
+            cpu_name: name.into(),
+            memory_used: 0,
+            memory_total: 0,
+            memory_text: String::new(),
+            memory_percent: 0.0,
+            swap_used: 0,
+            swap_total: 0,
+            swap_text: String::new(),
+            swap_percent: 0.0,
+            uptime_text: String::new(),
+            load_text: String::new(),
+            disk_items: Vec::new(),
+            processes: Vec::new(),
+            net_interfaces: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn monitor_generation_gate_requires_exact_remote_generation_and_local_zero() {
+        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let generations = std::collections::HashMap::from([(key.clone(), 4)]);
+        assert!(monitor_event_is_current(&monitor::MonitorKey::Local, 0, &generations));
+        assert!(!monitor_event_is_current(&monitor::MonitorKey::Local, 1, &generations));
+        assert!(monitor_event_is_current(&key, 4, &generations));
+        assert!(!monitor_event_is_current(&key, 3, &generations));
+        assert!(!monitor_event_is_current(
+            &monitor::MonitorKey::remote("bob", "missing.example", 22),
+            4,
+            &generations,
+        ));
+    }
+
+    #[test]
+    fn stale_monitor_success_and_failure_leave_slot_unchanged() {
+        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let mut slots = std::collections::HashMap::from([(
+            key.clone(),
+            monitor::MonitorSlot {
+                data: Some(monitor_data("keep")),
+                error: Some("keep error".into()),
+            },
+        )]);
+        let generations = std::collections::HashMap::from([(key.clone(), 4)]);
+        for result in [Ok(Box::new(monitor_data("stale"))), Err("stale-error".into())] {
+            assert!(!apply_monitor_event(
+                &mut slots,
+                monitor::MonitorEvent { key: key.clone(), generation: 3, result },
+                &generations,
+            ));
+        }
+        let slot = slots.get(&key).unwrap();
+        assert_eq!(slot.data.as_ref().unwrap().cpu_name, "keep");
+        assert_eq!(slot.error.as_deref(), Some("keep error"));
+    }
+
+    #[test]
+    fn current_monitor_success_clears_error_and_failure_keeps_data() {
+        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let other = monitor::MonitorKey::remote("bob", "beta.example", 22);
+        let mut slots = std::collections::HashMap::from([
+            (key.clone(), monitor::MonitorSlot { data: Some(monitor_data("old")), error: Some("old-error".into()) }),
+            (other.clone(), monitor::MonitorSlot { data: Some(monitor_data("other")), error: None }),
+        ]);
+        let generations = std::collections::HashMap::from([(key.clone(), 4), (other.clone(), 9)]);
+        assert!(apply_monitor_event(
+            &mut slots,
+            monitor::MonitorEvent { key: key.clone(), generation: 4, result: Ok(Box::new(monitor_data("new"))) },
+            &generations,
+        ));
+        assert_eq!(slots[&key].data.as_ref().unwrap().cpu_name, "new");
+        assert_eq!(slots[&key].error, None);
+        assert_eq!(slots[&other].data.as_ref().unwrap().cpu_name, "other");
+        assert!(apply_monitor_event(
+            &mut slots,
+            monitor::MonitorEvent { key: key.clone(), generation: 4, result: Err("bad\n\u{1b}[error".repeat(32)) },
+            &generations,
+        ));
+        assert_eq!(slots[&key].data.as_ref().unwrap().cpu_name, "new");
+        assert!(slots[&key].error.as_deref().is_some_and(|error| {
+            !error.chars().any(char::is_control) && error.chars().count() <= 160
+        }));
+    }
+
+    #[test]
+    fn active_monitor_slot_uses_exact_key_without_local_fallback() {
+        let slots = std::collections::HashMap::from([(
+            monitor::MonitorKey::Local,
+            monitor::MonitorSlot { data: Some(monitor_data("local")), error: None },
+        )]);
+        assert!(active_monitor_slot(
+            &slots,
+            &monitor::MonitorKey::remote("alice", "missing.example", 22),
+        ).is_none());
+    }
+
+    #[test]
+    fn monitor_events_convert_and_debug_without_payloads() {
+        let event = monitor_event_from_remote(remote_monitor::RemoteMonitorEvent::Failed {
+            key: monitor::MonitorKey::remote("alice", "alpha.example", 22),
+            generation: 7,
+            error: "error-sentinel".into(),
+        });
+        let debug = format!("{event:?}");
+        assert!(debug.contains("Err"));
+        assert!(!debug.contains("error-sentinel"));
+        let update = monitor_event_from_remote(remote_monitor::RemoteMonitorEvent::Update {
+            key: monitor::MonitorKey::Local,
+            generation: 0,
+            data: Box::new(monitor_data("payload-sentinel")),
+        });
+        assert!(update.result.is_ok());
+    }
+
+    #[test]
+    fn stopping_remote_monitor_removes_its_slot() {
+        let remote = monitor::MonitorKey::remote("alice", "alpha.example", 22);
+        let mut slots = std::collections::HashMap::from([
+            (monitor::MonitorKey::Local, monitor::MonitorSlot::default()),
+            (remote.clone(), monitor::MonitorSlot::default()),
+        ]);
+        remove_monitor_slots(&mut slots, std::slice::from_ref(&remote));
+        assert!(slots.contains_key(&monitor::MonitorKey::Local));
+        assert!(!slots.contains_key(&remote));
     }
 }
 

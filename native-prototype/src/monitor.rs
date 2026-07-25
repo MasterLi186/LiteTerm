@@ -1,3 +1,5 @@
+use std::fmt;
+
 use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -79,6 +81,29 @@ pub struct MonitorData {
     pub disk_items: Vec<DiskItem>,
     pub processes: Vec<ProcessInfo>,
     pub net_interfaces: Vec<NetIfaceInfo>,
+}
+
+pub(crate) struct MonitorEvent {
+    pub(crate) key: MonitorKey,
+    pub(crate) generation: u64,
+    pub(crate) result: Result<Box<MonitorData>, String>,
+}
+
+impl fmt::Debug for MonitorEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status = if self.result.is_ok() { "Ok" } else { "Err" };
+        f.debug_struct("MonitorEvent")
+            .field("key", &self.key)
+            .field("generation", &self.generation)
+            .field("result", &status)
+            .finish()
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct MonitorSlot {
+    pub(crate) data: Option<MonitorData>,
+    pub(crate) error: Option<String>,
 }
 
 pub(crate) fn format_bytes(bytes: u64) -> String {
