@@ -661,7 +661,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             mpsc, Arc,
         },
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     use crate::monitor::MonitorKey;
