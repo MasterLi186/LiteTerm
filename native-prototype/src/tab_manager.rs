@@ -151,6 +151,7 @@ impl TabManager {
     pub fn apply_ssh(
         &mut self,
         tab_id: &str,
+        expected_session: &CompletionSessionKey,
         handle: crate::ssh::SshHandle,
         cols: u16,
         rows: u16,
@@ -160,10 +161,11 @@ impl TabManager {
             return None;
         };
         let tab = &mut self.tabs[idx];
-        if handle
-            .bash_runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.session != *tab.completion.session())
+        if tab.completion.session() != expected_session
+            || handle
+                .bash_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.session != *expected_session)
         {
             handle.shutdown();
             return None;
@@ -399,6 +401,7 @@ mod tests {
 
     fn add_blocked_ssh_tab(manager: &mut TabManager) -> BlockingSshProbe {
         let tab_id = manager.new_ssh_placeholder(&test_ssh_connection());
+        let session = manager.tabs[0].completion.session().clone();
         let (pipe_read, pipe_write) = os_pipe::pipe().unwrap();
         let (read_started_tx, read_started_rx) = mpsc::channel();
         let (write_tx, write_rx) = mpsc::channel();
@@ -418,7 +421,9 @@ mod tests {
             io_done_rx,
             bash_runtime: None,
         };
-        let terminal = manager.apply_ssh(&tab_id, handle, 80, 24).unwrap();
+        let terminal = manager
+            .apply_ssh(&tab_id, &session, handle, 80, 24)
+            .unwrap();
         let read_terminal = terminal.clone();
         let (read_done_tx, read_done_rx) = mpsc::channel();
         let read_thread = thread::spawn(move || {
@@ -606,7 +611,9 @@ mod tests {
         };
         let (handle, shutdown_rx) = test_ssh_handle(Some(runtime));
 
-        assert!(manager.apply_ssh(&tab_id, handle, 80, 24).is_none());
+        assert!(manager
+            .apply_ssh(&tab_id, &current, handle, 80, 24)
+            .is_none());
         assert!(shutdown_rx.try_recv().is_ok());
         assert_eq!(manager.tabs[0].completion.session(), &current);
     }
@@ -615,10 +622,37 @@ mod tests {
     fn apply_ssh_accepts_plain_shell_fallback_without_runtime() {
         let mut manager = TabManager::new();
         let tab_id = manager.new_ssh_placeholder(&test_ssh_connection());
+        let session = manager.tabs[0].completion.session().clone();
         let (handle, _shutdown_rx) = test_ssh_handle(None);
 
-        assert!(manager.apply_ssh(&tab_id, handle, 80, 24).is_some());
+        assert!(manager
+            .apply_ssh(&tab_id, &session, handle, 80, 24)
+            .is_some());
         assert_eq!(manager.tabs[0].label, "测试");
+    }
+
+    #[test]
+    fn late_plain_shell_result_cannot_replace_newer_reconnect() {
+        let mut manager = TabManager::new();
+        let tab_id = manager.new_ssh_placeholder(&test_ssh_connection());
+        let old_session = manager.tabs[0].completion.session().clone();
+        let reconnect = manager.reset_ssh_for_reconnect(0).unwrap();
+        let (new_handle, _new_shutdown_rx) = test_ssh_handle(None);
+        let (old_handle, old_shutdown_rx) = test_ssh_handle(None);
+
+        assert!(manager
+            .apply_ssh(&tab_id, &reconnect.session, new_handle, 80, 24)
+            .is_some());
+        assert!(manager
+            .apply_ssh(&tab_id, &old_session, old_handle, 80, 24)
+            .is_none());
+
+        assert!(old_shutdown_rx.try_recv().is_ok());
+        assert_eq!(
+            manager.tabs[0].completion.session(),
+            &reconnect.session,
+            "晚到的旧结果不得回退当前会话"
+        );
     }
 
     #[test]

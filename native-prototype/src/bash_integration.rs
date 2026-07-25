@@ -15,6 +15,15 @@ pub fn is_bash_path(path: &str) -> bool {
         .is_some_and(|name| name == "bash")
 }
 
+pub fn is_safe_remote_bash_path(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path).is_absolute()
+        && !path
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '\'' | '"'))
+        && is_bash_path(path)
+}
+
 pub fn widget_sequence(session: &CompletionSessionKey) -> String {
     let numeric = session
         .token()
@@ -136,6 +145,39 @@ impl std::fmt::Debug for RemoteBashRuntime {
             .field("candidate_path", &"<redacted>")
             .field("widget_sequence", &"<redacted>")
             .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RemoteBashPaths {
+    pub rc: String,
+    pub candidate: String,
+}
+
+impl std::fmt::Debug for RemoteBashPaths {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteBashPaths")
+            .field("rc", &"<redacted>")
+            .field("candidate", &"<redacted>")
+            .finish()
+    }
+}
+
+impl RemoteBashPaths {
+    pub fn new(session: &CompletionSessionKey) -> Self {
+        let stem = format!("liteterm-native-{}-{}", session.token(), session.generation);
+        Self {
+            rc: format!("/tmp/{stem}.rc"),
+            candidate: format!("/tmp/{stem}.candidate"),
+        }
+    }
+
+    pub fn launch_command(&self, bash: &str) -> String {
+        format!(
+            "umask 077; trap 'rm -f -- \"{}\" \"{}\"' EXIT HUP INT TERM; '{}' --rcfile '{}' -i",
+            self.rc, self.candidate, bash, self.rc
+        )
     }
 }
 
@@ -406,6 +448,30 @@ mod tests {
         assert!(!is_bash_path("/bin/sh"));
         assert!(is_bash_path("/tmp/bash/"));
         assert!(!is_bash_path("bash.exe"));
+    }
+
+    #[test]
+    fn remote_bash_path_requires_safe_absolute_bash_path() {
+        assert!(is_safe_remote_bash_path("/bin/bash"));
+        assert!(is_safe_remote_bash_path("/usr/local/bin/bash"));
+        assert!(!is_safe_remote_bash_path("bash"));
+        assert!(!is_safe_remote_bash_path("/usr/bin/fish"));
+        assert!(!is_safe_remote_bash_path("bash -l"));
+        assert!(!is_safe_remote_bash_path("/bin/'bash'"));
+        assert!(!is_safe_remote_bash_path("/bin/ba\nsh"));
+    }
+
+    #[test]
+    fn remote_bash_paths_are_session_scoped_and_redacted() {
+        let first = RemoteBashPaths::new(&session());
+        let next = RemoteBashPaths::new(&session().successor());
+
+        assert_ne!(first, next);
+        assert!(first.rc.starts_with("/tmp/liteterm-native-"));
+        assert!(first.candidate.starts_with("/tmp/liteterm-native-"));
+        let debug = format!("{first:?}");
+        assert!(!debug.contains(&first.rc));
+        assert!(!debug.contains(&first.candidate));
     }
 
     #[test]

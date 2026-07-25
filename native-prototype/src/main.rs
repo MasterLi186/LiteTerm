@@ -30,7 +30,11 @@ use tab_manager::TabManager;
 
 enum UserEvent {
     Redraw,
-    SshReady { tab_id: String, result: Result<crate::ssh::SshHandle, String> },
+    SshReady {
+        tab_id: String,
+        session: CompletionSessionKey,
+        result: Result<crate::ssh::SshHandle, String>,
+    },
     CompletionHistory {
         tab_id: String,
         session: CompletionSessionKey,
@@ -47,7 +51,7 @@ impl std::fmt::Debug for UserEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UserEvent::Redraw => write!(f, "Redraw"),
-            UserEvent::SshReady { tab_id, result } => {
+            UserEvent::SshReady { tab_id, result, .. } => {
                 let status = if result.is_ok() { "Ok" } else { "Err" };
                 write!(f, "SshReady({}, {})", tab_id, status)
             }
@@ -278,19 +282,24 @@ impl App {
     fn new_ssh_tab(&mut self, conn: &sidebar::SshConnection) {
         let tab_id = self.tab_manager.new_ssh_placeholder(conn);
         let (cols, rows) = self.grid_size();
-
-        let host = conn.host.clone();
-        let port = conn.port;
-        let user = conn.user.clone();
-        let auth = conn.auth.clone();
-        let key_path = conn.key_path.clone();
+        let params = crate::ssh::ConnectionParams::from(conn);
+        let session = self
+            .tab_manager
+            .active()
+            .expect("新建 SSH 标签页后必须存在活动标签")
+            .completion
+            .session()
+            .clone();
         let tid = tab_id.clone();
         let proxy = self.proxy.clone();
 
         std::thread::spawn(move || {
-            let kp = if key_path.is_empty() { None } else { Some(key_path.as_str()) };
-            let result = crate::ssh::connect(&host, port, &user, &auth, kp, cols, rows);
-            let _ = proxy.send_event(UserEvent::SshReady { tab_id: tid, result });
+            let result = crate::ssh::connect(&params, cols, rows, Some(session.clone()));
+            let _ = proxy.send_event(UserEvent::SshReady {
+                tab_id: tid,
+                session,
+                result,
+            });
         });
     }
 
@@ -628,18 +637,34 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             },
-            UserEvent::SshReady { tab_id, result } => {
-                match result {
-                    Ok(handle) => {
-                        eprintln!("[SSH] 连接成功: {}", tab_id);
-                        let (cols, rows) = self.grid_size();
-                        if let Some(terminal) = self.tab_manager.apply_ssh(& tab_id, handle, cols, rows) {
-                            self.start_read_loop(tab_id.clone(), terminal);
-                        }
+            UserEvent::SshReady {
+                tab_id,
+                session,
+                result,
+            } => {
+                let is_current = self.tab_manager.find_by_id(&tab_id).is_some_and(|index| {
+                    self.tab_manager.tabs[index].completion.session() == &session
+                });
+                if !is_current {
+                    if let Ok(handle) = result {
+                        handle.shutdown();
                     }
-                    Err(e) => {
-                        eprintln!("[SSH] 连接失败: {}: {}", tab_id, e);
-                        self.tab_manager.ssh_failed(&tab_id, &e);
+                } else {
+                    match result {
+                        Ok(handle) => {
+                            eprintln!("[SSH] 连接成功: {}", tab_id);
+                            let (cols, rows) = self.grid_size();
+                            if let Some(terminal) = self
+                                .tab_manager
+                                .apply_ssh(&tab_id, &session, handle, cols, rows)
+                            {
+                                self.start_read_loop(tab_id.clone(), terminal);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[SSH] 连接失败: {}: {}", tab_id, e);
+                            self.tab_manager.ssh_failed(&tab_id, &e);
+                        }
                     }
                 }
             }
