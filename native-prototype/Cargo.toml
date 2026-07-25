@@ -30,3 +30,5 @@ dirs = "6"
 shellexpand = "3"
 os_pipe = "1"
 uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+tempfile = "3"

@@ -11,6 +11,7 @@ use winit::{
 mod terminal;
 mod renderer;
 mod atlas;
+mod bash_integration;
 mod sidebar;
 mod smart_completion;
 mod connections;
