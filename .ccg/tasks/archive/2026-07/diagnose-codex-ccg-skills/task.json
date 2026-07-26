@@ -1,0 +1,12 @@
+{
+  "id": "diagnose-codex-ccg-skills",
+  "title": "诊断 Codex 重启后没有 /ccg 技能",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "low",
+  "domain": "configuration",
+  "currentPhase": "completed",
+  "nextAction": "已确认 Codex-Led 通过 AGENTS、Hook 和 Agent 配置自动生效，不提供 /ccg 斜杠命令",
+  "createdAt": "2026-07-26T01:09:10Z",
+  "branch": "feat/memory-optimize"
+}
