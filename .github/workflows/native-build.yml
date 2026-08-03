@@ -2,18 +2,8 @@ name: Native Multi-platform Build
 
 on:
   push:
-    branches:
-      - feat/memory-optimize
-      - main
-    paths:
-      - native-prototype/**
-      - .github/workflows/native-build.yml
-  pull_request:
-    branches:
-      - main
-    paths:
-      - native-prototype/**
-      - .github/workflows/native-build.yml
+    tags:
+      - native-v*
   workflow_dispatch:
 
 permissions:
@@ -44,6 +34,13 @@ jobs:
           if [ -z "$VERSION" ]; then
             echo "::error::无法从 native-prototype/Cargo.toml 读取版本号"
             exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG_VERSION=${GITHUB_REF_NAME#native-v}
+            if [ "$TAG_VERSION" = "$GITHUB_REF_NAME" ] || [ "$TAG_VERSION" != "$VERSION" ]; then
+              echo "::error::Native 标签版本 $GITHUB_REF_NAME 与 Cargo.toml 版本 $VERSION 不一致"
+              exit 1
+            fi
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Native version: $VERSION"
@@ -193,6 +190,7 @@ jobs:
             echo "## LiteTerm Native 编译产物"
             echo
             echo "- 版本：\`$VERSION\`"
+            echo "- 触发来源：\`${GITHUB_REF_NAME}\`"
             echo "- 质量检查：\`$QUALITY_RESULT\`"
             echo "- 三端构建：\`$BUILD_RESULT\`"
             echo
