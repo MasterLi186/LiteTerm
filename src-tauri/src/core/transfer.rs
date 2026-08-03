@@ -140,7 +140,10 @@ impl TransferQueue {
     pub fn remove_completed(&mut self) -> usize {
         let before = self.items.len();
         self.items.retain(|item| {
-            matches!(item.status, TransferStatus::Pending | TransferStatus::Active)
+            matches!(
+                item.status,
+                TransferStatus::Pending | TransferStatus::Active
+            )
         });
         before - self.items.len()
     }

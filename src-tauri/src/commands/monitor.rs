@@ -64,7 +64,19 @@ fn format_kb_to_human(kb: u64) -> String {
 }
 
 /// Split the combined output by sentinel lines and parse each section.
-fn parse_sections(output: &str) -> (String, String, String, String, String, String, String, String, String) {
+fn parse_sections(
+    output: &str,
+) -> (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+) {
     let mut stat = String::new();
     let mut mem = String::new();
     let mut disk = String::new();
@@ -79,28 +91,85 @@ fn parse_sections(output: &str) -> (String, String, String, String, String, Stri
     for line in output.lines() {
         let trimmed = line.trim();
         match trimmed {
-            "===STAT===" => { current_section = "stat"; continue; }
-            "===MEM===" => { current_section = "mem"; continue; }
-            "===DISK===" => { current_section = "disk"; continue; }
-            "===NET===" => { current_section = "net"; continue; }
-            "===LOAD===" => { current_section = "load"; continue; }
-            "===UPTIME===" => { current_section = "uptime"; continue; }
-            "===PS===" => { current_section = "ps"; continue; }
-            "===CPUINFO===" => { current_section = "cpuinfo"; continue; }
-            "===ROUTE===" => { current_section = "route"; continue; }
-            "===END===" => { current_section = ""; continue; }
+            "===STAT===" => {
+                current_section = "stat";
+                continue;
+            }
+            "===MEM===" => {
+                current_section = "mem";
+                continue;
+            }
+            "===DISK===" => {
+                current_section = "disk";
+                continue;
+            }
+            "===NET===" => {
+                current_section = "net";
+                continue;
+            }
+            "===LOAD===" => {
+                current_section = "load";
+                continue;
+            }
+            "===UPTIME===" => {
+                current_section = "uptime";
+                continue;
+            }
+            "===PS===" => {
+                current_section = "ps";
+                continue;
+            }
+            "===CPUINFO===" => {
+                current_section = "cpuinfo";
+                continue;
+            }
+            "===ROUTE===" => {
+                current_section = "route";
+                continue;
+            }
+            "===END===" => {
+                current_section = "";
+                continue;
+            }
             _ => {}
         }
         match current_section {
-            "stat" => { stat.push_str(line); stat.push('\n'); }
-            "mem" => { mem.push_str(line); mem.push('\n'); }
-            "disk" => { disk.push_str(line); disk.push('\n'); }
-            "net" => { net.push_str(line); net.push('\n'); }
-            "load" => { load.push_str(line); load.push('\n'); }
-            "uptime" => { uptime.push_str(line); uptime.push('\n'); }
-            "ps" => { ps.push_str(line); ps.push('\n'); }
-            "cpuinfo" => { cpuinfo.push_str(line); cpuinfo.push('\n'); }
-            "route" => { route.push_str(line); route.push('\n'); }
+            "stat" => {
+                stat.push_str(line);
+                stat.push('\n');
+            }
+            "mem" => {
+                mem.push_str(line);
+                mem.push('\n');
+            }
+            "disk" => {
+                disk.push_str(line);
+                disk.push('\n');
+            }
+            "net" => {
+                net.push_str(line);
+                net.push('\n');
+            }
+            "load" => {
+                load.push_str(line);
+                load.push('\n');
+            }
+            "uptime" => {
+                uptime.push_str(line);
+                uptime.push('\n');
+            }
+            "ps" => {
+                ps.push_str(line);
+                ps.push('\n');
+            }
+            "cpuinfo" => {
+                cpuinfo.push_str(line);
+                cpuinfo.push('\n');
+            }
+            "route" => {
+                route.push_str(line);
+                route.push('\n');
+            }
             _ => {}
         }
     }
@@ -119,7 +188,9 @@ fn parse_cpuinfo(cpuinfo_text: &str) -> (String, u32) {
             }
         } else if cores == 0 {
             if let Ok(n) = trimmed.parse::<u32>() {
-                if cores == 0 { cores = n; }
+                if cores == 0 {
+                    cores = n;
+                }
             }
         }
     }
@@ -131,11 +202,12 @@ fn exec_command(session: &ssh2::Session, cmd: &str) -> Result<String, String> {
     channel.exec(cmd).map_err(|e| e.to_string())?;
 
     let mut output = String::new();
-    channel.read_to_string(&mut output).map_err(|e| e.to_string())?;
+    channel
+        .read_to_string(&mut output)
+        .map_err(|e| e.to_string())?;
     channel.wait_close().ok();
     Ok(output)
 }
-
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -205,9 +277,7 @@ pub async fn start_monitor(
 
         // Authenticate
         let auth_result = match auth_method.as_str() {
-            "agent" => session
-                .userauth_agent(&user)
-                .map_err(|e| format!("{}", e)),
+            "agent" => session.userauth_agent(&user).map_err(|e| format!("{}", e)),
             "key" => {
                 let key = key_path.unwrap_or_default();
                 let expanded = shellexpand::tilde(&key);
@@ -239,7 +309,8 @@ pub async fn start_monitor(
         let mut prev_cpu = None;
         let mut prev_net_rx: u64 = 0;
         let mut prev_net_tx: u64 = 0;
-        let mut prev_per_iface: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+        let mut prev_per_iface: std::collections::HashMap<String, (u64, u64)> =
+            std::collections::HashMap::new();
         let mut first_sample = true;
 
         loop {
@@ -249,8 +320,17 @@ pub async fn start_monitor(
 
             match exec_command(&session, cmd) {
                 Ok(output) => {
-                    let (stat_text, mem_text, disk_text, net_text, load_text, uptime_text, ps_text, cpuinfo_text, route_text) =
-                        parse_sections(&output);
+                    let (
+                        stat_text,
+                        mem_text,
+                        disk_text,
+                        net_text,
+                        load_text,
+                        uptime_text,
+                        ps_text,
+                        cpuinfo_text,
+                        route_text,
+                    ) = parse_sections(&output);
 
                     // CPU
                     let cpu_metrics = parse_proc_stat_cpu(&stat_text);
@@ -302,7 +382,10 @@ pub async fn start_monitor(
 
                     // Load
                     let load_display = if let Some(load) = parse_loadavg(&load_text) {
-                        format!("{:.2}, {:.2}, {:.2}", load.load_1m, load.load_5m, load.load_15m)
+                        format!(
+                            "{:.2}, {:.2}, {:.2}",
+                            load.load_1m, load.load_5m, load.load_15m
+                        )
                     } else {
                         "N/A".to_string()
                     };
@@ -327,27 +410,38 @@ pub async fn start_monitor(
 
                     // Network — collect all interfaces, default to route's iface
                     let net_metrics = parse_proc_net_dev(&net_text);
-                    let all_ifaces: Vec<String> = net_metrics.iter().map(|n| n.interface.clone()).collect();
+                    let all_ifaces: Vec<String> =
+                        net_metrics.iter().map(|n| n.interface.clone()).collect();
                     let total_rx: u64 = net_metrics.iter().map(|n| n.rx_bytes).sum();
                     let total_tx: u64 = net_metrics.iter().map(|n| n.tx_bytes).sum();
                     let default_iface = parse_default_iface(&route_text);
                     let net_iface = default_iface
                         .filter(|d| all_ifaces.contains(d))
-                        .unwrap_or_else(|| net_metrics.first().map(|n| n.interface.clone()).unwrap_or_default());
+                        .unwrap_or_else(|| {
+                            net_metrics
+                                .first()
+                                .map(|n| n.interface.clone())
+                                .unwrap_or_default()
+                        });
 
                     let mut net_per_iface: Vec<NetIfaceRate> = Vec::new();
                     let (net_rx_rate, net_tx_rate) = if first_sample {
                         first_sample = false;
                         for m in &net_metrics {
                             prev_per_iface.insert(m.interface.clone(), (m.rx_bytes, m.tx_bytes));
-                            net_per_iface.push(NetIfaceRate { name: m.interface.clone(), rx_rate: 0, tx_rate: 0 });
+                            net_per_iface.push(NetIfaceRate {
+                                name: m.interface.clone(),
+                                rx_rate: 0,
+                                tx_rate: 0,
+                            });
                         }
                         (0u64, 0u64)
                     } else {
                         let rx_rate = total_rx.saturating_sub(prev_net_rx) / 2;
                         let tx_rate = total_tx.saturating_sub(prev_net_tx) / 2;
                         for m in &net_metrics {
-                            let (prx, ptx) = prev_per_iface.get(&m.interface).copied().unwrap_or((0, 0));
+                            let (prx, ptx) =
+                                prev_per_iface.get(&m.interface).copied().unwrap_or((0, 0));
                             net_per_iface.push(NetIfaceRate {
                                 name: m.interface.clone(),
                                 rx_rate: m.rx_bytes.saturating_sub(prx) / 2,
@@ -374,7 +468,10 @@ pub async fn start_monitor(
                                 format!("{}K", p.rss_kb)
                             };
                             // Show only process name (like ps -A), not full cmdline
-                            let short_name = p.command.split_whitespace().next()
+                            let short_name = p
+                                .command
+                                .split_whitespace()
+                                .next()
                                 .and_then(|s| s.rsplit('/').next())
                                 .unwrap_or(&p.command)
                                 .to_string();
@@ -435,10 +532,8 @@ pub async fn start_monitor(
 
 /// Local system monitor — 使用 sysinfo crate,跨平台(Linux/macOS/Windows)。
 #[tauri::command]
-pub async fn start_local_monitor(
-    app: AppHandle,
-) -> Result<(), String> {
-    use sysinfo::{System, Disks, Networks, CpuRefreshKind, MemoryRefreshKind, ProcessesToUpdate};
+pub async fn start_local_monitor(app: AppHandle) -> Result<(), String> {
+    use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessesToUpdate, System};
 
     let app_clone = app.clone();
 
@@ -447,7 +542,8 @@ pub async fn start_local_monitor(
         let mut networks = Networks::new_with_refreshed_list();
         let disks = Disks::new_with_refreshed_list();
         let session_id = "local".to_string();
-        let mut prev_net: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+        let mut prev_net: std::collections::HashMap<String, (u64, u64)> =
+            std::collections::HashMap::new();
         let mut first_sample = true;
 
         // 首次刷新 CPU(第一次采样不准,需要两次间隔)
@@ -463,21 +559,37 @@ pub async fn start_local_monitor(
             // CPU
             let cpu_percent = sys.global_cpu_usage() as f64;
             let cpu_info = {
-                let brand = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+                let brand = sys
+                    .cpus()
+                    .first()
+                    .map(|c| c.brand().to_string())
+                    .unwrap_or_default();
                 let cores = sys.cpus().len();
-                if brand.is_empty() { format!("{}核", cores) } else { format!("{} ({}核)", brand.trim(), cores) }
+                if brand.is_empty() {
+                    format!("{}核", cores)
+                } else {
+                    format!("{} ({}核)", brand.trim(), cores)
+                }
             };
 
             // 内存
             let total_mem = sys.total_memory();
             let used_mem = sys.used_memory();
-            let memory_used_percent = if total_mem > 0 { (used_mem as f64 / total_mem as f64) * 100.0 } else { 0.0 };
+            let memory_used_percent = if total_mem > 0 {
+                (used_mem as f64 / total_mem as f64) * 100.0
+            } else {
+                0.0
+            };
             let memory_text = format!("{} / {}", format_bytes(used_mem), format_bytes(total_mem));
 
             // Swap
             let total_swap = sys.total_swap();
             let used_swap = sys.used_swap();
-            let swap_percent = if total_swap > 0 { (used_swap as f64 / total_swap as f64) * 100.0 } else { 0.0 };
+            let swap_percent = if total_swap > 0 {
+                (used_swap as f64 / total_swap as f64) * 100.0
+            } else {
+                0.0
+            };
             let swap_text = format!("{} / {}", format_bytes(used_swap), format_bytes(total_swap));
 
             // 运行时间
@@ -493,20 +605,31 @@ pub async fn start_local_monitor(
 
             // 负载(Linux/macOS 有,Windows 返回 [0,0,0])
             let load_avg = System::load_average();
-            let load_text = format!("{:.2}, {:.2}, {:.2}", load_avg.one, load_avg.five, load_avg.fifteen);
+            let load_text = format!(
+                "{:.2}, {:.2}, {:.2}",
+                load_avg.one, load_avg.five, load_avg.fifteen
+            );
 
             // 磁盘
-            let disk_items: Vec<DiskItem> = disks.list().iter().map(|d| {
-                let total = d.total_space();
-                let avail = d.available_space();
-                let percent = if total > 0 { ((total - avail) as f64 / total as f64 * 100.0) as u8 } else { 0 };
-                DiskItem {
-                    mount: d.mount_point().to_string_lossy().to_string(),
-                    avail: format_bytes(avail),
-                    size: format_bytes(total),
-                    percent,
-                }
-            }).collect();
+            let disk_items: Vec<DiskItem> = disks
+                .list()
+                .iter()
+                .map(|d| {
+                    let total = d.total_space();
+                    let avail = d.available_space();
+                    let percent = if total > 0 {
+                        ((total - avail) as f64 / total as f64 * 100.0) as u8
+                    } else {
+                        0
+                    };
+                    DiskItem {
+                        mount: d.mount_point().to_string_lossy().to_string(),
+                        avail: format_bytes(avail),
+                        size: format_bytes(total),
+                        percent,
+                    }
+                })
+                .collect();
 
             // 网络
             let mut all_ifaces: Vec<String> = Vec::new();
@@ -522,7 +645,11 @@ pub async fn start_local_monitor(
                 total_tx += tx;
 
                 if first_sample {
-                    net_per_iface.push(NetIfaceRate { name: name.clone(), rx_rate: 0, tx_rate: 0 });
+                    net_per_iface.push(NetIfaceRate {
+                        name: name.clone(),
+                        rx_rate: 0,
+                        tx_rate: 0,
+                    });
                 } else {
                     let (prx, ptx) = prev_net.get(name.as_str()).copied().unwrap_or((0, 0));
                     net_per_iface.push(NetIfaceRate {
@@ -540,28 +667,60 @@ pub async fn start_local_monitor(
             } else {
                 let prx: u64 = prev_net.values().map(|(r, _)| r).sum();
                 let ptx: u64 = prev_net.values().map(|(_, t)| t).sum();
-                (total_rx.saturating_sub(prx) / 2, total_tx.saturating_sub(ptx) / 2)
+                (
+                    total_rx.saturating_sub(prx) / 2,
+                    total_tx.saturating_sub(ptx) / 2,
+                )
             };
             let net_iface = all_ifaces.first().cloned().unwrap_or_default();
 
             // 进程(按 CPU 排序取前 10,CPU 归一化到 0-100%)
             let num_cpus = sys.cpus().len().max(1) as f32;
-            let mut procs: Vec<(&sysinfo::Pid, &sysinfo::Process)> = sys.processes().iter().collect();
-            procs.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
-            let processes: Vec<ProcessInfo> = procs.iter().take(10).map(|(_, p)| {
-                let mem_bytes = p.memory();
-                let mem = if mem_bytes >= 1_073_741_824 { format!("{:.1}G", mem_bytes as f64 / 1_073_741_824.0) }
-                    else if mem_bytes >= 1_048_576 { format!("{:.1}M", mem_bytes as f64 / 1_048_576.0) }
-                    else { format!("{}K", mem_bytes / 1024) };
-                let name = p.name().to_string_lossy().to_string();
-                ProcessInfo { mem, cpu: p.cpu_usage() / num_cpus, command: name }
-            }).collect();
+            let mut procs: Vec<(&sysinfo::Pid, &sysinfo::Process)> =
+                sys.processes().iter().collect();
+            procs.sort_by(|a, b| {
+                b.1.cpu_usage()
+                    .partial_cmp(&a.1.cpu_usage())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let processes: Vec<ProcessInfo> = procs
+                .iter()
+                .take(10)
+                .map(|(_, p)| {
+                    let mem_bytes = p.memory();
+                    let mem = if mem_bytes >= 1_073_741_824 {
+                        format!("{:.1}G", mem_bytes as f64 / 1_073_741_824.0)
+                    } else if mem_bytes >= 1_048_576 {
+                        format!("{:.1}M", mem_bytes as f64 / 1_048_576.0)
+                    } else {
+                        format!("{}K", mem_bytes / 1024)
+                    };
+                    let name = p.name().to_string_lossy().to_string();
+                    ProcessInfo {
+                        mem,
+                        cpu: p.cpu_usage() / num_cpus,
+                        command: name,
+                    }
+                })
+                .collect();
 
             let payload = MonitorPayload {
-                session_id: session_id.clone(), cpu_percent, memory_used_percent,
-                memory_text, swap_text, swap_percent, uptime_text, load_text, disk_items,
-                net_rx_rate, net_tx_rate, net_interface: net_iface, net_interfaces: all_ifaces, net_per_iface,
-                cpu_info, processes,
+                session_id: session_id.clone(),
+                cpu_percent,
+                memory_used_percent,
+                memory_text,
+                swap_text,
+                swap_percent,
+                uptime_text,
+                load_text,
+                disk_items,
+                net_rx_rate,
+                net_tx_rate,
+                net_interface: net_iface,
+                net_interfaces: all_ifaces,
+                net_per_iface,
+                cpu_info,
+                processes,
             };
             let _ = app_clone.emit("monitor-data", payload);
 
@@ -574,6 +733,9 @@ pub async fn start_local_monitor(
 
 fn format_bytes(bytes: u64) -> String {
     let gb = bytes as f64 / 1_073_741_824.0;
-    if gb >= 1.0 { format!("{:.1}G", gb) }
-    else { format!("{:.0}M", bytes as f64 / 1_048_576.0) }
+    if gb >= 1.0 {
+        format!("{:.1}G", gb)
+    } else {
+        format!("{:.0}M", bytes as f64 / 1_048_576.0)
+    }
 }

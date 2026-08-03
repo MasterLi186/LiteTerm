@@ -11,17 +11,16 @@ pub async fn export_config() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn import_config(
-    state: State<'_, AppState>,
-    content: String,
-) -> Result<(), String> {
+pub async fn import_config(state: State<'_, AppState>, content: String) -> Result<(), String> {
     // Validate by parsing
     let store: ConnectionStore =
         toml::from_str(&content).map_err(|e| format!("配置格式无效: {}", e))?;
 
     // Write to disk
     let path = Settings::config_dir().join("connections.toml");
-    store.save_to(&path).map_err(|e| format!("写入配置失败: {}", e))?;
+    store
+        .save_to(&path)
+        .map_err(|e| format!("写入配置失败: {}", e))?;
 
     // Reload into app state
     let mut connections = state.connections.lock().unwrap();

@@ -1,7 +1,7 @@
 // src-tauri/src/core/zmodem/decode.rs
 
-use super::{DecodedFrame, FrameType, ZPAD, ZDLE, ZHEX, ZBIN32};
 use super::encode::{crc16, crc32};
+use super::{DecodedFrame, FrameType, ZBIN32, ZDLE, ZHEX, ZPAD};
 
 fn from_hex(c: u8) -> Option<u8> {
     match c {
@@ -40,7 +40,9 @@ impl Default for ZmodemDecoder {
 
 impl ZmodemDecoder {
     pub fn new() -> Self {
-        Self { buf: Vec::with_capacity(256) }
+        Self {
+            buf: Vec::with_capacity(256),
+        }
     }
 
     /// 输入来自远端的原始字节，返回所有已解析完整的帧。
@@ -88,11 +90,12 @@ impl ZmodemDecoder {
                 }
 
                 // 检查是否只是需要更多数据（未达到最小帧大小）
-                let could_be_zhex = self.buf[0] == ZPAD && self.buf[1] == ZPAD
+                let could_be_zhex = self.buf[0] == ZPAD
+                    && self.buf[1] == ZPAD
                     && self.buf[2] == ZDLE
                     && (self.buf.len() < 4 || self.buf[3] == ZHEX);
-                let could_be_zbin32 = self.buf[0] == ZPAD && self.buf[1] == ZDLE
-                    && self.buf[2] == ZBIN32;
+                let could_be_zbin32 =
+                    self.buf[0] == ZPAD && self.buf[1] == ZDLE && self.buf[2] == ZBIN32;
                 if could_be_zhex || could_be_zbin32 {
                     // 可能是合法帧，只是数据尚不完整
                     break;
@@ -110,7 +113,8 @@ impl ZmodemDecoder {
         if self.buf.len() < 18 {
             return None;
         }
-        if self.buf[0] != ZPAD || self.buf[1] != ZPAD || self.buf[2] != ZDLE || self.buf[3] != ZHEX {
+        if self.buf[0] != ZPAD || self.buf[1] != ZPAD || self.buf[2] != ZDLE || self.buf[3] != ZHEX
+        {
             return None;
         }
 
@@ -121,7 +125,10 @@ impl ZmodemDecoder {
             ($h:expr, $l:expr) => {
                 match hex_pair(hex[$h], hex[$l]) {
                     Some(v) => v,
-                    None => { self.buf.drain(..1); return None; }
+                    None => {
+                        self.buf.drain(..1);
+                        return None;
+                    }
                 }
             };
         }
@@ -147,14 +154,21 @@ impl ZmodemDecoder {
         // 在检查帧类型之前，先消费帧头及末尾的 CR LF（以及可选的 XON），
         // 确保即使帧类型未知，缓冲区也始终向前推进。
         let mut consumed = 18;
-        while consumed < self.buf.len() && (self.buf[consumed] == b'\r' || self.buf[consumed] == b'\n' || self.buf[consumed] == 0x11) {
+        while consumed < self.buf.len()
+            && (self.buf[consumed] == b'\r'
+                || self.buf[consumed] == b'\n'
+                || self.buf[consumed] == 0x11)
+        {
             consumed += 1;
         }
         self.buf.drain(..consumed);
 
         let frame_type = FrameType::from_u8(frame_type_val)?;
 
-        Some(DecodedFrame { frame_type, flags: [f0, f1, f2, f3] })
+        Some(DecodedFrame {
+            frame_type,
+            flags: [f0, f1, f2, f3],
+        })
     }
 
     fn try_parse_zbin32(&mut self) -> Option<DecodedFrame> {
@@ -225,8 +239,8 @@ impl ZmodemDecoder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::encode::encode_zhex_header;
+    use super::*;
 
     #[test]
     fn test_decode_zhex_zrinit() {
@@ -264,9 +278,13 @@ mod tests {
 
     #[test]
     fn test_detect_cancel() {
-        assert!(ZmodemDecoder::detect_cancel(&[0x18, 0x18, 0x18, 0x18, 0x18]));
+        assert!(ZmodemDecoder::detect_cancel(&[
+            0x18, 0x18, 0x18, 0x18, 0x18
+        ]));
         assert!(!ZmodemDecoder::detect_cancel(&[0x18, 0x18, 0x18, 0x18]));
-        assert!(ZmodemDecoder::detect_cancel(&[0x41, 0x18, 0x18, 0x18, 0x18, 0x18, 0x08]));
+        assert!(ZmodemDecoder::detect_cancel(&[
+            0x41, 0x18, 0x18, 0x18, 0x18, 0x18, 0x08
+        ]));
     }
 
     #[test]

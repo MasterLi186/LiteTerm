@@ -1,1793 +1,340 @@
+use liteterm_native_api as api;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{ElementState, Ime, Modifiers, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
-    window::{Window, WindowId},
+    window::{CursorIcon, Window, WindowId},
 };
 
-mod terminal;
-mod renderer;
-mod monitor;
-mod remote_monitor;
+mod adb_history;
+mod app;
+mod app_api_server;
+mod app_completion;
+mod app_input;
+mod app_monitor;
+mod app_resources;
+mod app_settings;
+mod app_zmodem;
 mod atlas;
 mod bash_integration;
+mod batch_command;
+mod command_bar;
+#[cfg(test)]
+mod completion_integration_tests;
+mod completion_popup;
+mod connections;
+mod drag_upload;
+mod file_browser;
+mod ime;
+mod keyring;
+mod monitor;
+mod network_detail;
+mod new_tab_selector;
+mod process_manager;
+mod recording;
+mod remote_monitor;
+mod renderer;
+mod serial;
+mod settings;
+mod settings_panel;
+mod sftp;
+mod shortcuts;
 mod sidebar;
 mod smart_completion;
-mod connections;
+mod split;
 mod ssh;
-mod tab_manager;
+mod ssh_keys;
 mod tab_bar;
+mod tab_manager;
+mod terminal;
+mod terminal_links;
+mod terminal_log;
+mod terminal_search;
+mod themes;
+mod tunnel;
+mod tunnel_manager;
+mod workspace_session;
+mod zmodem;
 
+#[cfg(test)]
+use app::*;
+use app_api_server::HttpApiServer;
+use app_completion::*;
+use app_input::*;
+use app_monitor::*;
+use app_resources::*;
+use app_settings::*;
+use app_zmodem::*;
 use atlas::is_word_char;
-use terminal::TerminalState;
-use renderer::{GpuState, Renderer};
+use renderer::{GpuState, PaneRenderRect, Renderer};
 use sidebar::Sidebar;
-use smart_completion::CompletionSessionKey;
-use tab_manager::TabManager;
+use smart_completion::{AdbHistoryLoadRequest, CompletionSessionKey, HistoryLoadRequest};
+use split::{LayoutSnapshot, PaneId, SplitDirection, SplitId};
+use tab_manager::{Tab, TabManager, TabType};
+use terminal::TerminalState;
 
 enum UserEvent {
     Redraw,
+    Api(api::MainThreadCall),
     SshReady {
         tab_id: String,
+        pane_id: String,
         session: CompletionSessionKey,
         result: Result<crate::ssh::SshHandle, String>,
     },
+    SerialPorts {
+        generation: u64,
+        result: Result<Vec<serial::SerialPortInfo>, String>,
+    },
+    SerialReady {
+        tab_id: String,
+        pane_id: String,
+        generation: u64,
+        result: Result<serial::SerialHandle, String>,
+    },
     CompletionHistory {
         tab_id: String,
+        pane_id: String,
         session: CompletionSessionKey,
+        request: HistoryLoadRequest,
         path: std::path::PathBuf,
         result: Result<Vec<u8>, String>,
     },
+    AdbCompletionHistory {
+        tab_id: String,
+        pane_id: String,
+        session: CompletionSessionKey,
+        request: AdbHistoryLoadRequest,
+        result: Result<Vec<String>, String>,
+    },
     TerminalIntegration {
         tab_id: String,
+        pane_id: String,
+        session: CompletionSessionKey,
         event: terminal::IntegrationEvent,
     },
+    CompletionCandidateWritten {
+        tab_id: String,
+        pane_id: String,
+        session: CompletionSessionKey,
+        request_id: u64,
+        result: Result<(), String>,
+    },
+    Zmodem {
+        tab_id: String,
+        pane_id: String,
+        session: CompletionSessionKey,
+        event: zmodem::runtime::RuntimeEvent,
+    },
+    Sftp(sftp::SftpWorkerEvent),
     Monitor(monitor::MonitorEvent),
+    ProcessDetail {
+        key: monitor::MonitorKey,
+        generation: u64,
+        requester: String,
+        request_id: u64,
+        result: Result<Box<monitor::ProcessDetail>, String>,
+    },
+    NetworkDetail {
+        key: monitor::MonitorKey,
+        generation: u64,
+        requester: String,
+        request_id: u64,
+        result: Result<Box<network_detail::NetworkDetailSnapshot>, String>,
+    },
+    RecordingLoaded {
+        path: std::path::PathBuf,
+        result: Result<recording::Asciicast, String>,
+    },
 }
 
 impl std::fmt::Debug for UserEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UserEvent::Redraw => write!(f, "Redraw"),
+            UserEvent::Api(_) => f.write_str("Api"),
             UserEvent::SshReady { tab_id, result, .. } => {
                 let status = if result.is_ok() { "Ok" } else { "Err" };
                 write!(f, "SshReady({}, {})", tab_id, status)
             }
+            UserEvent::SerialPorts { generation, result } => f
+                .debug_struct("SerialPorts")
+                .field("generation", generation)
+                .field("result", &if result.is_ok() { "Ok" } else { "Err" })
+                .finish(),
+            UserEvent::SerialReady { tab_id, result, .. } => f
+                .debug_struct("SerialReady")
+                .field("tab_id", tab_id)
+                .field("result", &if result.is_ok() { "Ok" } else { "Err" })
+                .finish(),
             UserEvent::CompletionHistory { tab_id, result, .. } => {
                 let status = if result.is_ok() { "Ok" } else { "Err" };
                 write!(f, "CompletionHistory({}, {})", tab_id, status)
             }
-            UserEvent::TerminalIntegration { tab_id, event } => {
+            UserEvent::AdbCompletionHistory { tab_id, result, .. } => {
+                let status = if result.is_ok() { "Ok" } else { "Err" };
+                write!(f, "AdbCompletionHistory({}, {})", tab_id, status)
+            }
+            UserEvent::TerminalIntegration { tab_id, event, .. } => {
                 let kind = match event {
                     terminal::IntegrationEvent::HistoryPath { .. } => "HistoryPath",
                 };
                 write!(f, "TerminalIntegration({}, {})", tab_id, kind)
             }
+            UserEvent::CompletionCandidateWritten { tab_id, result, .. } => {
+                let status = if result.is_ok() { "Ok" } else { "Err" };
+                write!(f, "CompletionCandidateWritten({}, {})", tab_id, status)
+            }
+            UserEvent::Zmodem {
+                tab_id,
+                pane_id,
+                event,
+                ..
+            } => f
+                .debug_struct("Zmodem")
+                .field("tab_id", tab_id)
+                .field("pane_id", pane_id)
+                .field("transfer_id", &event.identity.transfer_id)
+                .field("generation", &event.identity.generation)
+                .field("kind", &zmodem_runtime_event_kind_name(&event.kind))
+                .finish(),
+            UserEvent::Sftp(event) => write!(f, "Sftp({event:?})"),
             UserEvent::Monitor(event) => write!(f, "Monitor({event:?})"),
+            UserEvent::ProcessDetail {
+                key,
+                generation,
+                requester,
+                request_id,
+                result,
+            } => f
+                .debug_struct("ProcessDetail")
+                .field("key", key)
+                .field("generation", generation)
+                .field("requester", requester)
+                .field("request_id", request_id)
+                .field("result", &if result.is_ok() { "Ok" } else { "Err" })
+                .finish(),
+            UserEvent::NetworkDetail {
+                key,
+                generation,
+                requester,
+                request_id,
+                result,
+            } => f
+                .debug_struct("NetworkDetail")
+                .field("key", key)
+                .field("generation", generation)
+                .field("requester", requester)
+                .field("request_id", request_id)
+                .field("result", &if result.is_ok() { "Ok" } else { "Err" })
+                .finish(),
+            UserEvent::RecordingLoaded { path, result } => f
+                .debug_struct("RecordingLoaded")
+                .field("path", path)
+                .field("result", &if result.is_ok() { "Ok" } else { "Err" })
+                .finish(),
         }
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct RemoteMonitorReconcileActions {
-    starts: Vec<(monitor::MonitorKey, ssh::ConnectionParams)>,
-    stops: Vec<monitor::MonitorKey>,
+fn crash_log_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_default()
+        .join("guishell")
+        .join("crash.log")
 }
 
-fn monitor_key_sort_key(key: &monitor::MonitorKey) -> (&str, &str, u16) {
-    match key {
-        monitor::MonitorKey::Local => ("", "", 0),
-        monitor::MonitorKey::Remote { user, host, port } => (user, host, *port),
-    }
-}
+fn setup_crash_handler() {
+    // Rust panic handler → 写入 crash.log
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let path = crash_log_path();
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        let timestamp = chrono_lite();
+        let mut msg = format!("[{}] PANIC: {}\n", timestamp, info);
+        // 尝试获取 backtrace
+        msg.push_str(&format!(
+            "Backtrace:\n{:?}\n",
+            std::backtrace::Backtrace::force_capture()
+        ));
+        let _ = std::fs::write(&path, &msg);
+        eprintln!("=== CRASH ===\n{}\n写入: {:?}", msg, path);
+        default_hook(info);
+    }));
 
-fn reconcile_actions(
-    required: &HashMap<monitor::MonitorKey, ssh::ConnectionParams>,
-    running: &HashMap<monitor::MonitorKey, ssh::ConnectionParams>,
-) -> RemoteMonitorReconcileActions {
-    let mut starts = required
-        .iter()
-        .filter(|(key, params)| running.get(*key) != Some(*params))
-        .map(|(key, params)| (key.clone(), params.clone()))
-        .collect::<Vec<_>>();
-    starts.sort_by(|(left, _), (right, _)| {
-        monitor_key_sort_key(left).cmp(&monitor_key_sort_key(right))
-    });
-    let mut stops = running
-        .iter()
-        .filter(|(key, params)| required.get(*key) != Some(*params))
-        .map(|(key, _)| key.clone())
-        .collect::<Vec<_>>();
-    stops.sort_by(|left, right| monitor_key_sort_key(left).cmp(&monitor_key_sort_key(right)));
-    RemoteMonitorReconcileActions { starts, stops }
-}
-
-fn next_remote_monitor_generation(counter: &mut u64) -> u64 {
-    *counter = counter.wrapping_add(1).max(1);
-    *counter
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TabActionApplyPhase {
-    BeforeTerminalRender,
-    AfterPresent,
-}
-
-fn tab_action_apply_phase(action: &tab_bar::TabBarAction) -> TabActionApplyPhase {
-    if action.switch_to.is_some() || action.close.is_some() || action.new_tab {
-        TabActionApplyPhase::AfterPresent
-    } else {
-        TabActionApplyPhase::BeforeTerminalRender
-    }
-}
-
-fn monitor_event_from_remote(event: remote_monitor::RemoteMonitorEvent) -> monitor::MonitorEvent {
-    match event {
-        remote_monitor::RemoteMonitorEvent::Update { key, generation, data } => {
-            monitor::MonitorEvent { key, generation, result: Ok(data) }
-        }
-        remote_monitor::RemoteMonitorEvent::Failed { key, generation, error } => {
-            monitor::MonitorEvent { key, generation, result: Err(error) }
-        }
-    }
-}
-
-fn monitor_event_is_current(
-    key: &monitor::MonitorKey,
-    generation: u64,
-    remote_generations: &HashMap<monitor::MonitorKey, u64>,
-) -> bool {
-    match key {
-        monitor::MonitorKey::Local => generation == 0,
-        monitor::MonitorKey::Remote { .. } => remote_generations.get(key) == Some(&generation),
-    }
-}
-
-fn safe_monitor_error(error: String) -> String {
-    const PREFIX: &str = "监控更新失败：";
-    const MAX_CHARS: usize = 160;
-    let detail = error
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(MAX_CHARS - PREFIX.chars().count())
-        .collect::<String>();
-    if detail.is_empty() { "监控更新失败".into() } else { format!("{PREFIX}{detail}") }
-}
-
-fn apply_monitor_event(
-    slots: &mut HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
-    event: monitor::MonitorEvent,
-    remote_generations: &HashMap<monitor::MonitorKey, u64>,
-) -> bool {
-    if !monitor_event_is_current(&event.key, event.generation, remote_generations) {
-        return false;
-    }
-    let slot = slots.entry(event.key).or_default();
-    match event.result {
-        Ok(data) => {
-            slot.data = Some(*data);
-            slot.error = None;
-        }
-        Err(error) => slot.error = Some(safe_monitor_error(error)),
-    }
-    true
-}
-
-fn apply_monitor_event_and_update_sidebar(
-    slots: &mut HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
-    sidebar: &mut Sidebar,
-    event: monitor::MonitorEvent,
-    remote_generations: &HashMap<monitor::MonitorKey, u64>,
-) -> bool {
-    let key = event.key.clone();
-    let has_snapshot = event.result.is_ok();
-    if !apply_monitor_event(slots, event, remote_generations) {
-        return false;
-    }
-    if has_snapshot {
-        if let Some(data) = slots.get(&key).and_then(|slot| slot.data.as_ref()) {
-            sidebar.on_monitor_update(&key, data);
-        }
-    }
-    true
-}
-
-fn active_monitor_slot<'a>(
-    slots: &'a HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
-    active_key: &monitor::MonitorKey,
-) -> Option<&'a monitor::MonitorSlot> {
-    slots.get(active_key)
-}
-
-fn active_monitor_snapshot<'a>(
-    slots: &'a HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
-    active_key: &monitor::MonitorKey,
-) -> Option<&'a monitor::MonitorData> {
-    active_monitor_slot(slots, active_key).and_then(|slot| slot.data.as_ref())
-}
-
-fn remove_monitor_slots(
-    slots: &mut HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
-    keys: &[monitor::MonitorKey],
-) {
-    for key in keys { slots.remove(key); }
-}
-
-fn monitor_keys_in_tabs(tab_manager: &TabManager) -> HashSet<monitor::MonitorKey> {
-    tab_manager.tabs.iter().map(|tab| tab.monitor_key()).collect()
-}
-
-fn prune_sidebar_monitor_views(sidebar: &mut Sidebar, tab_manager: &TabManager) {
-    sidebar.retain_monitor_views(&monitor_keys_in_tabs(tab_manager));
-}
-
-fn close_other_tabs_reconcile_actions(
-    tab_manager: &mut TabManager,
-    keep_index: usize,
-    running: &HashMap<monitor::MonitorKey, ssh::ConnectionParams>,
-) -> Option<RemoteMonitorReconcileActions> {
-    if keep_index >= tab_manager.len() {
-        return None;
-    }
-    tab_manager.close_others(keep_index);
-    Some(reconcile_actions(
-        &tab_manager.remote_monitor_requirements(),
-        running,
-    ))
-}
-
-fn completion_event_is_current(
-    current: &CompletionSessionKey,
-    session: &CompletionSessionKey,
-) -> bool {
-    current == session
-}
-
-fn apply_completion_history_event(
-    tab_manager: &mut TabManager,
-    tab_id: &str,
-    session: &CompletionSessionKey,
-    requested_path: &std::path::Path,
-    result: Result<Vec<u8>, String>,
-) -> bool {
-    let Some(index) = tab_manager.find_by_id(tab_id) else {
-        return false;
-    };
-    let completion = &mut tab_manager.tabs[index].completion;
-    if !completion_event_is_current(completion.session(), session)
-        || completion.history_path().map(std::path::Path::new) != Some(requested_path)
-    {
-        return false;
-    }
-
-    let history = result
-        .map(|bytes| smart_completion::parse_bash_history(&bytes))
-        .unwrap_or_default();
-    completion.replace_history(history);
-    true
-}
-
-fn apply_history_path_event(
-    tab_manager: &mut TabManager,
-    tab_id: &str,
-    session: &CompletionSessionKey,
-    path: String,
-) -> Option<(CompletionSessionKey, std::path::PathBuf)> {
-    let path_buf = std::path::PathBuf::from(&path);
-    let index = tab_manager.find_by_id(tab_id)?;
-    let completion = &mut tab_manager.tabs[index].completion;
-    if !completion_event_is_current(completion.session(), session)
-        || !path_buf.is_absolute()
-        || path.chars().any(char::is_control)
-        || completion.history_path() == Some(path.as_str())
-    {
-        return None;
-    }
-
-    completion.replace_history(Vec::new());
-    completion.set_history_path(path);
-    Some((completion.session().clone(), path_buf))
-}
-
-fn refresh_active_completion(tab_manager: &mut TabManager, input: Option<&str>) {
-    let Some(tab) = tab_manager.tabs.get_mut(tab_manager.active_idx) else {
-        return;
-    };
-    match input {
-        Some(prefix) if !prefix.is_empty() => tab.completion.refresh(prefix),
-        _ => tab.completion.clear_candidates(),
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum ClickState {
-    None,
-    Single,
-    Double,
-    Triple,
-}
-
-struct App {
-    window: Option<Arc<Window>>,
-    gpu: Option<GpuState>,
-    renderer: Option<Renderer>,
-    tab_manager: TabManager,
-    remote_monitors: HashMap<monitor::MonitorKey, remote_monitor::RemoteMonitorHandle>,
-    remote_monitor_params: HashMap<monitor::MonitorKey, ssh::ConnectionParams>,
-    remote_monitor_generations: HashMap<monitor::MonitorKey, u64>,
-    monitor_slots: HashMap<monitor::MonitorKey, monitor::MonitorSlot>,
-    next_remote_monitor_generation: u64,
-    cursor_visible: bool,
-    cursor_timer: Instant,
-    startup_time: Instant,
-    proxy: EventLoopProxy<UserEvent>,
-    modifiers: Modifiers,
-    // egui
-    egui_ctx: egui::Context,
-    egui_state: Option<egui_winit::State>,
-    egui_renderer: Option<egui_wgpu::Renderer>,
-    sidebar: Sidebar,
-    sidebar_width: f32,
-    tab_bar_height: f32,
-    // Mouse state
-    mouse_pressed: bool,
-    mouse_position: (f64, f64),
-    selection_start: Option<(usize, usize)>,
-    selection_end: Option<(usize, usize)>,
-    clipboard: Option<arboard::Clipboard>,
-    // Click detection
-    last_click_time: Instant,
-    last_click_pos: (usize, usize),
-    click_state: ClickState,
-}
-
-impl App {
-    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
-        Self {
-            window: None,
-            gpu: None,
-            renderer: None,
-            tab_manager: TabManager::new(),
-            remote_monitors: HashMap::new(),
-            remote_monitor_params: HashMap::new(),
-            remote_monitor_generations: HashMap::new(),
-            monitor_slots: HashMap::new(),
-            next_remote_monitor_generation: 0,
-            cursor_visible: true,
-            cursor_timer: Instant::now(),
-            startup_time: Instant::now(),
-            proxy,
-            modifiers: Modifiers::default(),
-            egui_ctx: {
-                let ctx = egui::Context::default();
-                let mut fonts = egui::FontDefinitions::default();
-                if let Ok(font_data) = std::fs::read("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc") {
-                    fonts.font_data.insert(
-                        "noto_cjk".to_owned(),
-                        egui::FontData::from_owned(font_data).into(),
-                    );
-                    fonts.families.entry(egui::FontFamily::Proportional).or_default().push("noto_cjk".to_owned());
-                    fonts.families.entry(egui::FontFamily::Monospace).or_default().push("noto_cjk".to_owned());
-                }
-                ctx.set_fonts(fonts);
-                ctx
-            },
-            egui_state: None,
-            egui_renderer: None,
-            sidebar: Sidebar::new(),
-            sidebar_width: 220.0,
-            tab_bar_height: tab_bar::TAB_BAR_HEIGHT,
-            mouse_pressed: false,
-            mouse_position: (0.0, 0.0),
-            selection_start: None,
-            selection_end: None,
-            clipboard: arboard::Clipboard::new().ok(),
-            last_click_time: Instant::now() - std::time::Duration::from_secs(10),
-            last_click_pos: (0, 0),
-            click_state: ClickState::None,
-        }
-    }
-
-    /// Get the active terminal, if any
-    fn active_terminal(&self) -> Option<Arc<Mutex<TerminalState>>> {
-        self.tab_manager.active_terminal()
-    }
-
-    fn reconcile_remote_monitors(&mut self) {
-        let required = self.tab_manager.remote_monitor_requirements();
-        let actions = reconcile_actions(&required, &self.remote_monitor_params);
-        self.apply_remote_monitor_actions(actions);
-    }
-
-    fn apply_remote_monitor_actions(&mut self, actions: RemoteMonitorReconcileActions) {
-        for key in actions.stops {
-            if let Some(handle) = self.remote_monitors.remove(&key) {
-                handle.shutdown();
-            }
-            self.remote_monitor_generations.remove(&key);
-            self.remote_monitor_params.remove(&key);
-            remove_monitor_slots(&mut self.monitor_slots, std::slice::from_ref(&key));
-            self.sidebar.remove_monitor_view(&key);
-        }
-        for (key, params) in actions.starts {
-            let generation = next_remote_monitor_generation(&mut self.next_remote_monitor_generation);
-            let proxy = self.proxy.clone();
-            let started_params = params.clone();
-            let handle = remote_monitor::start_ssh_worker_with_sink(key.clone(), generation, params, move |event| {
-                proxy.send_event(UserEvent::Monitor(monitor_event_from_remote(event))).map_err(|_| ())
-            });
-            match handle {
-                Ok(handle) => {
-                    debug_assert_eq!(handle.generation(), generation);
-                    self.remote_monitor_generations.insert(key.clone(), generation);
-                    self.remote_monitor_params.insert(key.clone(), started_params);
-                    self.remote_monitors.insert(key, handle);
-                }
-                Err(_) => eprintln!("[MONITOR] 启动远端监控 worker 失败"),
-            }
-        }
-        prune_sidebar_monitor_views(&mut self.sidebar, &self.tab_manager);
-    }
-
-    fn shutdown_remote_monitors(&mut self) {
-        for (_, handle) in self.remote_monitors.drain() {
-            handle.shutdown();
-        }
-        self.remote_monitor_generations.clear();
-        self.remote_monitor_params.clear();
-        self.monitor_slots.retain(|key, _| matches!(key, monitor::MonitorKey::Local));
-    }
-
-    #[allow(dead_code)]
-    fn close_other_tabs(&mut self, keep_index: usize) {
-        let running = self.remote_monitor_params.clone();
-        let Some(actions) = close_other_tabs_reconcile_actions(
-            &mut self.tab_manager,
-            keep_index,
-            &running,
-        ) else {
-            return;
-        };
-        self.apply_remote_monitor_actions(actions);
-    }
-
-    /// Start a read_loop for a terminal on a background thread
-    fn start_read_loop(&self, tab_id: String, terminal: Arc<Mutex<TerminalState>>) {
-        let redraw_proxy = self.proxy.clone();
-        let event_proxy = self.proxy.clone();
-        std::thread::spawn(move || {
-            terminal::read_loop(
-                terminal,
-                move || {
-                    let _ = redraw_proxy.send_event(UserEvent::Redraw);
-                },
-                move |event| {
-                    let _ = event_proxy.send_event(UserEvent::TerminalIntegration {
-                        tab_id: tab_id.clone(),
-                        event,
-                    });
-                },
+    // Unix signal handler → SIGSEGV/SIGBUS/SIGABRT
+    #[cfg(unix)]
+    unsafe {
+        use std::os::raw::c_int;
+        extern "C" fn signal_handler(sig: c_int) {
+            let path = crash_log_path();
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let sig_name = match sig {
+                11 => "SIGSEGV (段错误)",
+                7 => "SIGBUS (总线错误)",
+                6 => "SIGABRT (异常终止)",
+                _ => "未知信号",
+            };
+            let msg = format!(
+                "[crash] Signal {} ({})\nBacktrace:\n{:?}\n",
+                sig,
+                sig_name,
+                std::backtrace::Backtrace::force_capture()
             );
-        });
-    }
-
-    fn request_local_history(
-        &self,
-        tab_id: String,
-        session: CompletionSessionKey,
-        path: std::path::PathBuf,
-    ) {
-        let proxy = self.proxy.clone();
-        std::thread::spawn(move || {
-            let result =
-                smart_completion::read_history_tail(&path, smart_completion::MAX_HISTORY_BYTES);
-            let _ = proxy.send_event(UserEvent::CompletionHistory {
-                tab_id,
-                session,
-                path,
-                result,
-            });
-        });
-    }
-
-    /// Create a new local terminal tab with default shell
-    fn new_local_tab(&mut self) {
-        let (cols, rows) = self.grid_size();
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let (tab_id, terminal) = self.tab_manager.new_local(&shell, cols, rows);
-        let history_request = self
-            .tab_manager
-            .active()
-            .filter(|tab| tab.id == tab_id)
-            .and_then(|tab| {
-                tab.completion.history_path().map(|path| {
-                    (
-                        tab.completion.session().clone(),
-                        std::path::PathBuf::from(path),
-                    )
-                })
-            });
-        self.start_read_loop(tab_id.clone(), terminal);
-        if let Some((session, path)) = history_request {
-            self.request_local_history(tab_id, session, path);
+            let _ = std::fs::write(&path, &msg);
+            std::process::exit(128 + sig);
         }
-    }
-
-    /// Create a new SSH tab (connects in background)
-    fn new_ssh_tab(&mut self, conn: &sidebar::SshConnection) {
-        let tab_id = self.tab_manager.new_ssh_placeholder(conn);
-        let (cols, rows) = self.grid_size();
-        let params = crate::ssh::ConnectionParams::from(conn);
-        let session = self
-            .tab_manager
-            .active()
-            .expect("新建 SSH 标签页后必须存在活动标签")
-            .completion
-            .session()
-            .clone();
-        let tid = tab_id.clone();
-        let proxy = self.proxy.clone();
-
-        std::thread::spawn(move || {
-            let result = crate::ssh::connect(&params, cols, rows, Some(session.clone()));
-            let _ = proxy.send_event(UserEvent::SshReady {
-                tab_id: tid,
-                session,
-                result,
-            });
-        });
-    }
-
-    fn grid_size(&self) -> (u16, u16) {
-        if let Some(r) = &self.renderer { r.calculate_grid_size() } else { (80, 24) }
-    }
-
-    fn do_render(&mut self) {
-        let elapsed = self.cursor_timer.elapsed().as_millis();
-        if elapsed >= 530 {
-            self.cursor_visible = !self.cursor_visible;
-            self.cursor_timer = Instant::now();
-        }
-
-        let gpu = match &self.gpu { Some(g) => g, None => return };
-        let window = match &self.window { Some(w) => w.clone(), None => return };
-
-        let active_input = self.tab_manager.active().and_then(|tab| {
-            let terminal = tab.terminal.clone();
-            terminal
-                .lock()
-                .ok()
-                .and_then(|terminal| terminal.current_bash_input())
-        });
-        refresh_active_completion(&mut self.tab_manager, active_input.as_deref());
-
-        let active_monitor_key = self.tab_manager.active_monitor_key();
-        let active_monitor_slot = active_monitor_slot(&self.monitor_slots, &active_monitor_key);
-        let active_monitor_snapshot =
-            active_monitor_snapshot(&self.monitor_slots, &active_monitor_key);
-        let active_monitor_error = active_monitor_slot.and_then(|slot| slot.error.as_deref());
-
-        // 1. Run egui (tab bar + sidebar + dialogs)
-        let egui_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
-        let mut tab_action = tab_bar::TabBarAction { switch_to: None, close: None, new_tab: false };
-        let egui_output = self.egui_ctx.run(egui_input, |ctx| {
-            tab_action = tab_bar::render_tab_bar(ctx, &self.tab_manager);
-            self.sidebar_width = self
-                .sidebar
-                .ui_with_monitor(
-                    ctx,
-                    &active_monitor_key,
-                    active_monitor_snapshot,
-                    active_monitor_error,
-                );
-        });
-
-        self.egui_state.as_mut().unwrap().handle_platform_output(&window, egui_output.platform_output);
-
-        let paint_jobs = self.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [gpu.width, gpu.height],
-            pixels_per_point: window.scale_factor() as f32,
-        };
-
-        // 2. Defer every tab mutation until the frame using the old active snapshot is presented.
-        let defer_actions = tab_action_apply_phase(&tab_action) == TabActionApplyPhase::AfterPresent;
-        let deferred_switch = defer_actions.then_some(tab_action.switch_to).flatten();
-        let deferred_close = defer_actions.then_some(tab_action.close).flatten();
-        let deferred_new = defer_actions && tab_action.new_tab;
-
-        // 3. Get surface texture
-        let output = match gpu.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(wgpu::SurfaceError::Lost) => {
-                if let Some(g) = &mut self.gpu { g.resize(g.width, g.height); }
-                return;
-            }
-            Err(e) => { log::warn!("Surface error: {:?}", e); return; }
-        };
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Main Encoder"),
-        });
-
-        // 4. Clear surface
-        {
-            let _clear_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Clear Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view, resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: renderer::BG_DEFAULT[0] as f64 / 255.0,
-                            g: renderer::BG_DEFAULT[1] as f64 / 255.0,
-                            b: renderer::BG_DEFAULT[2] as f64 / 255.0, a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
-            });
-        }
-
-        // 5. Render active terminal
-        if let Some(terminal) = self.active_terminal() {
-            if let Some(renderer) = &mut self.renderer {
-                let term_width = (gpu.width as f32 - self.sidebar_width).max(1.0);
-                let term_height = (gpu.height as f32 - self.tab_bar_height).max(1.0);
-                renderer.set_viewport(self.sidebar_width, self.tab_bar_height, term_width, term_height, gpu);
-
-                let term = terminal.lock().unwrap();
-                renderer.render_to_pass(gpu, &view, &mut encoder, &term, self.cursor_visible, self.selection_start, self.selection_end);
-            }
-        }
-
-        // 6. Render egui overlay
-        let egui_renderer = self.egui_renderer.as_mut().unwrap();
-        for (id, delta) in &egui_output.textures_delta.set {
-            egui_renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
-        }
-        let _cmd_bufs = egui_renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &paint_jobs, &screen_descriptor);
-
-        {
-            let mut egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Egui Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view, resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
-            });
-            let egui_pass_static: wgpu::RenderPass<'static> = egui_pass.forget_lifetime();
-            let mut egui_pass_static = egui_pass_static;
-            egui_renderer.render(&mut egui_pass_static, &paint_jobs, &screen_descriptor);
-        }
-
-        for id in &egui_output.textures_delta.free {
-            egui_renderer.free_texture(id);
-        }
-
-        gpu.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-
-        // Deferred tab actions (after gpu borrow ends)
-        if let Some(idx) = deferred_switch {
-            self.tab_manager.switch_to(idx);
-            self.selection_start = None;
-            self.selection_end = None;
-            window.request_redraw();
-        }
-        if let Some(idx) = deferred_close {
-            eprintln!("[MAIN] deferred close tab {}", idx);
-            self.tab_manager.close(idx);
-            if self.tab_manager.is_empty() {
-                self.new_local_tab();
-            }
-            self.reconcile_remote_monitors();
-        }
-        if deferred_new {
-            eprintln!("[MAIN] deferred new tab");
-            self.new_local_tab();
-        }
-    }
-
-    fn pixel_to_cell(&self, x: f64, y: f64) -> (usize, usize) {
-        if let Some(renderer) = &self.renderer {
-            let (cw, ch) = renderer.cell_size();
-            let term_x = (x as f32 - self.sidebar_width).max(0.0);
-            let term_y = (y as f32 - self.tab_bar_height).max(0.0);
-            let col = (term_x / cw).floor() as usize;
-            let row = (term_y / ch).floor() as usize;
-            (col, row)
-        } else { (0, 0) }
-    }
-
-    fn is_in_terminal(&self, x: f64, y: f64) -> bool {
-        x as f32 >= self.sidebar_width && y as f32 >= self.tab_bar_height
-    }
-
-    fn get_selection_text(&self) -> String {
-        let (start, end) = match (self.selection_start, self.selection_end) {
-            (Some(s), Some(e)) => { if (s.1, s.0) <= (e.1, e.0) { (s, e) } else { (e, s) } }
-            _ => return String::new(),
-        };
-        let terminal = match self.active_terminal() { Some(t) => t, None => return String::new() };
-        let term = terminal.lock().unwrap();
-        let t = match term.term() { Some(t) => t, None => return String::new() };
-        let mut result = String::new();
-        let grid = t.grid();
-        use alacritty_terminal::grid::Dimensions;
-        let cols = grid.columns();
-        for row in start.1..=end.1 {
-            let line = alacritty_terminal::index::Line(row as i32);
-            let start_col = if row == start.1 { start.0 } else { 0 };
-            let end_col = if row == end.1 { end.0 } else { cols.saturating_sub(1) };
-            for col in start_col..=end_col.min(cols.saturating_sub(1)) {
-                let cell = &grid[line][alacritty_terminal::index::Column(col)];
-                if cell.c != '\0' { result.push(cell.c); }
-            }
-            if row != end.1 {
-                let trimmed = result.trim_end().len();
-                result.truncate(trimmed);
-                result.push('\n');
-            }
-        }
-        result.trim_end().to_string()
-    }
-
-    fn select_word(&mut self, col: usize, row: usize) {
-        let terminal = match self.active_terminal() { Some(t) => t, None => return };
-        let term = terminal.lock().unwrap();
-        let t = match term.term() { Some(t) => t, None => return };
-        let grid = t.grid();
-        use alacritty_terminal::grid::Dimensions;
-        let cols = grid.columns();
-        let line = alacritty_terminal::index::Line(row as i32);
-        let center_char = grid[line][alacritty_terminal::index::Column(col)].c;
-        if !is_word_char(center_char) && center_char != ' ' {
-            self.selection_start = Some((col, row));
-            self.selection_end = Some((col, row));
-            return;
-        }
-        let mut start = col;
-        while start > 0 {
-            let c = grid[line][alacritty_terminal::index::Column(start - 1)].c;
-            if !is_word_char(c) { break; }
-            start -= 1;
-        }
-        let mut end = col;
-        while end + 1 < cols {
-            let c = grid[line][alacritty_terminal::index::Column(end + 1)].c;
-            if !is_word_char(c) { break; }
-            end += 1;
-        }
-        drop(term);
-        drop(terminal);
-        self.selection_start = Some((start, row));
-        self.selection_end = Some((end, row));
-    }
-
-    fn select_line(&mut self, row: usize) {
-        let terminal = match self.active_terminal() { Some(t) => t, None => return };
-        let term = terminal.lock().unwrap();
-        let t = match term.term() { Some(t) => t, None => return };
-        use alacritty_terminal::grid::Dimensions;
-        let cols = t.grid().columns();
-        drop(term);
-        drop(terminal);
-        self.selection_start = Some((0, row));
-        self.selection_end = Some((cols.saturating_sub(1), row));
-    }
-
-    fn copy_selection(&mut self) {
-        let text = self.get_selection_text();
-        if !text.is_empty() {
-            if let Some(cb) = &mut self.clipboard { let _ = cb.set_text(&text); }
-        }
-    }
-
-    fn is_mouse_mode(&self) -> bool {
-        let terminal = match self.active_terminal() { Some(t) => t, None => return false };
-        let term = terminal.lock().unwrap();
-        Renderer::is_mouse_mode(&term)
-    }
-
-    fn send_mouse_event(&mut self, btn: u32, col: usize, row: usize, pressed: bool) {
-        let c = if pressed { 'M' } else { 'm' };
-        let seq = format!("\x1b[<{};{};{}{}", btn, col + 1, row + 1, c);
-        if let Some(terminal) = self.active_terminal() {
-            let mut term = terminal.lock().unwrap();
-            term.write_input(&seq);
-        }
-    }
-
-    fn check_ssh_connect(&mut self) {
-        if let Some(conn) = self.sidebar.take_connect() {
-            self.new_ssh_tab(&conn);
-        }
-    }
-
-    fn sync_terminal_size(&mut self) {
-        if let (Some(renderer), Some(gpu)) = (&mut self.renderer, &self.gpu) {
-            let term_width = (gpu.width as f32 - self.sidebar_width).max(1.0);
-            let term_height = (gpu.height as f32 - self.tab_bar_height).max(1.0);
-            renderer.set_viewport(self.sidebar_width, self.tab_bar_height, term_width, term_height, gpu);
-            let (cols, rows) = renderer.calculate_grid_size();
-            // Resize ALL tabs' terminals
-            for tab in &self.tab_manager.tabs {
-                let mut term = tab.terminal.lock().unwrap();
-                term.resize(cols, rows);
-            }
-        }
+        libc::signal(libc::SIGSEGV, signal_handler as *const () as usize);
+        libc::signal(libc::SIGBUS, signal_handler as *const () as usize);
+        libc::signal(libc::SIGABRT, signal_handler as *const () as usize);
     }
 }
 
-impl ApplicationHandler<UserEvent> for App {
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
-    }
-
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() { return; }
-        let attrs = Window::default_attributes()
-            .with_title("LiteTerm Native")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
-        let window = Arc::new(event_loop.create_window(attrs).unwrap());
-
-        let gpu = pollster::block_on(GpuState::new(window.clone()));
-        let egui_state = egui_winit::State::new(
-            self.egui_ctx.clone(), egui::ViewportId::ROOT, &window,
-            Some(window.scale_factor() as f32), None,
-            Some(gpu.device.limits().max_texture_dimension_2d as usize),
-        );
-        let egui_renderer = egui_wgpu::Renderer::new(&gpu.device, gpu.format(), None, 1, false);
-        let renderer = Renderer::new(&gpu);
-
-        self.egui_state = Some(egui_state);
-        self.egui_renderer = Some(egui_renderer);
-        self.renderer = Some(renderer);
-        self.gpu = Some(gpu);
-
-        // Create initial local terminal tab
-        self.new_local_tab();
-
-        let proxy_mon = self.proxy.clone();
-        std::thread::spawn(move || {
-            let mut collector = monitor::MonitorCollector::new();
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                let data = collector.collect();
-                if proxy_mon.send_event(UserEvent::Monitor(monitor::MonitorEvent {
-                    key: monitor::MonitorKey::Local,
-                    generation: 0,
-                    result: Ok(Box::new(data)),
-                })).is_err() {
-                    break;
-                }
-            }
-        });
-
-        // Cursor blink thread
-        let proxy2 = self.proxy.clone();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(530));
-                if proxy2.send_event(UserEvent::Redraw).is_err() { break; }
-            }
-        });
-
-        self.window = Some(window);
-    }
-
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.shutdown_remote_monitors();
-    }
-
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
-        match event {
-            UserEvent::Redraw => {}
-            UserEvent::Monitor(event) => {
-                let _ = apply_monitor_event_and_update_sidebar(
-                    &mut self.monitor_slots,
-                    &mut self.sidebar,
-                    event,
-                    &self.remote_monitor_generations,
-                );
-                if let Some(window) = &self.window { window.request_redraw(); }
-            }
-            UserEvent::CompletionHistory {
-                tab_id,
-                session,
-                path,
-                result,
-            } => {
-                apply_completion_history_event(
-                    &mut self.tab_manager,
-                    &tab_id,
-                    &session,
-                    &path,
-                    result,
-                );
-            }
-            UserEvent::TerminalIntegration { tab_id, event } => match event {
-                terminal::IntegrationEvent::HistoryPath { session, path } => {
-                    let history_request =
-                        apply_history_path_event(&mut self.tab_manager, &tab_id, &session, path);
-                    if let Some((session, path)) = history_request {
-                        self.request_local_history(tab_id, session, path);
-                    }
-                }
-            },
-            UserEvent::SshReady {
-                tab_id,
-                session,
-                result,
-            } => {
-                let is_current = self.tab_manager.find_by_id(&tab_id).is_some_and(|index| {
-                    self.tab_manager.tabs[index].completion.session() == &session
-                });
-                if !is_current {
-                    if let Ok(handle) = result {
-                        handle.shutdown();
-                    }
-                } else {
-                    match result {
-                        Ok(handle) => {
-                            eprintln!("[SSH] 连接成功: {}", tab_id);
-                            let (cols, rows) = self.grid_size();
-                            let applied = if let Some(terminal) = self
-                                .tab_manager
-                                .apply_ssh(&tab_id, &session, handle, cols, rows)
-                            {
-                                self.start_read_loop(tab_id.clone(), terminal);
-                                true
-                            } else { false };
-                            if applied { self.reconcile_remote_monitors(); }
-                        }
-                        Err(e) => {
-                            eprintln!("[SSH] 连接失败: {}: {}", tab_id, e);
-                            self.tab_manager.ssh_failed(&tab_id, &e);
-                        }
-                    }
-                }
-            }
-        }
-        self.do_render();
-        self.check_ssh_connect();
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // Pass events to egui first
-        let mut egui_consumed = false;
-        if let Some(egui_state) = &mut self.egui_state {
-            if let Some(window) = &self.window {
-                let response = egui_state.on_window_event(window, &event);
-                if response.consumed {
-                    egui_consumed = true;
-                    self.do_render();
-                    self.check_ssh_connect();
-                    // 滚轮和键盘事件即使 egui 消费了也要继续传给终端
-                    let pass_through = matches!(event,
-                        WindowEvent::MouseWheel { .. } | WindowEvent::KeyboardInput { .. }
-                    ) && self.is_in_terminal(self.mouse_position.0, self.mouse_position.1);
-                    if !pass_through {
-                        return;
-                    }
-                }
-            }
-        }
-
-        match event {
-            WindowEvent::CloseRequested => { self.shutdown_remote_monitors(); event_loop.exit(); }
-
-            WindowEvent::Resized(size) => {
-                if let Some(gpu) = &mut self.gpu { gpu.resize(size.width, size.height); }
-                self.sync_terminal_size();
-                self.do_render();
-            }
-
-            WindowEvent::ModifiersChanged(mods) => { self.modifiers = mods; }
-
-            WindowEvent::MouseInput { state, button, .. } => {
-                if !self.is_in_terminal(self.mouse_position.0, self.mouse_position.1) { return; }
-
-                let shift = self.modifiers.state().shift_key();
-                let mouse_mode = self.is_mouse_mode();
-
-                if button == MouseButton::Left {
-                    let cell = self.pixel_to_cell(self.mouse_position.0, self.mouse_position.1);
-
-                    if state == ElementState::Pressed {
-                        if mouse_mode && !shift {
-                            self.send_mouse_event(0, cell.0, cell.1, true);
-                            self.mouse_pressed = true;
-                            return;
-                        }
-                        let now = Instant::now();
-                        let elapsed = now.duration_since(self.last_click_time).as_millis();
-                        let same_pos = cell == self.last_click_pos;
-                        if elapsed < 400 && same_pos {
-                            match self.click_state {
-                                ClickState::Single => { self.click_state = ClickState::Double; self.select_word(cell.0, cell.1); }
-                                ClickState::Double => { self.click_state = ClickState::Triple; self.select_line(cell.1); }
-                                _ => { self.click_state = ClickState::Single; self.selection_start = Some(cell); self.selection_end = Some(cell); }
-                            }
-                        } else {
-                            self.click_state = ClickState::Single;
-                            self.selection_start = Some(cell);
-                            self.selection_end = Some(cell);
-                        }
-                        self.last_click_time = now;
-                        self.last_click_pos = cell;
-                        self.mouse_pressed = true;
-                        self.do_render();
-                    } else {
-                        if mouse_mode && !shift { self.send_mouse_event(0, cell.0, cell.1, false); }
-                        self.mouse_pressed = false;
-                        self.copy_selection();
-                    }
-                }
-
-                if button == MouseButton::Middle && state == ElementState::Pressed {
-                    if mouse_mode && !shift {
-                        let cell = self.pixel_to_cell(self.mouse_position.0, self.mouse_position.1);
-                        self.send_mouse_event(1, cell.0, cell.1, true);
-                    } else {
-                        if let Some(cb) = &mut self.clipboard {
-                            if let Ok(text) = cb.get_text() {
-                                if let Some(terminal) = self.active_terminal() {
-                                    let mut term = terminal.lock().unwrap();
-                                    term.write_input(&text);
-                                }
-                            }
-                        }
-                    }
-                    self.do_render();
-                }
-
-                if button == MouseButton::Right && state == ElementState::Pressed {
-                    if mouse_mode && !shift {
-                        let cell = self.pixel_to_cell(self.mouse_position.0, self.mouse_position.1);
-                        self.send_mouse_event(2, cell.0, cell.1, true);
-                    }
-                }
-            }
-
-            WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_position = (position.x, position.y);
-                let shift = self.modifiers.state().shift_key();
-                let mouse_mode = self.is_mouse_mode();
-                if self.mouse_pressed && self.is_in_terminal(position.x, position.y) {
-                    let cell = self.pixel_to_cell(position.x, position.y);
-                    if mouse_mode && !shift {
-                        self.send_mouse_event(32, cell.0, cell.1, true);
-                    } else if self.click_state == ClickState::Single {
-                        self.selection_end = Some(cell);
-                        self.do_render();
-                    }
-                }
-            }
-
-            WindowEvent::MouseWheel { delta, .. } => {
-                if !self.is_in_terminal(self.mouse_position.0, self.mouse_position.1) { return; }
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y as i32,
-                    MouseScrollDelta::PixelDelta(pos) => (pos.y / 18.0) as i32,
-                };
-                if lines == 0 { return; }
-                let mouse_mode = self.is_mouse_mode();
-                if mouse_mode {
-                    let cell = self.pixel_to_cell(self.mouse_position.0, self.mouse_position.1);
-                    let btn = if lines > 0 { 64 } else { 65 };
-                    for _ in 0..lines.unsigned_abs() { self.send_mouse_event(btn, cell.0, cell.1, true); }
-                } else if let Some(terminal) = self.active_terminal() {
-                    let mut term = terminal.lock().unwrap();
-                    if let Some(t) = term.term_mut() {
-                        use alacritty_terminal::grid::Scroll;
-                        // y>0 = 滚轮往上 = 看历史（正 delta）
-                        t.scroll_display(Scroll::Delta(lines));
-                    }
-                }
-                self.do_render();
-            }
-
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != ElementState::Pressed { return; }
-                if self.startup_time.elapsed().as_millis() < 500 { return; }
-                self.cursor_visible = true;
-                self.cursor_timer = Instant::now();
-
-                let ctrl = self.modifiers.state().control_key();
-                let shift = self.modifiers.state().shift_key();
-
-                // Tab management shortcuts
-                if ctrl && shift {
-                    match event.physical_key {
-                        PhysicalKey::Code(KeyCode::KeyT) => { self.new_local_tab(); self.do_render(); return; }
-                        PhysicalKey::Code(KeyCode::KeyW) => {
-                            let idx = self.tab_manager.active_idx;
-                            self.tab_manager.close(idx);
-                            if self.tab_manager.is_empty() { self.new_local_tab(); }
-                            self.reconcile_remote_monitors();
-                            self.do_render();
-                            return;
-                        }
-                        PhysicalKey::Code(KeyCode::KeyC) => { self.copy_selection(); return; }
-                        PhysicalKey::Code(KeyCode::KeyV) => {
-                            if let Some(cb) = &mut self.clipboard {
-                                if let Ok(text) = cb.get_text() {
-                                    if let Some(terminal) = self.active_terminal() {
-                                        let mut term = terminal.lock().unwrap();
-                                        term.write_input(&text);
-                                    }
-                                }
-                            }
-                            self.do_render();
-                            return;
-                        }
-                        PhysicalKey::Code(KeyCode::Tab) => { self.tab_manager.prev_tab(); self.do_render(); return; }
-                        _ => {}
-                    }
-                }
-
-                // Ctrl+Tab = next tab
-                if ctrl && !shift {
-                    if let Key::Named(NamedKey::Tab) = event.logical_key {
-                        self.tab_manager.next_tab();
-                        self.do_render();
-                        return;
-                    }
-                    // Ctrl+1~9 switch to tab N
-                    if let PhysicalKey::Code(code) = event.physical_key {
-                        let tab_num = match code {
-                            KeyCode::Digit1 => Some(0),
-                            KeyCode::Digit2 => Some(1),
-                            KeyCode::Digit3 => Some(2),
-                            KeyCode::Digit4 => Some(3),
-                            KeyCode::Digit5 => Some(4),
-                            KeyCode::Digit6 => Some(5),
-                            KeyCode::Digit7 => Some(6),
-                            KeyCode::Digit8 => Some(7),
-                            KeyCode::Digit9 => Some(8),
-                            _ => None,
-                        };
-                        if let Some(n) = tab_num {
-                            if n < self.tab_manager.len() {
-                                self.tab_manager.switch_to(n);
-                                self.do_render();
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                self.selection_start = None;
-                self.selection_end = None;
-
-                // Ctrl+letter → control character
-                if ctrl && !shift {
-                    if let PhysicalKey::Code(code) = event.physical_key {
-                        let ctrl_byte = match code {
-                            KeyCode::KeyA => 0x01, KeyCode::KeyB => 0x02,
-                            KeyCode::KeyC => 0x03, KeyCode::KeyD => 0x04,
-                            KeyCode::KeyE => 0x05, KeyCode::KeyF => 0x06,
-                            KeyCode::KeyG => 0x07, KeyCode::KeyH => 0x08,
-                            KeyCode::KeyI => 0x09, KeyCode::KeyJ => 0x0a,
-                            KeyCode::KeyK => 0x0b, KeyCode::KeyL => 0x0c,
-                            KeyCode::KeyM => 0x0d, KeyCode::KeyN => 0x0e,
-                            KeyCode::KeyO => 0x0f, KeyCode::KeyP => 0x10,
-                            KeyCode::KeyQ => 0x11, KeyCode::KeyR => 0x12,
-                            KeyCode::KeyS => 0x13, KeyCode::KeyT => 0x14,
-                            KeyCode::KeyU => 0x15, KeyCode::KeyV => 0x16,
-                            KeyCode::KeyW => 0x17, KeyCode::KeyX => 0x18,
-                            KeyCode::KeyY => 0x19, KeyCode::KeyZ => 0x1a,
-                            _ => 0u8,
-                        };
-                        if ctrl_byte > 0 {
-                            if let Some(terminal) = self.active_terminal() {
-                                let mut term = terminal.lock().unwrap();
-                                term.write_input(&String::from(ctrl_byte as char));
-                            }
-                            self.do_render();
-                            return;
-                        }
-                    }
-                }
-
-                // Special keys
-                let esc = match event.logical_key {
-                    Key::Named(NamedKey::Enter)      => Some("\r"),
-                    Key::Named(NamedKey::Backspace)   => Some("\x7f"),
-                    Key::Named(NamedKey::Tab)         => Some("\t"),
-                    Key::Named(NamedKey::Escape)      => Some("\x1b"),
-                    Key::Named(NamedKey::ArrowUp)     => Some("\x1b[A"),
-                    Key::Named(NamedKey::ArrowDown)   => Some("\x1b[B"),
-                    Key::Named(NamedKey::ArrowRight)  => Some("\x1b[C"),
-                    Key::Named(NamedKey::ArrowLeft)   => Some("\x1b[D"),
-                    Key::Named(NamedKey::Home)        => Some("\x1b[H"),
-                    Key::Named(NamedKey::End)         => Some("\x1b[F"),
-                    Key::Named(NamedKey::PageUp)      => Some("\x1b[5~"),
-                    Key::Named(NamedKey::PageDown)    => Some("\x1b[6~"),
-                    Key::Named(NamedKey::Delete)      => Some("\x1b[3~"),
-                    Key::Named(NamedKey::Insert)      => Some("\x1b[2~"),
-                    Key::Named(NamedKey::F1)          => Some("\x1bOP"),
-                    Key::Named(NamedKey::F2)          => Some("\x1bOQ"),
-                    Key::Named(NamedKey::F3)          => Some("\x1bOR"),
-                    Key::Named(NamedKey::F4)          => Some("\x1bOS"),
-                    Key::Named(NamedKey::F5)          => Some("\x1b[15~"),
-                    Key::Named(NamedKey::F6)          => Some("\x1b[17~"),
-                    Key::Named(NamedKey::F7)          => Some("\x1b[18~"),
-                    Key::Named(NamedKey::F8)          => Some("\x1b[19~"),
-                    Key::Named(NamedKey::F9)          => Some("\x1b[20~"),
-                    Key::Named(NamedKey::F10)         => Some("\x1b[21~"),
-                    Key::Named(NamedKey::F11)         => Some("\x1b[23~"),
-                    Key::Named(NamedKey::F12)         => Some("\x1b[24~"),
-                    _ => None,
-                };
-
-                if let Some(terminal) = self.active_terminal() {
-                    let mut term = terminal.lock().unwrap();
-                    if let Some(seq) = esc {
-                        term.write_input(seq);
-                    } else if let Some(text) = &event.text {
-                        if !text.as_str().is_empty() {
-                            term.write_input(text.as_str());
-                        }
-                    }
-                }
-                self.do_render();
-            }
-
-            WindowEvent::RedrawRequested => {
-                self.do_render();
-                self.check_ssh_connect();
-            }
-            _ => {}
-        }
-    }
-}
-
-#[cfg(test)]
-mod completion_tests {
-    use super::*;
-
-    #[test]
-    fn close_other_tabs_reconciles_after_closing_local_tabs() {
-        let mut tab_manager = TabManager::new();
-        tab_manager.new_local("sh", 80, 24);
-        tab_manager.new_local("sh", 80, 24);
-
-        let actions = close_other_tabs_reconcile_actions(
-            &mut tab_manager,
-            1,
-            &std::collections::HashMap::new(),
-        );
-
-        assert_eq!(tab_manager.len(), 1);
-        assert_eq!(actions, Some(RemoteMonitorReconcileActions {
-            starts: Vec::new(),
-            stops: Vec::new(),
-        }));
-    }
-
-    fn monitor_params(user: &str, host: &str, port: u16) -> ssh::ConnectionParams {
-        ssh::ConnectionParams {
-            user: user.into(),
-            host: host.into(),
-            port,
-            auth: "key".into(),
-            key_path: "key-sentinel".into(),
-            password: "password-sentinel".into(),
-        }
-    }
-
-    #[test]
-    fn reconcile_actions_deduplicates_and_sorts_required_starts() {
-        let alpha = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let beta = monitor::MonitorKey::remote("bob", "beta.example", 2200);
-        let mut required = std::collections::HashMap::new();
-        required.insert(beta.clone(), monitor_params("bob", "beta.example", 2200));
-        required.insert(alpha.clone(), monitor_params("alice", "alpha.example", 22));
-
-        let actions = reconcile_actions(&required, &std::collections::HashMap::new());
-
-        assert_eq!(actions.starts.len(), 2);
-        assert_eq!(actions.starts[0].0, alpha);
-        assert_eq!(actions.starts[1].0, beta);
-        assert!(actions.stops.is_empty());
-    }
-
-    #[test]
-    fn reconcile_actions_stops_only_the_key_without_a_remaining_reference() {
-        let retained = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let removed = monitor::MonitorKey::remote("bob", "beta.example", 2200);
-        let required = std::collections::HashMap::from([(
-            retained.clone(),
-            monitor_params("alice", "alpha.example", 22),
-        )]);
-
-        let actions = reconcile_actions(
-            &required,
-            &std::collections::HashMap::from([
-                (retained, monitor_params("alice", "alpha.example", 22)),
-                (removed.clone(), monitor_params("bob", "beta.example", 2200)),
-            ]),
-        );
-
-        assert!(actions.starts.is_empty());
-        assert_eq!(actions.stops, vec![removed]);
-    }
-
-    #[test]
-    fn reconcile_actions_keeps_running_required_workers_unchanged() {
-        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let required = std::collections::HashMap::from([(
-            key.clone(),
-            monitor_params("alice", "alpha.example", 22),
-        )]);
-
-        let actions = reconcile_actions(&required, &std::collections::HashMap::from([(
-            key,
-            monitor_params("alice", "alpha.example", 22),
-        )]));
-
-        assert!(actions.starts.is_empty());
-        assert!(actions.stops.is_empty());
-    }
-
-    #[test]
-    fn reconcile_actions_restarts_a_key_when_its_owner_params_change() {
-        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let mut old = monitor_params("alice", "alpha.example", 22);
-        old.key_path = "old-key-sentinel".into();
-        old.password = "old-password-sentinel".into();
-        let mut selected = monitor_params("alice", "alpha.example", 22);
-        selected.key_path = "selected-key-sentinel".into();
-        selected.password = "selected-password-sentinel".into();
-        let required = std::collections::HashMap::from([(key.clone(), selected.clone())]);
-        let running = std::collections::HashMap::from([(key.clone(), old)]);
-
-        let actions = reconcile_actions(&required, &running);
-
-        assert_eq!(actions.stops, vec![key.clone()]);
-        assert_eq!(actions.starts, vec![(key, selected)]);
-        let debug = format!("{actions:?}");
-        assert!(!debug.contains("old-key-sentinel"));
-        assert!(!debug.contains("old-password-sentinel"));
-        assert!(!debug.contains("selected-key-sentinel"));
-        assert!(!debug.contains("selected-password-sentinel"));
-    }
-
-    #[test]
-    fn remote_monitor_generation_starts_at_one_and_skips_zero_when_wrapping() {
-        let mut next = 0;
-        assert_eq!(next_remote_monitor_generation(&mut next), 1);
-        next = u64::MAX;
-        assert_eq!(next_remote_monitor_generation(&mut next), 1);
-    }
-
-    #[test]
-    fn completion_event_matches_tab_generation_and_token() {
-        let current = CompletionSessionKey::new_for_test(4, "current");
-        assert!(completion_event_is_current(
-            &current,
-            &CompletionSessionKey::new_for_test(4, "current"),
-        ));
-        assert!(!completion_event_is_current(
-            &current,
-            &CompletionSessionKey::new_for_test(3, "current"),
-        ));
-        assert!(!completion_event_is_current(
-            &current,
-            &CompletionSessionKey::new_for_test(4, "old"),
-        ));
-    }
-
-    #[test]
-    fn completion_event_debug_redacts_token_path_and_history_bytes() {
-        let event = UserEvent::CompletionHistory {
-            tab_id: "tab-1".into(),
-            session: CompletionSessionKey::new_for_test(7, "secret-token"),
-            path: "/secret/history/path".into(),
-            result: Ok(b"secret-history-command".to_vec()),
-        };
-
-        let debug = format!("{event:?}");
-
-        assert!(debug.contains("CompletionHistory"));
-        assert!(debug.contains("tab-1"));
-        assert!(!debug.contains("secret-token"));
-        assert!(!debug.contains("/secret/history/path"));
-        assert!(!debug.contains("secret-history-command"));
-    }
-
-    #[test]
-    fn completion_history_handler_ignores_stale_tab_and_session() {
-        let mut manager = TabManager::new();
-        let (tab_id, _) = manager.new_local("bash", 80, 24);
-        let current = manager.tabs[0].completion.session().clone();
-        let current_path =
-            std::path::PathBuf::from(manager.tabs[0].completion.history_path().unwrap());
-        manager.tabs[0]
-            .completion
-            .replace_history(vec!["keep me".into()]);
-
-        assert!(!apply_completion_history_event(
-            &mut manager,
-            "missing-tab",
-            &current,
-            &current_path,
-            Ok(b"replace me\n".to_vec()),
-        ));
-        assert!(!apply_completion_history_event(
-            &mut manager,
-            &tab_id,
-            &CompletionSessionKey::new_for_test(current.generation, "stale"),
-            &current_path,
-            Ok(b"replace me\n".to_vec()),
-        ));
-        assert_eq!(manager.tabs[0].completion.history(), ["keep me"]);
-    }
-
-    #[test]
-    fn completion_history_handler_clears_current_history_on_read_failure() {
-        let mut manager = TabManager::new();
-        let (tab_id, _) = manager.new_local("bash", 80, 24);
-        let session = manager.tabs[0].completion.session().clone();
-        let current_path =
-            std::path::PathBuf::from(manager.tabs[0].completion.history_path().unwrap());
-        manager.tabs[0]
-            .completion
-            .replace_history(vec!["stale history".into()]);
-
-        assert!(apply_completion_history_event(
-            &mut manager,
-            &tab_id,
-            &session,
-            &current_path,
-            Err("unreadable".into()),
-        ));
-        assert!(manager.tabs[0].completion.history().is_empty());
-    }
-
-    #[test]
-    fn stale_default_history_cannot_overwrite_a_new_history_path() {
-        let mut manager = TabManager::new();
-        let (tab_id, _) = manager.new_local("bash", 80, 24);
-        let session = manager.tabs[0].completion.session().clone();
-        let default_path =
-            std::path::PathBuf::from(manager.tabs[0].completion.history_path().unwrap());
-        let custom_path = std::path::PathBuf::from("/tmp/liteterm-custom-history");
-        apply_history_path_event(
-            &mut manager,
-            &tab_id,
-            &session,
-            custom_path.to_string_lossy().into_owned(),
-        );
-
-        assert!(apply_completion_history_event(
-            &mut manager,
-            &tab_id,
-            &session,
-            &custom_path,
-            Ok(b"custom command\n".to_vec()),
-        ));
-        assert!(!apply_completion_history_event(
-            &mut manager,
-            &tab_id,
-            &session,
-            &default_path,
-            Ok(b"default command\n".to_vec()),
-        ));
-        assert_eq!(manager.tabs[0].completion.history(), ["custom command"]);
-    }
-
-    #[test]
-    fn history_path_handler_reloads_only_a_new_current_absolute_path() {
-        let mut manager = TabManager::new();
-        let (tab_id, _) = manager.new_local("bash", 80, 24);
-        let session = manager.tabs[0].completion.session().clone();
-        manager.tabs[0]
-            .completion
-            .replace_history(vec!["old history".into()]);
-        let new_path = std::path::PathBuf::from("/tmp/liteterm-other-history");
-
-        let request = apply_history_path_event(
-            &mut manager,
-            &tab_id,
-            &session,
-            new_path.to_string_lossy().into_owned(),
-        );
-
-        assert_eq!(request, Some((session.clone(), new_path.clone())));
-        assert_eq!(manager.tabs[0].completion.history_path(), new_path.to_str());
-        assert!(manager.tabs[0].completion.history().is_empty());
-        assert_eq!(
-            apply_history_path_event(
-                &mut manager,
-                &tab_id,
-                &session,
-                new_path.to_string_lossy().into_owned(),
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn active_completion_refreshes_for_input_and_clears_for_none_or_empty() {
-        let mut manager = TabManager::new();
-        manager.new_local("bash", 80, 24);
-        manager.tabs[0]
-            .completion
-            .replace_history(vec!["git status".into(), "git log".into()]);
-
-        refresh_active_completion(&mut manager, Some("git"));
-        assert_eq!(
-            manager.tabs[0].completion.candidates(),
-            ["git status", "git log"]
-        );
-        manager.tabs[0].completion.move_selection(1);
-
-        refresh_active_completion(&mut manager, None);
-        assert!(manager.tabs[0].completion.candidates().is_empty());
-        assert_eq!(manager.tabs[0].completion.selected(), 0);
-
-        refresh_active_completion(&mut manager, Some("git"));
-        refresh_active_completion(&mut manager, Some(""));
-        assert!(manager.tabs[0].completion.candidates().is_empty());
-    }
-
-    fn monitor_data(name: &str) -> monitor::MonitorData {
-        monitor::MonitorData {
-            cpu_percent: 0.0,
-            cpu_name: name.into(),
-            memory_used: 0,
-            memory_total: 0,
-            memory_text: String::new(),
-            memory_percent: 0.0,
-            swap_used: 0,
-            swap_total: 0,
-            swap_text: String::new(),
-            swap_percent: 0.0,
-            uptime_text: String::new(),
-            load_text: String::new(),
-            disk_items: Vec::new(),
-            processes: Vec::new(),
-            net_interfaces: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn monitor_generation_gate_requires_exact_remote_generation_and_local_zero() {
-        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let generations = std::collections::HashMap::from([(key.clone(), 4)]);
-        assert!(monitor_event_is_current(&monitor::MonitorKey::Local, 0, &generations));
-        assert!(!monitor_event_is_current(&monitor::MonitorKey::Local, 1, &generations));
-        assert!(monitor_event_is_current(&key, 4, &generations));
-        assert!(!monitor_event_is_current(&key, 3, &generations));
-        assert!(!monitor_event_is_current(
-            &monitor::MonitorKey::remote("bob", "missing.example", 22),
-            4,
-            &generations,
-        ));
-    }
-
-    #[test]
-    fn stale_monitor_success_and_failure_leave_slot_unchanged() {
-        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let mut slots = std::collections::HashMap::from([(
-            key.clone(),
-            monitor::MonitorSlot {
-                data: Some(monitor_data("keep")),
-                error: Some("keep error".into()),
-            },
-        )]);
-        let generations = std::collections::HashMap::from([(key.clone(), 4)]);
-        for result in [Ok(Box::new(monitor_data("stale"))), Err("stale-error".into())] {
-            assert!(!apply_monitor_event(
-                &mut slots,
-                monitor::MonitorEvent { key: key.clone(), generation: 3, result },
-                &generations,
-            ));
-        }
-        let slot = slots.get(&key).unwrap();
-        assert_eq!(slot.data.as_ref().unwrap().cpu_name, "keep");
-        assert_eq!(slot.error.as_deref(), Some("keep error"));
-    }
-
-    #[test]
-    fn current_monitor_success_clears_error_and_failure_keeps_data() {
-        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let other = monitor::MonitorKey::remote("bob", "beta.example", 22);
-        let mut slots = std::collections::HashMap::from([
-            (key.clone(), monitor::MonitorSlot { data: Some(monitor_data("old")), error: Some("old-error".into()) }),
-            (other.clone(), monitor::MonitorSlot { data: Some(monitor_data("other")), error: None }),
-        ]);
-        let generations = std::collections::HashMap::from([(key.clone(), 4), (other.clone(), 9)]);
-        assert!(apply_monitor_event(
-            &mut slots,
-            monitor::MonitorEvent { key: key.clone(), generation: 4, result: Ok(Box::new(monitor_data("new"))) },
-            &generations,
-        ));
-        assert_eq!(slots[&key].data.as_ref().unwrap().cpu_name, "new");
-        assert_eq!(slots[&key].error, None);
-        assert_eq!(slots[&other].data.as_ref().unwrap().cpu_name, "other");
-        assert!(apply_monitor_event(
-            &mut slots,
-            monitor::MonitorEvent { key: key.clone(), generation: 4, result: Err("bad\n\u{1b}[error".repeat(32)) },
-            &generations,
-        ));
-        assert_eq!(slots[&key].data.as_ref().unwrap().cpu_name, "new");
-        assert!(slots[&key].error.as_deref().is_some_and(|error| {
-            !error.chars().any(char::is_control) && error.chars().count() <= 160
-        }));
-    }
-
-    #[test]
-    fn active_monitor_slot_uses_exact_key_without_local_fallback() {
-        let slots = std::collections::HashMap::from([(
-            monitor::MonitorKey::Local,
-            monitor::MonitorSlot { data: Some(monitor_data("local")), error: None },
-        )]);
-        assert!(active_monitor_slot(
-            &slots,
-            &monitor::MonitorKey::remote("alice", "missing.example", 22),
-        ).is_none());
-    }
-
-    #[test]
-    fn monitor_events_convert_and_debug_without_payloads() {
-        let event = monitor_event_from_remote(remote_monitor::RemoteMonitorEvent::Failed {
-            key: monitor::MonitorKey::remote("alice", "alpha.example", 22),
-            generation: 7,
-            error: "error-sentinel".into(),
-        });
-        let debug = format!("{event:?}");
-        assert!(debug.contains("Err"));
-        assert!(!debug.contains("error-sentinel"));
-        let update = monitor_event_from_remote(remote_monitor::RemoteMonitorEvent::Update {
-            key: monitor::MonitorKey::Local,
-            generation: 0,
-            data: Box::new(monitor_data("payload-sentinel")),
-        });
-        assert!(update.result.is_ok());
-    }
-
-    #[test]
-    fn stopping_remote_monitor_removes_its_slot() {
-        let remote = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let mut slots = std::collections::HashMap::from([
-            (monitor::MonitorKey::Local, monitor::MonitorSlot::default()),
-            (remote.clone(), monitor::MonitorSlot::default()),
-        ]);
-        remove_monitor_slots(&mut slots, std::slice::from_ref(&remote));
-        assert!(slots.contains_key(&monitor::MonitorKey::Local));
-        assert!(!slots.contains_key(&remote));
-    }
-
-    #[test]
-    fn main_monitor_event_path_routes_the_key_and_keeps_slot_error() {
-        let key = monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let mut generations = std::collections::HashMap::new();
-        generations.insert(key.clone(), 7);
-        let mut slots = std::collections::HashMap::new();
-        let mut sidebar = Sidebar::new();
-
-        let mut data = monitor_data("remote");
-        data.net_interfaces.push(monitor::NetIfaceInfo {
-            name: "eth0".into(),
-            rx_rate: 10,
-            tx_rate: 20,
-        });
-        assert!(apply_monitor_event_and_update_sidebar(
-            &mut slots,
-            &mut sidebar,
-            monitor::MonitorEvent {
-                key: key.clone(),
-                generation: 7,
-                result: Ok(Box::new(data)),
-            },
-            &generations,
-        ));
-        assert!(sidebar.monitor_history_for_test(&key).is_some());
-
-        assert!(apply_monitor_event_and_update_sidebar(
-            &mut slots,
-            &mut sidebar,
-            monitor::MonitorEvent {
-                key: key.clone(),
-                generation: 7,
-                result: Err("暂时断开".into()),
-            },
-            &generations,
-        ));
-        assert!(slots[&key].data.is_some());
-        assert!(slots[&key].error.as_deref().is_some());
-    }
-
-    fn placeholder_connection(host: &str) -> crate::sidebar::SshConnection {
-        crate::sidebar::SshConnection {
-            label: host.into(),
-            host: host.into(),
-            port: 22,
-            user: "alice".into(),
-            auth: "key".into(),
-            key_path: String::new(),
-            password: String::new(),
-            group: "test".into(),
-            group_color: [0x58, 0xa6, 0xff],
-        }
-    }
-
-    fn render_monitor_placeholder(
-        sidebar: &mut Sidebar,
-        key: &monitor::MonitorKey,
-    ) {
-        let context = egui::Context::default();
-        let _ = context.run(egui::RawInput::default(), |context| {
-            sidebar.ui_with_monitor(context, key, None, None);
-        });
-    }
-
-    #[test]
-    fn closing_last_placeholder_prunes_its_rendered_monitor_view() {
-        let mut manager = TabManager::new();
-        manager.new_ssh_placeholder(&placeholder_connection("alpha.example"));
-        let key = manager.tabs[0].monitor_key();
-        let mut sidebar = Sidebar::new();
-        render_monitor_placeholder(&mut sidebar, &key);
-        assert!(sidebar.has_monitor_view_for_test(&key));
-
-        manager.close(0);
-        prune_sidebar_monitor_views(&mut sidebar, &manager);
-
-        assert!(!sidebar.has_monitor_view_for_test(&key));
-    }
-
-    #[test]
-    fn pruning_placeholder_views_keeps_shared_keys_and_local_but_removes_only_distinct_target() {
-        let mut manager = TabManager::new();
-        manager.new_ssh_placeholder(&placeholder_connection("alpha.example"));
-        manager.new_ssh_placeholder(&placeholder_connection("alpha.example"));
-        manager.new_ssh_placeholder(&placeholder_connection("beta.example"));
-        let shared = manager.tabs[0].monitor_key();
-        let distinct = manager.tabs[2].monitor_key();
-        let local = monitor::MonitorKey::Local;
-        let mut sidebar = Sidebar::new();
-        render_monitor_placeholder(&mut sidebar, &shared);
-        render_monitor_placeholder(&mut sidebar, &distinct);
-        render_monitor_placeholder(&mut sidebar, &local);
-
-        manager.close_others(0);
-        prune_sidebar_monitor_views(&mut sidebar, &manager);
-
-        assert!(sidebar.has_monitor_view_for_test(&shared));
-        assert!(!sidebar.has_monitor_view_for_test(&distinct));
-        assert!(sidebar.has_monitor_view_for_test(&local));
-    }
-
-    #[test]
-    fn tab_switch_action_is_deferred_until_after_present() {
-        let action = tab_bar::TabBarAction {
-            switch_to: Some(1),
-            close: None,
-            new_tab: false,
-        };
-
-        assert_eq!(
-            tab_action_apply_phase(&action),
-            TabActionApplyPhase::AfterPresent
-        );
-    }
+fn chrono_lite() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let hours = (secs % 86400) / 3600 + 8; // UTC+8 简化
+    let mins = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{:02}:{:02}:{:02}", hours % 24, mins, s)
 }
 
 fn main() {
+    setup_crash_handler();
+
+    // 启动时检查上次 crash
+    let crash_path = crash_log_path();
+    if crash_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&crash_path) {
+            eprintln!("=== 上次闪退记录 ===\n{}\n===================", content);
+        }
+        // 重命名为 .old 保留历史
+        let old = crash_path.with_extension("log.old");
+        let _ = std::fs::rename(&crash_path, &old);
+    }
+
     env_logger::init();
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
     let proxy = event_loop.create_proxy();
-    let mut app = App::new(proxy);
+    let mut app = app::App::new(proxy);
     event_loop.run_app(&mut app).unwrap();
 }
+
+#[cfg(test)]
+#[path = "main_tests/api_main_tests.rs"]
+mod api_main_tests;
+
+#[cfg(test)]
+#[path = "main_tests/layout_tests.rs"]
+mod layout_tests;
+
+#[cfg(test)]
+#[path = "main_tests/zmodem_main_tests.rs"]
+mod zmodem_main_tests;

@@ -1,0 +1,213 @@
+name: Native Multi-platform Build
+
+on:
+  push:
+    branches:
+      - feat/memory-optimize
+      - main
+    paths:
+      - native-prototype/**
+      - .github/workflows/native-build.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - native-prototype/**
+      - .github/workflows/native-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  prepare:
+    name: Prepare build metadata
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Native version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' native-prototype/Cargo.toml | head -1)
+          if [ -z "$VERSION" ]; then
+            echo "::error::无法从 native-prototype/Cargo.toml 读取版本号"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Native version: $VERSION"
+
+  quality:
+    name: Native quality gates
+    needs: prepare
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: native-prototype
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-prototype
+          shared-key: native-linux-quality
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev libssl-dev pkg-config
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets
+
+      - name: Run tests
+        run: cargo test --locked
+
+  build:
+    name: Build ${{ matrix.display }}
+    needs:
+      - prepare
+      - quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - display: Linux x86_64
+            runner: ubuntu-22.04
+            slug: linux-x86_64
+            archive: liteterm-native-linux-x86_64.tar.gz
+          - display: Windows x86_64
+            runner: windows-2022
+            slug: windows-x86_64
+            archive: liteterm-native-windows-x86_64.zip
+          - display: macOS Intel
+            runner: macos-15-intel
+            slug: macos-x86_64
+            archive: liteterm-native-macos-x86_64.tar.gz
+          - display: macOS Apple Silicon
+            runner: macos-15
+            slug: macos-aarch64
+            archive: liteterm-native-macos-aarch64.tar.gz
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: native-prototype
+    env:
+      BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-prototype
+          shared-key: native-${{ matrix.slug }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev libssl-dev pkg-config
+
+      - name: Install Windows NASM
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          cp target/release/liteterm-native dist/package/liteterm-native
+          chmod +x dist/package/liteterm-native
+          {
+            echo "LiteTerm Native $BUILD_VERSION"
+            echo "Platform: ${{ matrix.display }}"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > dist/package/BUILD-INFO.txt
+          ARCHIVE_PATH="$PWD/dist/${{ matrix.archive }}"
+          tar -C dist/package -czf "$ARCHIVE_PATH" .
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/package | Out-Null
+          Copy-Item target/release/liteterm-native.exe dist/package/liteterm-native.exe
+          @(
+            "LiteTerm Native $env:BUILD_VERSION"
+            "Platform: ${{ matrix.display }}"
+            "Commit: $env:GITHUB_SHA"
+            "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          ) | Set-Content -Encoding utf8 dist/package/BUILD-INFO.txt
+          Compress-Archive -Path dist/package/* -DestinationPath "dist/${{ matrix.archive }}" -Force
+
+      - name: Upload downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiteTerm-Native-${{ matrix.slug }}-v${{ needs.prepare.outputs.version }}
+          path: native-prototype/dist/${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 30
+
+  summary:
+    name: Publish download guide
+    if: always()
+    needs:
+      - prepare
+      - quality
+      - build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Write run summary
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          {
+            echo "## LiteTerm Native 编译产物"
+            echo
+            echo "- 版本：\`$VERSION\`"
+            echo "- 质量检查：\`$QUALITY_RESULT\`"
+            echo "- 三端构建：\`$BUILD_RESULT\`"
+            echo
+            if [ "$BUILD_RESULT" = "success" ]; then
+              echo "### 网页下载位置"
+              echo
+              echo "在当前 Actions 运行页面向下滚动到 **Artifacts**，下载以下目录："
+              echo
+              echo "- \`LiteTerm-Native-linux-x86_64-v$VERSION\`"
+              echo "- \`LiteTerm-Native-windows-x86_64-v$VERSION\`"
+              echo "- \`LiteTerm-Native-macos-x86_64-v$VERSION\`"
+              echo "- \`LiteTerm-Native-macos-aarch64-v$VERSION\`"
+              echo
+              echo "产物保留 30 天，每个目录中包含压缩包及构建信息。"
+            else
+              echo "构建未全部通过，因此可能没有完整的可下载产物；请先检查失败的 job。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

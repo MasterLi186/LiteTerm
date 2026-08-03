@@ -302,11 +302,25 @@ pub fn parse_ps_aux(input: &str) -> Vec<ProcessMetric> {
                     let mem_percent = parts[3].parse::<f64>().unwrap_or(0.0);
                     let rss = parts[5].parse::<u64>().unwrap_or(0);
                     let command = parts[10..].join(" ");
-                    procs.push(ProcessMetric { pid, user: parts[0].to_string(), cpu_percent: cpu, mem_percent, rss_kb: rss, command });
+                    procs.push(ProcessMetric {
+                        pid,
+                        user: parts[0].to_string(),
+                        cpu_percent: cpu,
+                        mem_percent,
+                        rss_kb: rss,
+                        command,
+                    });
                 } else {
                     // ps -eo 格式(5 列): USER PID %CPU RSS COMMAND
                     let command = parts[4..].join(" ");
-                    procs.push(ProcessMetric { pid, user: parts[0].to_string(), cpu_percent: cpu, mem_percent: 0.0, rss_kb, command });
+                    procs.push(ProcessMetric {
+                        pid,
+                        user: parts[0].to_string(),
+                        cpu_percent: cpu,
+                        mem_percent: 0.0,
+                        rss_kb,
+                        command,
+                    });
                 }
             }
         }

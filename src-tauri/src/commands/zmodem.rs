@@ -21,15 +21,20 @@ pub async fn run_zmodem_upload(
     session_id: String,
     files: Vec<String>,
 ) -> Result<(), String> {
-    app_log!("ZMODEM", "SEND START: session={}, files={}", session_id, files.len());
+    app_log!(
+        "ZMODEM",
+        "SEND START: session={}, files={}",
+        session_id,
+        files.len()
+    );
 
     // 收集文件信息
     let mut file_infos = Vec::new();
     for path_str in &files {
         let expanded = shellexpand::tilde(path_str).to_string();
         let path = PathBuf::from(&expanded);
-        let meta = std::fs::metadata(&path)
-            .map_err(|e| format!("无法读取文件: {} - {}", path_str, e))?;
+        let meta =
+            std::fs::metadata(&path).map_err(|e| format!("无法读取文件: {} - {}", path_str, e))?;
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -40,7 +45,12 @@ pub async fn run_zmodem_upload(
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        file_infos.push(FileInfo { path, name, size: meta.len(), mtime });
+        file_infos.push(FileInfo {
+            path,
+            name,
+            size: meta.len(),
+            mtime,
+        });
     }
 
     // 获取会话资源
@@ -52,7 +62,10 @@ pub async fn run_zmodem_upload(
         if session.zmodem_active.load(Ordering::Acquire) {
             return Err("ZMODEM 传输已在进行中".to_string());
         }
-        (session.zmodem_request.clone(), session.zmodem_active.clone())
+        (
+            session.zmodem_request.clone(),
+            session.zmodem_active.clone(),
+        )
     };
 
     // 取消标志 —— 以前端进度面板使用的同一个 key（`zmodem-upload-<文件名>`）
@@ -95,7 +108,12 @@ pub async fn run_zmodem_upload(
         }
     }
 
-    app_log!("ZMODEM", "SEND END: session={}, result={:?}", session_id, result);
+    app_log!(
+        "ZMODEM",
+        "SEND END: session={}, result={:?}",
+        session_id,
+        result
+    );
     result
 }
 
@@ -183,7 +201,12 @@ pub fn run_zmodem_send(
     let mut last_keepalive = Instant::now();
 
     let emit_progress = |sender: &ZmodemSender, app: &AppHandle| {
-        if let Some(SenderAction::Progress { bytes_sent, total, filename }) = sender.progress() {
+        if let Some(SenderAction::Progress {
+            bytes_sent,
+            total,
+            filename,
+        }) = sender.progress()
+        {
             let _ = app.emit(
                 "transfer-progress",
                 serde_json::json!({

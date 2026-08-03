@@ -30,7 +30,7 @@ pub fn crc32_multi(slices: &[&[u8]]) -> u32 {
     hasher.finalize()
 }
 
-use super::{ZPAD, ZDLE, ZHEX, ZBIN32, XON};
+use super::{XON, ZBIN32, ZDLE, ZHEX, ZPAD};
 
 fn hex_byte(b: u8) -> [u8; 2] {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -47,13 +47,13 @@ fn hex_byte(b: u8) -> [u8; 2] {
 /// 在 8-bit 干净的 SSH 通道上我们直接原样发送，rz 按字面数据接收。
 fn zdle_encode_byte(b: u8) -> (u8, Option<u8>) {
     match b {
-        ZDLE => (ZDLE, Some(0x58)),                // ZDLE 自身：0x18 ^ 0x40 = 0x58
-        0x10 | 0x90 => (ZDLE, Some(b ^ 0x40)),    // DLE
-        0x11 | 0x91 => (ZDLE, Some(b ^ 0x40)),    // XON
-        0x13 | 0x93 => (ZDLE, Some(b ^ 0x40)),    // XOFF
-        0x00..=0x1f => (ZDLE, Some(b ^ 0x40)),    // 控制字符
-        0x80..=0x9f => (ZDLE, Some(b ^ 0x40)),    // 高位控制字符
-        _ => (b, None),                             // 原样透传
+        ZDLE => (ZDLE, Some(0x58)),            // ZDLE 自身：0x18 ^ 0x40 = 0x58
+        0x10 | 0x90 => (ZDLE, Some(b ^ 0x40)), // DLE
+        0x11 | 0x91 => (ZDLE, Some(b ^ 0x40)), // XON
+        0x13 | 0x93 => (ZDLE, Some(b ^ 0x40)), // XOFF
+        0x00..=0x1f => (ZDLE, Some(b ^ 0x40)), // 控制字符
+        0x80..=0x9f => (ZDLE, Some(b ^ 0x40)), // 高位控制字符
+        _ => (b, None),                        // 原样透传
     }
 }
 
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(hdr[1], b'*'); // ZPAD
         assert_eq!(hdr[2], 0x18); // ZDLE
         assert_eq!(hdr[3], b'B'); // ZHEX
-        // Ends with CR LF XON
+                                  // Ends with CR LF XON
         let len = hdr.len();
         assert_eq!(hdr[len - 3], b'\r');
         assert_eq!(hdr[len - 2], b'\n');

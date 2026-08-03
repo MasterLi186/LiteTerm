@@ -57,6 +57,34 @@ Electron 使用 Chromium，其 `PartitionAlloc` 分配器会定期扫描空闲�
 - **长时间运行场景严重**：开十几个 SSH 标签跑一天后，内存可能增长到 2-3GB
 - **重启可完全恢复**：关闭 LiteTerm 窗口后内存立即释放
 
+## 相关问题：退出后 WebKit 孤儿进程
+
+### 现象
+
+主界面卡死 → 任务栏右键「退出」只杀掉 `guishell-tauri` → `WebKitWebProcess` 被 init 收养，RSS 可残留到 2–3.5GB。
+
+### 修复（2026-07-18）
+
+`src-tauri/src/process_cleanup.rs`：
+
+1. **SIGTERM/SIGINT** — 任务栏退出走信号路径，handler 置位后 watcher 线程递归 SIGKILL 所有后代再 `exit`
+2. **RunEvent::Exit / ExitRequested / force_quit** — 同样清理子进程树
+3. **启动时** — 若无其它 guishell 实例，杀掉 PPID=1 且 exe 为 `webkit2gtk` 的孤儿 WebKit 进程
+
+> 若主进程被 **SIGKILL** 强杀，handler 无法运行；下次启动时的孤儿清理会回收内存。
+
+### 应急命令（当前已卡死时）
+
+```bash
+# 查看
+ps -eo pid,ppid,rss,comm | awk '$3>500000 || /WebKit|guishell/'
+# 只杀 webkit2gtk 渲染进程（不动 Chrome）
+for p in /proc/[0-9]*; do
+  e=$(readlink $p/exe 2>/dev/null) || continue
+  case "$e" in *webkit2gtk*WebKit*) kill -9 ${p#/proc/};; esac
+done
+```
+
 ## 解决方案
 
 ### 短期缓解（当前技术栈内）
@@ -65,6 +93,7 @@ Electron 使用 Chromium，其 `PartitionAlloc` 分配器会定期扫描空闲�
 2. **非活跃标签自动缩减 scrollback** — 后台标签从 10000 行缩到 1000 行，切回恢复（TODO 已记录）
 3. **定期触发 GC** — 在 WebKitGTK 中调用 `window.gc()`（如果可用）
 4. **考虑关闭 WebGL** — xterm.js 使用 canvas 2D 渲染替代 WebGL，减少纹理缓存
+5. **退出时杀子进程树** — 见上文「退出后 WebKit 孤儿进程」
 
 ### 中期方案
 

@@ -1,15 +1,18 @@
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::bash_integration::{
-    build_bash_rc, is_safe_remote_bash_path, widget_sequence, RemoteBashPaths, RemoteBashRuntime,
+    build_bash_rc, is_safe_remote_bash_path, snapshot_sequence, widget_sequence, RemoteBashPaths,
+    RemoteBashRuntime,
 };
 use crate::smart_completion::CompletionSessionKey;
 
 const SSH_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_IO_TIMEOUT_MS: u32 = 10_000;
+const SSH_PENDING_WRITE_CAPACITY: usize = 32;
 
 trait SessionTimeoutControl {
     fn timeout_ms(&self) -> u32;
@@ -140,14 +143,14 @@ impl std::fmt::Debug for ConnectionParams {
 }
 
 impl From<&crate::sidebar::SshConnection> for ConnectionParams {
-    fn from(connection: &crate::sidebar::SshConnection) -> Self {
+    fn from(conn: &crate::sidebar::SshConnection) -> Self {
         Self {
-            host: connection.host.clone(),
-            port: connection.port,
-            user: connection.user.clone(),
-            auth: connection.auth.clone(),
-            key_path: connection.key_path.clone(),
-            password: connection.password.clone(),
+            host: conn.host.clone(),
+            port: conn.port,
+            user: conn.user.clone(),
+            auth: conn.auth.clone(),
+            key_path: conn.key_path.clone(),
+            password: conn.password.clone(),
         }
     }
 }
@@ -280,9 +283,14 @@ impl ShellBootstrap for Ssh2Bootstrap<'_> {
         let mut created_rc = false;
         let mut created_candidate = false;
         let result = (|| {
-            let sequence = widget_sequence(session);
-            let rc_contents =
-                build_bash_rc(session, std::path::Path::new(&paths.candidate), &sequence);
+            let fill_sequence = widget_sequence(session);
+            let snapshot_sequence = snapshot_sequence(session);
+            let rc_contents = build_bash_rc(
+                session,
+                std::path::Path::new(&paths.candidate),
+                &fill_sequence,
+                &snapshot_sequence,
+            );
             let mut rc_file = sftp
                 .open_mode(&paths.rc, flags, 0o600, ssh2::OpenType::File)
                 .map_err(|error| format!("创建远端 Bash RC 失败: {error}"))?;
@@ -313,7 +321,8 @@ impl ShellBootstrap for Ssh2Bootstrap<'_> {
                 bash_path: bash_path.to_owned(),
                 rc_path: paths.rc.clone(),
                 candidate_path: paths.candidate.clone(),
-                widget_sequence: sequence,
+                widget_sequence: fill_sequence,
+                snapshot_sequence,
             })
         })();
 
@@ -370,13 +379,12 @@ pub(crate) fn connect_authenticated(params: &ConnectionParams) -> Result<ssh2::S
     configure_tcp_timeouts(&tcp, SSH_IO_TIMEOUT)?;
 
     log::info!("SSH TCP connected to {}:{}", params.host, params.port);
-    let mut session =
-        ssh2::Session::new().map_err(|error| format!("SSH session 创建失败: {error}"))?;
+    let mut session = ssh2::Session::new().map_err(|e| format!("SSH session 创建失败: {e}"))?;
     session.set_tcp_stream(tcp);
     session.set_timeout(SSH_IO_TIMEOUT_MS);
     session
         .handshake()
-        .map_err(|error| format!("SSH 握手失败: {error}"))?;
+        .map_err(|e| format!("SSH 握手失败: {e}"))?;
     log::info!("SSH handshake ok");
 
     let key_path = (!params.key_path.is_empty()).then_some(params.key_path.as_str());
@@ -436,8 +444,8 @@ pub(crate) fn connect_authenticated(params: &ConnectionParams) -> Result<ssh2::S
 /// The reader stays on the SSH thread; writing is done via mpsc channel.
 pub struct SshHandle {
     pub reader: Box<dyn Read + Send>,
-    pub write_tx: mpsc::Sender<Vec<u8>>,
-    pub resize_tx: mpsc::Sender<(u16, u16)>,
+    pub write_tx: crate::zmodem::runtime::TransportWriter,
+    pub resize_tx: mpsc::SyncSender<(u16, u16)>,
     pub shutdown_tx: mpsc::Sender<()>,
     pub io_done_rx: mpsc::Receiver<()>,
     pub bash_runtime: Option<RemoteBashRuntime>,
@@ -446,6 +454,134 @@ pub struct SshHandle {
 impl SshHandle {
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(());
+    }
+
+    #[cfg(test)]
+    fn shutdown_and_wait(&self, timeout: Duration) -> Result<(), String> {
+        let _ = self.shutdown_tx.send(());
+        self.io_done_rx
+            .recv_timeout(timeout)
+            .map_err(|error| format!("等待 SSH I/O 线程退出失败: {error}"))
+    }
+}
+
+fn shutdown_requested<T>(result: &Result<T, mpsc::TryRecvError>) -> bool {
+    !matches!(result, Err(mpsc::TryRecvError::Empty))
+}
+
+struct SshOutputReader {
+    receiver: mpsc::Receiver<Vec<u8>>,
+    current: Vec<u8>,
+    offset: usize,
+}
+
+impl SshOutputReader {
+    fn new(receiver: mpsc::Receiver<Vec<u8>>) -> Self {
+        Self {
+            receiver,
+            current: Vec::new(),
+            offset: 0,
+        }
+    }
+}
+
+impl Read for SshOutputReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        while self.offset == self.current.len() {
+            self.current = match self.receiver.recv() {
+                Ok(bytes) => bytes,
+                Err(_) => return Ok(0),
+            };
+            self.offset = 0;
+        }
+        let take = buffer.len().min(self.current.len() - self.offset);
+        buffer[..take].copy_from_slice(&self.current[self.offset..self.offset + take]);
+        self.offset += take;
+        Ok(take)
+    }
+}
+
+struct PendingChannelWrite {
+    bytes: Vec<u8>,
+    offset: usize,
+    protocol: Option<crate::zmodem::runtime::ProtocolWriteRequest>,
+    normal_epoch: Option<u64>,
+    started: bool,
+}
+
+impl PendingChannelWrite {
+    fn from_transport(message: crate::zmodem::runtime::TransportWrite) -> Self {
+        match message {
+            crate::zmodem::runtime::TransportWrite::Normal { bytes, epoch } => Self {
+                bytes,
+                offset: 0,
+                protocol: None,
+                normal_epoch: Some(epoch),
+                started: true,
+            },
+            crate::zmodem::runtime::TransportWrite::Protocol(protocol) => Self {
+                bytes: protocol.bytes().to_vec(),
+                offset: 0,
+                protocol: Some(protocol),
+                normal_epoch: None,
+                started: false,
+            },
+        }
+    }
+
+    fn begin(&mut self) -> bool {
+        if self.started {
+            return true;
+        }
+        self.started = self
+            .protocol
+            .as_ref()
+            .is_some_and(|request| request.begin());
+        self.started
+    }
+
+    fn may_continue(&self) -> bool {
+        self.protocol
+            .as_ref()
+            .is_none_or(|request| request.may_continue())
+    }
+
+    fn complete(self, result: std::io::Result<()>) {
+        if let Some(protocol) = self.protocol {
+            protocol.complete(result);
+        }
+    }
+}
+
+fn write_channel_once(
+    writer: &mut impl Write,
+    pending: &mut PendingChannelWrite,
+) -> std::io::Result<bool> {
+    if pending.offset < pending.bytes.len() {
+        match writer.write(&pending.bytes[pending.offset..]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "SSH channel write returned zero",
+                ));
+            }
+            Ok(written) => {
+                pending.offset += written;
+                if pending.offset < pending.bytes.len() {
+                    return Ok(false);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    match writer.flush() {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -459,6 +595,7 @@ pub fn connect(
     integration: Option<CompletionSessionKey>,
 ) -> Result<SshHandle, String> {
     let session = connect_authenticated(params)?;
+
     let (mut channel, bash_runtime) = {
         let mut bootstrap = Ssh2Bootstrap::new(&session, cols, rows);
         let bash_runtime = match integration {
@@ -477,80 +614,140 @@ pub fn connect(
 
     log::info!("SSH shell opened, {}x{}", cols, rows);
 
-    // 5. Set up writer thread via mpsc
-    // ssh2::Channel is !Send, so we can't move it across threads.
-    // Instead, we use a pipe: the writer thread writes to a pipe,
-    // and the SSH thread reads from the pipe and forwards to the channel.
-    let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
-    let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16)>();
+    // ssh2::Channel is !Send, so all I/O remains on one non-blocking worker.
+    let protocol_active = std::sync::Arc::new(crate::zmodem::runtime::ProtocolGate::new());
+    let (write_tx, write_rx) =
+        crate::zmodem::runtime::transport_write_channel(std::sync::Arc::clone(&protocol_active));
+    let (resize_tx, resize_rx) = mpsc::sync_channel::<(u16, u16)>(8);
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     let (io_done_tx, io_done_rx) = mpsc::channel::<()>();
 
-    // We'll use OS pipes for the reader side too — the SSH thread reads
-    // from the channel and writes to a pipe, and the terminal thread
-    // reads from the other end.
-    let (pipe_read, mut pipe_write) =
-        os_pipe::pipe().map_err(|e| format!("创建管道失败: {}", e))?;
+    let (output_tx, output_rx) = mpsc::sync_channel::<Vec<u8>>(16);
 
     // SSH I/O thread: reads channel → pipe, reads mpsc → channel
     std::thread::spawn(move || {
         session.set_blocking(false);
         let mut buf = [0u8; 4096];
+        let mut output_pending: Option<Vec<u8>> = None;
+        let mut writes = VecDeque::<PendingChannelWrite>::new();
+        let mut failure: Option<String> = None;
         loop {
-            if !matches!(shutdown_rx.try_recv(), Err(mpsc::TryRecvError::Empty)) {
-                session.set_blocking(true);
+            let shutdown_request = shutdown_rx.try_recv();
+            if shutdown_requested(&shutdown_request) {
                 let _ = channel.close();
                 break;
             }
 
-            // Read from channel (non-blocking)
-            match channel.read(&mut buf) {
-                Ok(0) => {
-                    if channel.eof() {
-                        log::info!("SSH channel EOF");
+            if let Some(bytes) = output_pending.take() {
+                match output_tx.try_send(bytes) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(bytes)) => output_pending = Some(bytes),
+                    Err(mpsc::TrySendError::Disconnected(_)) => break,
+                }
+            }
+            if output_pending.is_none() {
+                match channel.read(&mut buf) {
+                    Ok(0) => {
+                        if channel.eof() {
+                            log::info!("SSH channel EOF");
+                            break;
+                        }
+                    }
+                    Ok(n) => match output_tx.try_send(buf[..n].to_vec()) {
+                        Ok(()) => {}
+                        Err(mpsc::TrySendError::Full(bytes)) => output_pending = Some(bytes),
+                        Err(mpsc::TrySendError::Disconnected(_)) => break,
+                    },
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => {
+                        failure = Some(format!("SSH channel read error: {error}"));
                         break;
                     }
                 }
-                Ok(n) => {
-                    if pipe_write.write_all(&buf[..n]).is_err() {
+            }
+
+            for _ in 0..4.min(SSH_PENDING_WRITE_CAPACITY.saturating_sub(writes.len())) {
+                match write_rx.try_recv() {
+                    Ok(message) => {
+                        if matches!(
+                            message,
+                            crate::zmodem::runtime::TransportWrite::Normal { .. }
+                        ) && protocol_active.is_active()
+                        {
+                            continue;
+                        }
+                        writes.push_back(PendingChannelWrite::from_transport(message));
+                    }
+                    Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+                }
+            }
+
+            if let Some(pending) = writes.front_mut() {
+                if pending.protocol.is_none()
+                    && (protocol_active.is_active()
+                        || pending.normal_epoch != Some(protocol_active.epoch()))
+                {
+                    writes.pop_front();
+                    continue;
+                }
+                if !pending.begin() || !pending.may_continue() {
+                    let expired = writes.pop_front().unwrap();
+                    expired.complete(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "协议写请求在 SSH 写入前已取消或超时",
+                    )));
+                    continue;
+                }
+                match write_channel_once(&mut channel, pending) {
+                    Ok(true) => {
+                        let completed = writes.pop_front().unwrap();
+                        completed.complete(Ok(()));
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        let failed = writes.pop_front().unwrap();
+                        failed.complete(Err(std::io::Error::new(error.kind(), error.to_string())));
+                        failure = Some(format!("SSH channel write error: {error}"));
                         break;
                     }
-                    let _ = pipe_write.flush();
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => {
-                    log::error!("SSH channel read error: {}", e);
-                    break;
                 }
             }
 
-            // Write pending input to channel (non-blocking)
-            while let Ok(data) = write_rx.try_recv() {
-                session.set_blocking(true);
-                let _ = channel.write_all(&data);
-                let _ = channel.flush();
-                session.set_blocking(false);
+            if let Ok((new_cols, new_rows)) = resize_rx.try_recv() {
+                if let Err(error) =
+                    channel.request_pty_size(new_cols as u32, new_rows as u32, None, None)
+                {
+                    log::warn!("SSH resize failed: {error}");
+                }
             }
-
-            while let Ok((new_cols, new_rows)) = resize_rx.try_recv() {
-                session.set_blocking(true);
-                let _ = channel.request_pty_size(new_cols as u32, new_rows as u32, None, None);
-                session.set_blocking(false);
-            }
-
-            // Small sleep to avoid busy loop (non-blocking mode)
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(1));
         }
-        session.set_blocking(true);
+        let reason = failure.unwrap_or_else(|| "SSH I/O 已关闭".into());
+        for pending in writes {
+            pending.complete(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                reason.clone(),
+            )));
+        }
+        while let Ok(message) = write_rx.try_recv() {
+            let pending = PendingChannelWrite::from_transport(message);
+            pending.complete(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                reason.clone(),
+            )));
+        }
+        if reason != "SSH I/O 已关闭" {
+            log::error!("{reason}");
+        }
         let _ = channel.close();
-        drop(pipe_write);
+        drop(output_tx);
         drop(channel);
         drop(session);
         let _ = io_done_tx.send(());
     });
 
     Ok(SshHandle {
-        reader: Box::new(pipe_read),
+        reader: Box::new(SshOutputReader::new(output_rx)),
         write_tx,
         resize_tx,
         shutdown_tx,
@@ -560,341 +757,5 @@ pub fn connect(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        bootstrap_shell, cleanup_targets, configure_tcp_timeouts, connect_resolved,
-        connect_resolved_with_clock, read_probe_shell, resolve_ssh_addresses,
-        with_temporary_ssh_timeout, ConnectionParams, SessionTimeoutControl, ShellBootstrap,
-    };
-    use crate::bash_integration::RemoteBashRuntime;
-    use crate::sidebar::SshConnection;
-    use crate::smart_completion::CompletionSessionKey;
-
-    #[test]
-    fn resolver_accepts_bare_ipv6_host() {
-        let addresses = resolve_ssh_addresses("::1", 2222).unwrap();
-
-        assert!(!addresses.is_empty());
-        assert!(addresses
-            .iter()
-            .all(|address| address.is_ipv6() && address.port() == 2222));
-    }
-
-    #[test]
-    fn connector_tries_later_address_after_first_failure() {
-        let first = "127.0.0.1:2201".parse().unwrap();
-        let second = "127.0.0.1:2202".parse().unwrap();
-        let mut attempts = Vec::new();
-
-        let connected = connect_resolved(
-            &[first, second],
-            std::time::Duration::from_secs(1),
-            |address, remaining| {
-                attempts.push((address, remaining));
-                if address == first {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::ConnectionRefused,
-                        "first refused",
-                    ))
-                } else {
-                    Ok(address)
-                }
-            },
-        )
-        .unwrap();
-
-        assert_eq!(connected, second);
-        assert_eq!(
-            attempts
-                .iter()
-                .map(|(address, _)| *address)
-                .collect::<Vec<_>>(),
-            [first, second]
-        );
-        assert!(attempts
-            .iter()
-            .all(|(_, remaining)| *remaining <= std::time::Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn connector_reserves_deadline_budget_for_later_addresses() {
-        let first = "127.0.0.1:2201".parse().unwrap();
-        let second = "127.0.0.1:2202".parse().unwrap();
-        let started = std::time::Instant::now();
-        let elapsed = std::rc::Rc::new(std::cell::Cell::new(std::time::Duration::from_secs(0)));
-        let clock_elapsed = elapsed.clone();
-        let connector_elapsed = elapsed.clone();
-        let mut attempts = Vec::new();
-
-        let connected = connect_resolved_with_clock(
-            &[first, second],
-            std::time::Duration::from_secs(10),
-            move || started + clock_elapsed.get(),
-            |address, attempt_timeout| {
-                attempts.push((address, attempt_timeout));
-                if address == first {
-                    connector_elapsed.set(connector_elapsed.get() + attempt_timeout);
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "first timed out",
-                    ))
-                } else {
-                    Ok(address)
-                }
-            },
-        )
-        .unwrap();
-
-        assert_eq!(connected, second);
-        assert_eq!(
-            attempts,
-            [
-                (first, std::time::Duration::from_secs(5)),
-                (second, std::time::Duration::from_secs(5)),
-            ]
-        );
-    }
-
-    #[test]
-    fn connection_params_preserve_password_and_key_passphrase() {
-        let source = SshConnection {
-            label: "生产机".into(),
-            host: "server.example.com".into(),
-            port: 2222,
-            user: "deploy".into(),
-            auth: "password".into(),
-            key_path: "~/.ssh/id_ed25519".into(),
-            password: "passphrase-or-password".into(),
-            group: "prod".into(),
-            group_color: [1, 2, 3],
-        };
-
-        let params = ConnectionParams::from(&source);
-
-        assert_eq!(params.key_path, "~/.ssh/id_ed25519");
-        assert_eq!(params.password, "passphrase-or-password");
-        assert_eq!(params.auth, "password");
-    }
-
-    #[test]
-    fn tcp_timeouts_cover_ssh_handshake_and_auth_io() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let timeout = std::time::Duration::from_millis(321);
-
-        configure_tcp_timeouts(&stream, timeout).unwrap();
-
-        for configured in [
-            stream.read_timeout().unwrap().unwrap(),
-            stream.write_timeout().unwrap().unwrap(),
-        ] {
-            assert!(configured >= timeout);
-            assert!(configured <= timeout + std::time::Duration::from_millis(20));
-        }
-    }
-
-    struct FakeSessionTimeout(std::cell::Cell<u32>);
-
-    impl SessionTimeoutControl for FakeSessionTimeout {
-        fn timeout_ms(&self) -> u32 {
-            self.0.get()
-        }
-
-        fn set_timeout_ms(&self, timeout_ms: u32) {
-            self.0.set(timeout_ms);
-        }
-    }
-
-    #[test]
-    fn temporary_ssh_timeout_restores_previous_value_after_failure() {
-        let session = FakeSessionTimeout(std::cell::Cell::new(9_000));
-
-        let result = with_temporary_ssh_timeout(&session, 3_000, || {
-            assert_eq!(session.0.get(), 3_000);
-            Err::<(), _>("probe failed")
-        });
-
-        assert_eq!(result, Err("probe failed"));
-        assert_eq!(session.0.get(), 9_000);
-    }
-
-    #[derive(Clone, Copy)]
-    enum FakeFailure {
-        None,
-        Probe,
-        Deploy,
-        IntegratedOpen,
-    }
-
-    struct FakeBootstrap {
-        failure: FakeFailure,
-        shell: String,
-        calls: Vec<&'static str>,
-    }
-
-    impl FakeBootstrap {
-        fn bash_success() -> Self {
-            Self {
-                failure: FakeFailure::None,
-                shell: "/bin/bash".into(),
-                calls: Vec::new(),
-            }
-        }
-
-        fn failing(failure: FakeFailure) -> Self {
-            Self {
-                failure,
-                ..Self::bash_success()
-            }
-        }
-    }
-
-    fn test_session() -> CompletionSessionKey {
-        CompletionSessionKey::new_for_test(1, "abcdef12")
-    }
-
-    impl ShellBootstrap for FakeBootstrap {
-        fn probe_login_shell(&mut self) -> Result<String, String> {
-            self.calls.push("probe");
-            if matches!(self.failure, FakeFailure::Probe) {
-                Err("probe failed".into())
-            } else {
-                Ok(self.shell.clone())
-            }
-        }
-
-        fn deploy_bash_runtime(
-            &mut self,
-            session: &CompletionSessionKey,
-            bash_path: &str,
-        ) -> Result<RemoteBashRuntime, String> {
-            self.calls.push("deploy");
-            if matches!(self.failure, FakeFailure::Deploy) {
-                return Err("deploy failed".into());
-            }
-            Ok(RemoteBashRuntime {
-                session: session.clone(),
-                bash_path: bash_path.into(),
-                rc_path: "/tmp/session.bash".into(),
-                candidate_path: "/tmp/candidate".into(),
-                widget_sequence: "\x1b[777;1~".into(),
-            })
-        }
-
-        fn open_integrated_bash(&mut self, _: &RemoteBashRuntime) -> Result<(), String> {
-            self.calls.push("open_integrated");
-            if matches!(self.failure, FakeFailure::IntegratedOpen) {
-                Err("exec failed".into())
-            } else {
-                Ok(())
-            }
-        }
-
-        fn cleanup_bash_runtime(&mut self, _: &RemoteBashRuntime) {
-            self.calls.push("cleanup");
-        }
-
-        fn open_plain_shell(&mut self) -> Result<(), String> {
-            self.calls.push("open_plain");
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn bootstrap_success_uses_integrated_bash_without_plain_fallback() {
-        let mut bootstrap = FakeBootstrap::bash_success();
-
-        let runtime = bootstrap_shell(&mut bootstrap, test_session()).unwrap();
-
-        assert_eq!(runtime.unwrap().bash_path, "/bin/bash");
-        assert_eq!(bootstrap.calls, ["probe", "deploy", "open_integrated"]);
-    }
-
-    #[test]
-    fn bootstrap_failures_fall_back_and_cleanup_partial_runtime() {
-        for (failure, expected) in [
-            (FakeFailure::Probe, vec!["probe", "open_plain"]),
-            (FakeFailure::Deploy, vec!["probe", "deploy", "open_plain"]),
-            (
-                FakeFailure::IntegratedOpen,
-                vec![
-                    "probe",
-                    "deploy",
-                    "open_integrated",
-                    "cleanup",
-                    "open_plain",
-                ],
-            ),
-        ] {
-            let mut bootstrap = FakeBootstrap::failing(failure);
-
-            assert!(bootstrap_shell(&mut bootstrap, test_session())
-                .unwrap()
-                .is_none());
-            assert_eq!(bootstrap.calls, expected);
-        }
-    }
-
-    #[test]
-    fn bootstrap_rejects_unsafe_or_non_bash_shell_before_deployment() {
-        for shell in ["bash", "/bin/fish", "/bin/'bash'", "/bin/ba\nsh"] {
-            let mut bootstrap = FakeBootstrap::bash_success();
-            bootstrap.shell = shell.into();
-
-            assert!(bootstrap_shell(&mut bootstrap, test_session())
-                .unwrap()
-                .is_none());
-            assert_eq!(bootstrap.calls, ["probe", "open_plain"]);
-        }
-    }
-
-    #[test]
-    fn login_shell_probe_is_bounded_to_4096_bytes() {
-        let bytes = vec![b'x'; 5000];
-        let mut reader = std::io::Cursor::new(bytes);
-
-        let shell = read_probe_shell(&mut reader).unwrap();
-
-        assert_eq!(shell.len(), 4096);
-        assert_eq!(reader.position(), 4096);
-    }
-
-    #[test]
-    fn deployment_cleanup_targets_only_files_created_by_this_attempt() {
-        let paths = crate::bash_integration::RemoteBashPaths {
-            rc: "/tmp/session.rc".into(),
-            candidate: "/tmp/session.candidate".into(),
-        };
-
-        assert!(cleanup_targets(&paths, false, false).is_empty());
-        assert_eq!(cleanup_targets(&paths, true, false), ["/tmp/session.rc"]);
-        assert_eq!(
-            cleanup_targets(&paths, false, true),
-            ["/tmp/session.candidate"]
-        );
-        assert_eq!(
-            cleanup_targets(&paths, true, true),
-            ["/tmp/session.rc", "/tmp/session.candidate"]
-        );
-    }
-
-    #[test]
-    fn connection_params_debug_redacts_key_path_and_password() {
-        let params = ConnectionParams {
-            host: "server.example.com".into(),
-            port: 2222,
-            user: "deploy".into(),
-            auth: "key".into(),
-            key_path: "KEY_PATH_SENTINEL".into(),
-            password: "PASSWORD_SENTINEL".into(),
-        };
-
-        let debug = format!("{params:?}");
-
-        assert!(debug.contains("server.example.com"));
-        assert!(debug.contains("deploy"));
-        assert!(debug.contains("key"));
-        assert!(!debug.contains("KEY_PATH_SENTINEL"));
-        assert!(!debug.contains("PASSWORD_SENTINEL"));
-    }
-}
+#[path = "ssh/tests.rs"]
+mod tests;

@@ -1,6 +1,24 @@
+use crate::connections::{AuthMethod, ConnectionStore, HostConfig};
 use egui;
-use crate::connections::{ConnectionStore, HostConfig, AuthMethod};
 use std::collections::HashMap;
+
+const SIDEBAR_META_SIZE: f32 = 11.0;
+const SIDEBAR_BODY_SIZE: f32 = 12.0;
+const SIDEBAR_SECTION_SIZE: f32 = 12.0;
+const SIDEBAR_VALUE_SIZE: f32 = 13.0;
+const CONNECTION_ROW_HEIGHT: f32 = 22.0;
+const PROCESS_ROW_HEIGHT: f32 = 24.0;
+const DISK_ROW_HEIGHT: f32 = 22.0;
+const SIDEBAR_CARD_STROKE_WIDTH: f32 = 1.0;
+const SIDEBAR_MIN_UPTIME_COLUMN_WIDTH: f32 = 40.0;
+const PROCESS_MEMORY_COLUMN_WIDTH: f32 = 38.0;
+const PROCESS_CPU_COLUMN_WIDTH: f32 = 46.0;
+const PROCESS_COLUMN_GAP: f32 = 8.0;
+const PROCESS_MIN_COMMAND_COLUMN_WIDTH: f32 = 20.0;
+const DISK_PERCENT_COLUMN_WIDTH: f32 = 40.0;
+const DISK_CAPACITY_COLUMN_WIDTH: f32 = 80.0;
+const DISK_COLUMN_GAP: f32 = 4.0;
+const DISK_MIN_MOUNT_COLUMN_WIDTH: f32 = 32.0;
 
 #[derive(Debug, PartialEq, Eq)]
 struct MonitorSourcePresentation {
@@ -29,6 +47,7 @@ impl MonitorDot {
 #[derive(Debug)]
 struct MonitorViewState {
     selected_iface: Option<String>,
+    interface_selection_manual: bool,
     process_tab: u8,
     net_rx_history: Vec<f64>,
     net_tx_history: Vec<f64>,
@@ -39,6 +58,7 @@ impl Default for MonitorViewState {
     fn default() -> Self {
         Self {
             selected_iface: None,
+            interface_selection_manual: false,
             process_tab: 1,
             net_rx_history: Vec::new(),
             net_tx_history: Vec::new(),
@@ -48,7 +68,36 @@ impl Default for MonitorViewState {
 }
 
 fn safe_monitor_text(value: &str, max_chars: usize) -> String {
-    value.chars().filter(|character| !character.is_control()).take(max_chars).collect()
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect()
+}
+
+fn automatic_network_interface(mon: &crate::monitor::MonitorData) -> Option<String> {
+    mon.preferred_net_interface
+        .as_ref()
+        .filter(|preferred| {
+            mon.net_interfaces
+                .iter()
+                .any(|interface| interface.name == **preferred)
+        })
+        .cloned()
+        .or_else(|| {
+            mon.net_interfaces
+                .iter()
+                .find(|interface| {
+                    !interface.name.starts_with("br-")
+                        && !interface.name.starts_with("docker")
+                        && !interface.name.starts_with("veth")
+                        && !interface.name.starts_with("virbr")
+                        && !interface.name.starts_with("tun")
+                        && !interface.name.starts_with("tap")
+                })
+                .or_else(|| mon.net_interfaces.first())
+                .map(|interface| interface.name.clone())
+        })
 }
 
 fn monitor_source_presentation(
@@ -57,9 +106,7 @@ fn monitor_source_presentation(
     error: Option<&str>,
 ) -> MonitorSourcePresentation {
     let (dot, title, detail) = match key {
-        crate::monitor::MonitorKey::Local => {
-            (MonitorDot::Local, "本机".into(), String::new())
-        }
+        crate::monitor::MonitorKey::Local => (MonitorDot::Local, "本机".into(), String::new()),
         crate::monitor::MonitorKey::Remote { .. } => (
             MonitorDot::Remote,
             "已连接".into(),
@@ -76,14 +123,8 @@ fn monitor_source_presentation(
     let message = match (snapshot, safe_error.as_deref()) {
         (None, Some(error)) if !error.is_empty() => format!("采集失败：{error}"),
         (None, _) => "正在采集".into(),
-        (Some(data), _) => {
-            let cpu = if data.cpu_percent.is_finite() {
-                format!("{:.0}%", data.cpu_percent)
-            } else {
-                "--".into()
-            };
-            format!("CPU {cpu} · {}", safe_monitor_text(&data.memory_text, 48))
-        }
+        // CPU 和内存已经在下方资源卡片中完整展示，这里不再重复占用一行。
+        (Some(_), _) => String::new(),
     };
     let warning = (snapshot.is_some() && error.is_some()).then(|| "监控暂时中断".into());
     MonitorSourcePresentation {
@@ -93,6 +134,445 @@ fn monitor_source_presentation(
         message,
         warning,
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SidebarMonitorCardGeometry {
+    card_content_width: f32,
+    uptime_content_width: f32,
+    uptime_inner_margin: f32,
+    stroke_width: f32,
+    can_render: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProcessRowColumns {
+    memory_width: f32,
+    cpu_width: f32,
+    command_width: f32,
+    gap_width: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DiskRowColumns {
+    mount_width: f32,
+    percent_width: f32,
+    capacity_width: f32,
+    gap_width: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DiskRowRects {
+    mount: egui::Rect,
+    percent: egui::Rect,
+    capacity: egui::Rect,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DiskRowColors {
+    mount: egui::Color32,
+    percent: egui::Color32,
+    capacity: egui::Color32,
+}
+
+fn sidebar_card_inner_width(card_width: f32, margin: f32) -> f32 {
+    (card_width - margin * 2.0).max(0.0)
+}
+
+fn sidebar_monitor_outer_width_and_stroke(panel_width: f32, available_width: f32) -> (f32, f32) {
+    let panel_width = if panel_width.is_finite() {
+        panel_width.max(0.0)
+    } else {
+        0.0
+    };
+    let available_width = if available_width.is_finite() {
+        available_width.max(0.0)
+    } else {
+        0.0
+    };
+    let outer_width = panel_width.min(available_width);
+    let stroke_width = SIDEBAR_CARD_STROKE_WIDTH.min(outer_width / 2.0);
+    (outer_width, stroke_width)
+}
+
+fn sidebar_monitor_card_width(panel_width: f32, available_width: f32) -> f32 {
+    let (outer_width, stroke_width) =
+        sidebar_monitor_outer_width_and_stroke(panel_width, available_width);
+    (outer_width - stroke_width * 2.0).max(0.0)
+}
+
+fn sidebar_uptime_column_width(card_width: f32) -> f32 {
+    sidebar_card_inner_width(card_width, 8.0) / 2.0
+}
+
+fn sidebar_cpu_text_width(card_width: f32) -> f32 {
+    sidebar_card_inner_width(card_width, 8.0)
+}
+
+fn sidebar_monitor_card_geometry(
+    panel_width: f32,
+    available_width: f32,
+) -> SidebarMonitorCardGeometry {
+    let (_, stroke_width) = sidebar_monitor_outer_width_and_stroke(panel_width, available_width);
+    let card_content_width = sidebar_monitor_card_width(panel_width, available_width);
+    let uptime_content_width = sidebar_cpu_text_width(card_content_width);
+    let uptime_inner_margin = (card_content_width - uptime_content_width) / 2.0;
+    let can_render =
+        sidebar_uptime_column_width(card_content_width) >= SIDEBAR_MIN_UPTIME_COLUMN_WIDTH;
+
+    SidebarMonitorCardGeometry {
+        card_content_width,
+        uptime_content_width,
+        uptime_inner_margin,
+        stroke_width,
+        can_render,
+    }
+}
+
+fn show_sidebar_monitor_card<R>(
+    ui: &mut egui::Ui,
+    geometry: SidebarMonitorCardGeometry,
+    fill: egui::Color32,
+    border: egui::Color32,
+    inner_margin: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<egui::InnerResponse<R>> {
+    if !geometry.can_render {
+        return None;
+    }
+
+    let frame = egui::Frame::new()
+        .fill(fill)
+        .corner_radius(6.0)
+        .stroke(egui::Stroke::new(geometry.stroke_width, border))
+        .inner_margin(inner_margin);
+    let total_margin = frame.total_margin();
+    let outer_width = geometry.card_content_width + geometry.stroke_width * 2.0;
+    let content_width = (outer_width - total_margin.left - total_margin.right).max(0.0);
+    let outer_bounds = ui.available_rect_before_wrap();
+    let content_min = outer_bounds.min + total_margin.left_top();
+    let content_max = egui::pos2(
+        content_min.x + content_width,
+        (outer_bounds.bottom() - total_margin.bottom).max(content_min.y),
+    );
+    let mut content_ui = ui.new_child(
+        egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(content_min, content_max)),
+    );
+    let horizontal_clip = egui::Rect::from_min_max(
+        egui::pos2(content_min.x, ui.clip_rect().top()),
+        egui::pos2(content_max.x, ui.clip_rect().bottom()),
+    );
+    content_ui.set_clip_rect(ui.clip_rect().intersect(horizontal_clip));
+    content_ui.set_width(content_width);
+
+    let background = ui.painter().add(egui::Shape::Noop);
+    let inner = add_contents(&mut content_ui);
+    let content_height = (content_ui.min_rect().bottom() - content_min.y).max(0.0);
+    let content_rect =
+        egui::Rect::from_min_size(content_min, egui::vec2(content_width, content_height));
+    let outer_rect = frame.outer_rect(content_rect);
+    ui.painter().set(background, frame.paint(content_rect));
+    // The child UI background is registered before its widgets, so it stays behind clickable
+    // process/network rows. Allocating another hover response here would register it last and
+    // intercept pointer hits across the whole card.
+    let response = content_ui.response().with_new_rect(outer_rect);
+    drop(content_ui);
+    ui.advance_cursor_after_rect(outer_rect);
+
+    Some(egui::InnerResponse::new(inner, response))
+}
+
+fn process_row_size(width: f32) -> egui::Vec2 {
+    let width = if width.is_finite() && width > 0.0 {
+        width
+    } else {
+        0.0
+    };
+    egui::vec2(width, PROCESS_ROW_HEIGHT)
+}
+
+/// Split an already horizontally-padded process-row content width into columns.
+fn process_row_columns(content_width: f32) -> ProcessRowColumns {
+    let content_width = if content_width.is_finite() {
+        content_width.max(0.0)
+    } else {
+        0.0
+    };
+    let command_reserve = content_width.min(PROCESS_MIN_COMMAND_COLUMN_WIDTH);
+    let fixed_width =
+        PROCESS_MEMORY_COLUMN_WIDTH + PROCESS_CPU_COLUMN_WIDTH + PROCESS_COLUMN_GAP * 2.0;
+    let fixed_scale = ((content_width - command_reserve) / fixed_width).clamp(0.0, 1.0);
+    let memory_width = PROCESS_MEMORY_COLUMN_WIDTH * fixed_scale;
+    let cpu_width = PROCESS_CPU_COLUMN_WIDTH * fixed_scale;
+    let gap_width = PROCESS_COLUMN_GAP * fixed_scale;
+    let preceding_width = memory_width + cpu_width + gap_width * 2.0;
+    let mut command_width = (content_width - preceding_width).max(0.0);
+    while memory_width + cpu_width + command_width + gap_width * 2.0 > content_width
+        && command_width > 0.0
+    {
+        command_width = command_width.next_down().max(0.0);
+    }
+
+    ProcessRowColumns {
+        memory_width,
+        cpu_width,
+        command_width,
+        gap_width,
+    }
+}
+
+/// Split an already horizontally-padded disk-row content width into columns.
+fn disk_row_columns(content_width: f32) -> DiskRowColumns {
+    let content_width = if content_width.is_finite() {
+        content_width.max(0.0)
+    } else {
+        0.0
+    };
+    let mount_reserve = content_width.min(DISK_MIN_MOUNT_COLUMN_WIDTH);
+    let fixed_width =
+        DISK_PERCENT_COLUMN_WIDTH + DISK_CAPACITY_COLUMN_WIDTH + DISK_COLUMN_GAP * 2.0;
+    let fixed_scale = ((content_width - mount_reserve) / fixed_width).clamp(0.0, 1.0);
+    let percent_width = DISK_PERCENT_COLUMN_WIDTH * fixed_scale;
+    let capacity_width = DISK_CAPACITY_COLUMN_WIDTH * fixed_scale;
+    let gap_width = DISK_COLUMN_GAP * fixed_scale;
+    let preceding_width = percent_width + capacity_width + gap_width * 2.0;
+    let mut mount_width = (content_width - preceding_width).max(0.0);
+    while mount_width + percent_width + capacity_width + gap_width * 2.0 > content_width
+        && mount_width > 0.0
+    {
+        mount_width = mount_width.next_down().max(0.0);
+    }
+
+    DiskRowColumns {
+        mount_width,
+        percent_width,
+        capacity_width,
+        gap_width,
+    }
+}
+
+fn disk_row_rects(row_rect: egui::Rect) -> DiskRowRects {
+    let horizontal_inset = 8.0_f32.min(row_rect.width().max(0.0) / 2.0);
+    let content_rect = row_rect.shrink2(egui::vec2(horizontal_inset, 0.0));
+    let columns = disk_row_columns(content_rect.width());
+    let content_right = content_rect.right();
+
+    let mount_left = content_rect.left().min(content_right);
+    let mount_right = (mount_left + columns.mount_width)
+        .min(content_right)
+        .max(mount_left);
+    let percent_left = (mount_right + columns.gap_width).min(content_right);
+    let percent_right = (percent_left + columns.percent_width)
+        .min(content_right)
+        .max(percent_left);
+    let capacity_left = (percent_right + columns.gap_width).min(content_right);
+    let capacity_right = (capacity_left + columns.capacity_width)
+        .min(content_right)
+        .max(capacity_left);
+
+    DiskRowRects {
+        mount: egui::Rect::from_min_max(
+            egui::pos2(mount_left, content_rect.top()),
+            egui::pos2(mount_right, content_rect.bottom()),
+        ),
+        percent: egui::Rect::from_min_max(
+            egui::pos2(percent_left, content_rect.top()),
+            egui::pos2(percent_right, content_rect.bottom()),
+        ),
+        capacity: egui::Rect::from_min_max(
+            egui::pos2(capacity_left, content_rect.top()),
+            egui::pos2(capacity_right, content_rect.bottom()),
+        ),
+    }
+}
+
+fn disk_mount_label(text: &str, color: egui::Color32) -> egui::Label {
+    egui::Label::new(
+        egui::RichText::new(text)
+            .size(SIDEBAR_BODY_SIZE)
+            .color(color),
+    )
+    .truncate()
+    .halign(egui::Align::Min)
+}
+
+fn render_disk_row_content(
+    ui: &mut egui::Ui,
+    row_rect: egui::Rect,
+    mount_text: &str,
+    percent_text: &str,
+    capacity_text: &str,
+    colors: DiskRowColors,
+) {
+    let rects = disk_row_rects(row_rect);
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt((
+                "disk_row_content",
+                row_rect.min.x.to_bits(),
+                row_rect.min.y.to_bits(),
+            ))
+            .max_rect(row_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    row_ui.set_clip_rect(row_ui.clip_rect().intersect(row_rect));
+
+    if rects.mount.width() > 0.0 {
+        let mut mount_ui = row_ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("disk_mount")
+                .max_rect(rects.mount)
+                .layout(egui::Layout::top_down_justified(egui::Align::Min)),
+        );
+        mount_ui.set_clip_rect(row_ui.clip_rect().intersect(rects.mount));
+        mount_ui.add(disk_mount_label(mount_text, colors.mount));
+    }
+    if rects.percent.width() > 0.0 {
+        row_ui.put(
+            rects.percent,
+            egui::Label::new(
+                egui::RichText::new(percent_text)
+                    .size(SIDEBAR_BODY_SIZE)
+                    .color(colors.percent),
+            )
+            .truncate()
+            .halign(egui::Align::Max),
+        );
+    }
+    if rects.capacity.width() > 0.0 {
+        row_ui.put(
+            rects.capacity,
+            egui::Label::new(
+                egui::RichText::new(capacity_text)
+                    .size(SIDEBAR_BODY_SIZE)
+                    .color(colors.capacity),
+            )
+            .truncate()
+            .halign(egui::Align::Max),
+        );
+    }
+}
+
+fn render_process_row_content(
+    ui: &mut egui::Ui,
+    row_rect: egui::Rect,
+    memory_text: &str,
+    cpu: f32,
+    command_text: &str,
+    memory_color: egui::Color32,
+) {
+    let horizontal_inset = 8.0_f32.min(row_rect.width().max(0.0) / 2.0);
+    let content_rect = row_rect.shrink2(egui::vec2(horizontal_inset, 0.0));
+    let columns = process_row_columns(content_rect.width());
+    let content_right = content_rect.right();
+    let memory_left = content_rect.left().min(content_right);
+    let memory_right = (memory_left + columns.memory_width)
+        .min(content_right)
+        .max(memory_left);
+    let memory_rect = egui::Rect::from_min_max(
+        egui::pos2(memory_left, content_rect.top()),
+        egui::pos2(memory_right, content_rect.bottom()),
+    );
+    let cpu_left = (memory_right + columns.gap_width).min(content_right);
+    let cpu_right = (cpu_left + columns.cpu_width)
+        .min(content_right)
+        .max(cpu_left);
+    let cpu_height = 14.0_f32.min(content_rect.height().max(0.0));
+    let cpu_top = content_rect.center().y - cpu_height / 2.0;
+    let cpu_rect = egui::Rect::from_min_max(
+        egui::pos2(cpu_left, cpu_top),
+        egui::pos2(cpu_right, cpu_top + cpu_height),
+    );
+    let command_left = (cpu_right + columns.gap_width).min(content_right);
+    let command_right = (command_left + columns.command_width)
+        .min(content_right)
+        .max(command_left);
+    let command_rect = egui::Rect::from_min_max(
+        egui::pos2(command_left, content_rect.top()),
+        egui::pos2(command_right, content_rect.bottom()),
+    );
+
+    // Paint row contents without child widgets. Labels registered above the row response would
+    // otherwise win hit-testing and make only the painted CPU badge clickable.
+    if columns.memory_width > 0.0 {
+        ui.painter().with_clip_rect(memory_rect).text(
+            memory_rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            memory_text,
+            egui::FontId::proportional(SIDEBAR_BODY_SIZE),
+            memory_color,
+        );
+    }
+
+    if columns.cpu_width > 0.0 && cpu_rect.height() > 0.0 {
+        let cpu_bg = egui::Color32::from_rgb(0x21, 0x26, 0x2d);
+        let cpu_fill = if cpu > 80.0 {
+            egui::Color32::from_rgba_unmultiplied(0xf8, 0x51, 0x49, 0x66)
+        } else if cpu > 50.0 {
+            egui::Color32::from_rgba_unmultiplied(0xd2, 0x99, 0x22, 0x66)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(0x3f, 0xb9, 0x50, 0x59)
+        };
+        let cpu_painter = ui.painter().with_clip_rect(cpu_rect);
+        cpu_painter.rect_filled(cpu_rect, 3.0, cpu_bg);
+        let fill_width = (cpu_rect.width() * (cpu / 100.0).min(1.0)).max(0.0);
+        cpu_painter.rect_filled(
+            egui::Rect::from_min_size(cpu_rect.min, egui::vec2(fill_width, cpu_rect.height())),
+            3.0,
+            cpu_fill,
+        );
+        cpu_painter.text(
+            cpu_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("{:.1}%", cpu),
+            egui::FontId::proportional(SIDEBAR_BODY_SIZE),
+            egui::Color32::from_rgb(0xe6, 0xed, 0xf3),
+        );
+    }
+
+    if columns.command_width > 0.0 {
+        ui.painter().with_clip_rect(command_rect).text(
+            command_rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            command_text,
+            egui::FontId::proportional(SIDEBAR_BODY_SIZE),
+            egui::Color32::from_rgb(0xc9, 0xd1, 0xd9),
+        );
+    }
+}
+
+fn network_line_points(data: &[f64], rect: egui::Rect, max_value: f64) -> Vec<egui::Pos2> {
+    if data.len() < 2 {
+        return Vec::new();
+    }
+
+    let width = rect.width();
+    let height = rect.height();
+    if !rect.left().is_finite()
+        || !rect.right().is_finite()
+        || !rect.top().is_finite()
+        || !rect.bottom().is_finite()
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+        || !max_value.is_finite()
+        || data.iter().any(|value| !value.is_finite())
+    {
+        return Vec::new();
+    }
+
+    let max_value = max_value.max(1.0);
+    let drawable_height = (height - 4.0).max(0.0);
+    data.iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let x = rect.left() + index as f32 / (data.len() - 1) as f32 * width;
+            let value = value.clamp(0.0, max_value);
+            let y = rect.bottom() - (value / max_value) as f32 * drawable_height;
+            egui::pos2(x, y)
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -133,17 +613,17 @@ struct SshKeyInfo {
 }
 
 /// New connection form state
-struct NewConnForm {
-    label: String,
-    host: String,
-    port: String,
-    user: String,
-    auth_idx: usize, // 0=密钥, 1=密码
-    key_path: String,
-    password: String,
-    group: String,
-    new_group: String,
-    status: String,
+pub struct NewConnForm {
+    pub label: String,
+    pub host: String,
+    pub port: String,
+    pub user: String,
+    pub auth_idx: usize, // 0=密钥, 1=密码
+    pub key_path: String,
+    pub password: String,
+    pub group: String,
+    pub new_group: String,
+    pub status: String,
 }
 
 impl Default for NewConnForm {
@@ -170,24 +650,58 @@ pub struct Sidebar {
     pub selected: Option<usize>,
     pub on_connect: Option<SshConnection>,
     pub connections_visible: bool,
+    // 连接右键菜单
+    pub conn_context_menu: Option<(usize, egui::Pos2)>,
     collapsed_groups: std::collections::HashSet<String>,
     // Dialog visibility
-    show_new_connection: bool,
-    show_key_manager: bool,
-    show_export: bool,
-    show_import: bool,
+    pub show_new_connection: bool,
+    pub show_key_manager: bool,
     // New connection form
-    new_conn: NewConnForm,
+    pub new_conn: NewConnForm,
     // SSH key manager
     ssh_keys: Vec<SshKeyInfo>,
     ssh_keys_loaded: bool,
     keygen_type: String,
     keygen_comment: String,
     keygen_status: String,
-    // Import/export
-    io_path: String,
-    io_status: String,
+    // 每个监控身份独立保留网卡选择、进程排序和折线历史
     monitor_views: HashMap<crate::monitor::MonitorKey, MonitorViewState>,
+    open_process_manager: Option<OpenProcessManagerAction>,
+    open_network_detail: Option<OpenNetworkDetailAction>,
+    // SSH 密码重试弹窗
+    pub password_prompt: Option<SshConnection>,
+    pub password_input: String,
+    pub password_error: String,
+    pub password_connect: Option<SshConnection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenProcessManagerAction {
+    pub key: crate::monitor::MonitorKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenNetworkDetailAction {
+    pub key: crate::monitor::MonitorKey,
+    pub initial_iface: Option<String>,
+}
+
+fn process_manager_open_action(
+    key: &crate::monitor::MonitorKey,
+) -> Option<OpenProcessManagerAction> {
+    Some(OpenProcessManagerAction { key: key.clone() })
+}
+
+fn format_speed(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1}G", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1}M", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.0}K", bytes as f64 / 1024.0)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 fn parse_hex_color(s: &str) -> [u8; 3] {
@@ -212,20 +726,23 @@ impl Sidebar {
             selected: None,
             on_connect: None,
             connections_visible: true,
+            conn_context_menu: None,
             collapsed_groups: std::collections::HashSet::new(),
             show_new_connection: false,
             show_key_manager: false,
-            show_export: false,
-            show_import: false,
             new_conn: NewConnForm::default(),
             ssh_keys: Vec::new(),
             ssh_keys_loaded: false,
             keygen_type: "ed25519".to_string(),
             keygen_comment: String::new(),
             keygen_status: String::new(),
-            io_path: String::new(),
-            io_status: String::new(),
             monitor_views: HashMap::new(),
+            open_process_manager: None,
+            open_network_detail: None,
+            password_prompt: None,
+            password_input: String::new(),
+            password_error: String::new(),
+            password_connect: None,
         }
     }
 
@@ -242,9 +759,9 @@ impl Sidebar {
                     user: host.user.clone(),
                     auth: host.auth.to_string(),
                     key_path: host.key_path.clone(),
-                    password: String::new(),
                     group: group.label.clone(),
                     group_color: color,
+                    password: String::new(),
                 });
             }
         }
@@ -259,51 +776,51 @@ impl Sidebar {
         self.on_connect.take()
     }
 
+    pub fn take_open_process_manager(&mut self) -> Option<OpenProcessManagerAction> {
+        self.open_process_manager.take()
+    }
+
+    pub fn take_open_network_detail(&mut self) -> Option<OpenNetworkDetailAction> {
+        self.open_network_detail.take()
+    }
+
+    /// 监控数据更新时采样网速（每 2s 一次），不要在每帧 render 里 push。
     pub fn on_monitor_update(
         &mut self,
         key: &crate::monitor::MonitorKey,
-        monitor: &crate::monitor::MonitorData,
+        mon: &crate::monitor::MonitorData,
     ) {
-        if monitor.net_interfaces.is_empty() {
+        if mon.net_interfaces.is_empty() {
             return;
         }
         let view = self.monitor_views.entry(key.clone()).or_default();
-        let selected = view
-            .selected_iface
-            .as_ref()
-            .filter(|selected| {
-                monitor
-                    .net_interfaces
-                    .iter()
-                    .any(|interface| interface.name == **selected)
-            })
-            .cloned()
-            .unwrap_or_else(|| {
-                monitor
-                    .net_interfaces
-                    .iter()
-                    .find(|interface| {
-                        !interface.name.starts_with("br-")
-                            && !interface.name.starts_with("docker")
-                            && !interface.name.starts_with("veth")
-                    })
-                    .unwrap_or(&monitor.net_interfaces[0])
-                    .name
-                    .clone()
-            });
-        if view.selected_iface.as_ref() != Some(&selected) {
-            view.selected_iface = Some(selected.clone());
+        let selected_exists = view.selected_iface.as_ref().is_some_and(|selected| {
+            mon.net_interfaces
+                .iter()
+                .any(|interface| interface.name == *selected)
+        });
+        if !selected_exists {
+            view.interface_selection_manual = false;
         }
-        if view.last_chart_iface.as_ref() != Some(&selected) {
+        let sel = if view.interface_selection_manual && selected_exists {
+            view.selected_iface.clone()
+        } else {
+            automatic_network_interface(mon)
+        }
+        .unwrap_or_else(|| mon.net_interfaces[0].name.clone());
+        if view.selected_iface.as_ref() != Some(&sel) {
+            view.selected_iface = Some(sel.clone());
+        }
+        if view.last_chart_iface.as_ref() != Some(&sel) {
             view.net_rx_history.clear();
             view.net_tx_history.clear();
-            view.last_chart_iface = Some(selected.clone());
+            view.last_chart_iface = Some(sel.clone());
         }
-        let (tx_rate, rx_rate) = monitor
+        let (tx_rate, rx_rate) = mon
             .net_interfaces
             .iter()
-            .find(|interface| interface.name == selected)
-            .map(|interface| (interface.tx_rate, interface.rx_rate))
+            .find(|n| n.name == sel)
+            .map(|d| (d.tx_rate, d.rx_rate))
             .unwrap_or((0, 0));
         view.net_tx_history.push(tx_rate as f64);
         view.net_rx_history.push(rx_rate as f64);
@@ -356,730 +873,17 @@ impl Sidebar {
     }
 
     #[cfg(test)]
-    pub(crate) fn has_monitor_view_for_test(
-        &self,
-        key: &crate::monitor::MonitorKey,
-    ) -> bool {
+    pub(crate) fn has_monitor_view_for_test(&self, key: &crate::monitor::MonitorKey) -> bool {
         self.monitor_views.contains_key(key)
-    }
-
-    pub fn ui_with_monitor(
-        &mut self,
-        ctx: &egui::Context,
-        active_key: &crate::monitor::MonitorKey,
-        snapshot: Option<&crate::monitor::MonitorData>,
-        error: Option<&str>,
-    ) -> f32 {
-        if !self.visible { return 0.0; }
-        let panel_width = self.width;
-        self.monitor_views.entry(active_key.clone()).or_default();
-        let presentation = monitor_source_presentation(active_key, snapshot, error);
-
-        egui::SidePanel::left("sidebar")
-            .exact_width(panel_width)
-            .resizable(false)
-            .frame(egui::Frame::new()
-                .fill(egui::Color32::from_rgb(0x0d, 0x11, 0x17))
-                .inner_margin(egui::Margin::same(0)))
-            .show(ctx, |ui| {
-                ui.style_mut().visuals.override_text_color = Some(egui::Color32::from_rgb(0x8b, 0x94, 0x9e));
-
-                // Header + toolbar
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(6.0);
-                    let arrow = if self.connections_visible { "▼" } else { "▶" };
-                    let toggle = ui.add(egui::Button::new(
-                        egui::RichText::new(format!("{} 连接管理", arrow))
-                            .size(11.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e))
-                    ).frame(false));
-                    if toggle.clicked() { self.connections_visible = !self.connections_visible; }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let normal = egui::Color32::from_rgb(0x8b, 0x94, 0x9e);
-                        let cyan = egui::Color32::from_rgb(0x00, 0xd4, 0xff);
-
-                        let r1 = ui.add(egui::Button::new(egui::RichText::new("+").size(14.0).color(cyan)).frame(false).min_size(egui::vec2(20.0, 18.0)));
-                        r1.clone().on_hover_text("新建连接");
-                        if r1.clicked() { self.show_new_connection = true; self.new_conn = NewConnForm::default(); }
-
-                        let r2 = ui.add(egui::Button::new(egui::RichText::new("⚿").size(13.0).color(normal)).frame(false).min_size(egui::vec2(20.0, 18.0)));
-                        r2.clone().on_hover_text("SSH 密钥管理");
-                        if r2.clicked() { self.show_key_manager = true; self.ssh_keys_loaded = false; }
-
-                        let r3 = ui.add(egui::Button::new(egui::RichText::new("⬆").size(12.0).color(normal)).frame(false).min_size(egui::vec2(20.0, 18.0)));
-                        r3.clone().on_hover_text("导出配置");
-                        if r3.clicked() { self.show_export = true; self.io_path.clear(); self.io_status.clear(); }
-
-                        let r4 = ui.add(egui::Button::new(egui::RichText::new("⬇").size(12.0).color(normal)).frame(false).min_size(egui::vec2(20.0, 18.0)));
-                        r4.clone().on_hover_text("导入配置");
-                        if r4.clicked() { self.show_import = true; self.io_path.clear(); self.io_status.clear(); }
-                    });
-                });
-                ui.add_space(2.0);
-                ui.separator();
-
-                if self.connections_visible {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let mut current_group = String::new();
-                        for (i, conn) in self.connections.iter().enumerate() {
-                            if conn.group != current_group {
-                                current_group = conn.group.clone();
-                                let is_collapsed = self.collapsed_groups.contains(&current_group);
-                                ui.add_space(6.0);
-                                let gr = ui.horizontal(|ui| {
-                                    ui.add_space(8.0);
-                                    let arrow = if is_collapsed { "▶" } else { "▼" };
-                                    ui.label(egui::RichText::new(arrow).size(8.0).color(egui::Color32::from_rgb(0x48, 0x4f, 0x58)));
-                                    let dot = egui::Color32::from_rgb(conn.group_color[0], conn.group_color[1], conn.group_color[2]);
-                                    let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                                    ui.painter().circle_filled(r.center(), 4.0, dot);
-                                    ui.label(egui::RichText::new(&current_group).size(10.0).color(egui::Color32::from_rgb(0x48, 0x4f, 0x58)))
-                                });
-                                if gr.inner.clicked() {
-                                    if is_collapsed { self.collapsed_groups.remove(&current_group); }
-                                    else { self.collapsed_groups.insert(current_group.clone()); }
-                                }
-                                ui.add_space(2.0);
-                                if is_collapsed { continue; }
-                            }
-                            if self.collapsed_groups.contains(&conn.group) { continue; }
-
-                            let is_selected = self.selected == Some(i);
-                            let resp = ui.horizontal(|ui| {
-                                ui.add_space(16.0);
-                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(panel_width - 20.0, 18.0), egui::Sense::click());
-                                if is_selected || resp.hovered() {
-                                    let bg = if is_selected { egui::Color32::from_rgb(0x1c, 0x20, 0x28) }
-                                    else { egui::Color32::from_rgba_unmultiplied(0x30, 0x36, 0x3d, 0x60) };
-                                    ui.painter().rect_filled(rect, 3.0, bg);
-                                }
-                                let tr = rect.shrink2(egui::vec2(4.0, 0.0));
-                                let g = ui.painter().layout(conn.label.clone(), egui::FontId::proportional(11.0), egui::Color32::from_rgb(0xc9, 0xd1, 0xd9), tr.width());
-                                ui.painter().galley(tr.left_center() - egui::vec2(0.0, g.size().y / 2.0), g, egui::Color32::from_rgb(0xc9, 0xd1, 0xd9));
-                                resp
-                            });
-                            if resp.inner.clicked() {
-                                self.selected = Some(i);
-                                self.on_connect = Some(conn.clone());
-                            }
-                        }
-                        ui.add_space(4.0);
-                    });
-                }
-
-                // Bottom: 当前标签监控来源
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.add_space(12.0);
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().circle_filled(r.center(), 4.0, presentation.dot.color());
-                        ui.label(egui::RichText::new(&presentation.title).size(11.0).color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)));
-                        if !presentation.detail.is_empty() {
-                            ui.label(egui::RichText::new(&presentation.detail).size(10.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)));
-                        }
-                    });
-                    if let Some(warning) = &presentation.warning {
-                        ui.label(egui::RichText::new(warning).size(10.0).color(egui::Color32::from_rgb(0xd2, 0x99, 0x22)));
-                    }
-                    ui.label(egui::RichText::new(&presentation.message).size(10.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)));
-                });
-            });
-
-        self.render_dialogs(ctx);
-        panel_width
-    }
-
-    fn render_dialogs(&mut self, ctx: &egui::Context) {
-        self.dialog_new_connection(ctx);
-        self.dialog_key_manager(ctx);
-        self.dialog_export(ctx);
-        self.dialog_import(ctx);
-    }
-
-    // ── 新建连接 ──
-    fn dialog_new_connection(&mut self, ctx: &egui::Context) {
-        if !self.show_new_connection { return; }
-        let mut open = true;
-        let mut save_and_connect = false;
-        let mut save_only = false;
-
-        egui::Window::new("新建 SSH 连接")
-
-            .resizable(false)
-            .default_width(380.0)
-            .show(ctx, |ui| {
-                let label_w = 60.0;
-                ui.add_space(4.0);
-
-                egui::Grid::new("new_conn_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label("标签:");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_conn.label).desired_width(260.0));
-                    ui.end_row();
-
-                    ui.label("主机:");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_conn.host).desired_width(260.0).hint_text("192.168.1.1"));
-                    ui.end_row();
-
-                    ui.label("端口:");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_conn.port).desired_width(80.0));
-                    ui.end_row();
-
-                    ui.label("用户名:");
-                    ui.add(egui::TextEdit::singleline(&mut self.new_conn.user).desired_width(260.0));
-                    ui.end_row();
-
-                    ui.label("认证:");
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.new_conn.auth_idx, 0, "密钥");
-                        ui.selectable_value(&mut self.new_conn.auth_idx, 1, "密码");
-                    });
-                    ui.end_row();
-
-                    if self.new_conn.auth_idx == 0 {
-                        ui.label("密钥路径:");
-                        ui.add(egui::TextEdit::singleline(&mut self.new_conn.key_path).desired_width(260.0));
-                        ui.end_row();
-                    } else {
-                        ui.label("密码:");
-                        ui.add(egui::TextEdit::singleline(&mut self.new_conn.password).password(true).desired_width(260.0));
-                        ui.end_row();
-                    }
-
-                    ui.label("分组:");
-                    let store = ConnectionStore::load();
-                    let groups: Vec<String> = store.groups.keys().cloned().collect();
-                    egui::ComboBox::from_id_salt("group_combo")
-                        .selected_text(&self.new_conn.group)
-                        .show_ui(ui, |ui| {
-                            for g in &groups {
-                                ui.selectable_value(&mut self.new_conn.group, g.clone(), g);
-                            }
-                            ui.selectable_value(&mut self.new_conn.group, "__new__".to_string(), "+ 新建分组");
-                        });
-                    ui.end_row();
-
-                    if self.new_conn.group == "__new__" {
-                        ui.label("新分组名:");
-                        ui.add(egui::TextEdit::singleline(&mut self.new_conn.new_group).desired_width(260.0));
-                        ui.end_row();
-                    }
-                });
-
-                if !self.new_conn.status.is_empty() {
-                    ui.add_space(4.0);
-                    ui.colored_label(egui::Color32::from_rgb(0xf8, 0x51, 0x49), &self.new_conn.status);
-                }
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("连接并保存").clicked() { save_and_connect = true; }
-                    if ui.button("仅保存").clicked() { save_only = true; }
-                    if ui.button("取消").clicked() { open = false; }
-                });
-            });
-
-        if save_and_connect || save_only {
-            if let Err(e) = self.do_save_connection() {
-                self.new_conn.status = e;
-            } else {
-                self.reload();
-                if save_and_connect {
-                    // Trigger connection
-                    let port = self.new_conn.port.parse().unwrap_or(22);
-                    let auth = if self.new_conn.auth_idx == 0 { "key" } else { "password" };
-                    self.on_connect = Some(SshConnection {
-                        label: self.new_conn.label.clone(),
-                        host: self.new_conn.host.clone(),
-                        port,
-                        user: self.new_conn.user.clone(),
-                        auth: auth.to_string(),
-                        key_path: self.new_conn.key_path.clone(),
-                        password: self.new_conn.password.clone(),
-                        group: self.new_conn.group.clone(),
-                        group_color: [0x58, 0xa6, 0xff],
-                    });
-                }
-                open = false;
-            }
-        }
-        if !open { self.show_new_connection = false; }
-    }
-
-    fn do_save_connection(&self) -> Result<(), String> {
-        let f = &self.new_conn;
-        if f.host.is_empty() { return Err("主机不能为空".into()); }
-        let port: u16 = f.port.parse().map_err(|_| "端口格式无效")?;
-        let label = if f.label.is_empty() { f.host.clone() } else { f.label.clone() };
-        let group_id = if f.group == "__new__" {
-            if f.new_group.is_empty() { return Err("分组名不能为空".into()); }
-            f.new_group.clone()
-        } else {
-            f.group.clone()
-        };
-
-        let auth = if f.auth_idx == 0 { AuthMethod::Key } else { AuthMethod::Password };
-        let host_id = format!("{}:{}", f.host, port);
-
-        let mut store = ConnectionStore::load();
-        if !store.groups.contains_key(&group_id) {
-            store.add_group(&group_id, &group_id, "#58a6ff");
-        }
-        store.add_host(&group_id, &host_id, HostConfig {
-            label,
-            host: f.host.clone(),
-            port,
-            user: f.user.clone(),
-            auth,
-            key_path: f.key_path.clone(),
-            charset: "UTF-8".to_string(),
-            proxy_jump: String::new(),
-        });
-        store.save()
-    }
-
-    // ── SSH 密钥管理 ──
-    fn dialog_key_manager(&mut self, ctx: &egui::Context) {
-        if !self.show_key_manager { return; }
-
-        // Load keys on first show
-        if !self.ssh_keys_loaded {
-            self.ssh_keys = list_ssh_keys();
-            self.ssh_keys_loaded = true;
-            self.keygen_status.clear();
-        }
-
-        let mut open = true;
-        egui::Window::new("SSH 密钥管理")
-
-            .resizable(true)
-            .default_width(500.0)
-            .default_height(400.0)
-            .show(ctx, |ui| {
-                // Key list
-                ui.heading("已有密钥");
-                egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
-                    for key in &self.ssh_keys {
-                        ui.horizontal(|ui| {
-                            let icon = if key.is_public { "🔓" } else { "🔑" };
-                            ui.label(egui::RichText::new(icon).size(12.0));
-                            ui.label(egui::RichText::new(&key.name).size(11.0).color(egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)));
-                            ui.label(egui::RichText::new(&key.key_type).size(10.0).color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)));
-                            if !key.fingerprint.is_empty() {
-                                ui.label(egui::RichText::new(&key.fingerprint).size(9.0).color(egui::Color32::from_rgb(0x48, 0x4f, 0x58)));
-                            }
-                            if key.is_public {
-                                if ui.small_button("复制").clicked() {
-                                    if let Ok(content) = std::fs::read_to_string(&key.path) {
-                                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                                            let _ = cb.set_text(&content);
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                });
-
-                ui.separator();
-                ui.heading("生成新密钥");
-                ui.horizontal(|ui| {
-                    ui.label("类型:");
-                    egui::ComboBox::from_id_salt("keygen_type")
-                        .selected_text(&self.keygen_type)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.keygen_type, "ed25519".to_string(), "ed25519 (推荐)");
-                            ui.selectable_value(&mut self.keygen_type, "rsa".to_string(), "rsa");
-                            ui.selectable_value(&mut self.keygen_type, "ecdsa".to_string(), "ecdsa");
-                        });
-                    ui.label("备注:");
-                    ui.add(egui::TextEdit::singleline(&mut self.keygen_comment).desired_width(150.0).hint_text("user@host"));
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("生成密钥").clicked() {
-                        match generate_ssh_key(&self.keygen_type, &self.keygen_comment) {
-                            Ok(pub_key) => {
-                                self.keygen_status = format!("✓ 已生成 id_{}\n{}", self.keygen_type, pub_key.trim());
-                                self.ssh_keys = list_ssh_keys(); // reload
-                            }
-                            Err(e) => { self.keygen_status = format!("✗ {}", e); }
-                        }
-                    }
-                });
-                if !self.keygen_status.is_empty() {
-                    ui.label(egui::RichText::new(&self.keygen_status).size(10.0));
-                }
-                ui.add_space(8.0);
-                if ui.button("关闭").clicked() { open = false; }
-            });
-        if !open { self.show_key_manager = false; }
-    }
-
-    // ── 导出配置 ──
-    fn dialog_export(&mut self, ctx: &egui::Context) {
-        if !self.show_export { return; }
-        let mut open = true;
-        egui::Window::new("导出配置")
-
-            .resizable(false)
-            .default_width(400.0)
-            .show(ctx, |ui| {
-                ui.label("将连接配置导出到文件:");
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("路径:");
-                    ui.add(egui::TextEdit::singleline(&mut self.io_path).desired_width(280.0).hint_text("~/connections_backup.toml"));
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("导出").clicked() {
-                        let src = ConnectionStore::config_path();
-                        let dst = shellexpand::tilde(&self.io_path).to_string();
-                        if dst.is_empty() {
-                            self.io_status = "请输入导出路径".to_string();
-                        } else {
-                            match std::fs::copy(&src, &dst) {
-                                Ok(_) => { self.io_status = format!("✓ 已导出到 {}", dst); }
-                                Err(e) => { self.io_status = format!("✗ {}", e); }
-                            }
-                        }
-                    }
-                    if ui.button("取消").clicked() { open = false; }
-                });
-                if !self.io_status.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(&self.io_status);
-                }
-            });
-        if !open { self.show_export = false; }
-    }
-
-    // ── 导入配置 ──
-    fn dialog_import(&mut self, ctx: &egui::Context) {
-        if !self.show_import { return; }
-        let mut open = true;
-        egui::Window::new("导入配置")
-
-            .resizable(false)
-            .default_width(400.0)
-            .show(ctx, |ui| {
-                ui.label("从文件导入连接配置（将覆盖现有配置）:");
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("路径:");
-                    ui.add(egui::TextEdit::singleline(&mut self.io_path).desired_width(280.0).hint_text("~/connections_backup.toml"));
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("导入").clicked() {
-                        let path = shellexpand::tilde(&self.io_path).to_string();
-                        if path.is_empty() {
-                            self.io_status = "请输入文件路径".to_string();
-                        } else {
-                            match std::fs::read_to_string(&path) {
-                                Ok(content) => {
-                                    match toml::from_str::<ConnectionStore>(&content) {
-                                        Ok(store) => {
-                                            match store.save() {
-                                                Ok(()) => {
-                                                    self.io_status = "✓ 导入成功，已重载连接列表".to_string();
-                                                    self.connections = Self::load_connections();
-                                                }
-                                                Err(e) => { self.io_status = format!("✗ 保存失败: {}", e); }
-                                            }
-                                        }
-                                        Err(e) => { self.io_status = format!("✗ 配置格式无效: {}", e); }
-                                    }
-                                }
-                                Err(e) => { self.io_status = format!("✗ 读取失败: {}", e); }
-                            }
-                        }
-                    }
-                    if ui.button("取消").clicked() { open = false; }
-                });
-                if !self.io_status.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(&self.io_status);
-                }
-            });
-        if !open { self.show_import = false; }
     }
 }
 
 // ── SSH key helpers (from guishell ssh_keys.rs) ──
 
-fn list_ssh_keys() -> Vec<SshKeyInfo> {
-    let ssh_dir = match dirs::home_dir() {
-        Some(h) => h.join(".ssh"),
-        None => return Vec::new(),
-    };
-    if !ssh_dir.exists() { return Vec::new(); }
-
-    let mut keys = Vec::new();
-    let entries = match std::fs::read_dir(&ssh_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let is_public = name.ends_with(".pub");
-        let is_private = name.starts_with("id_") && !is_public;
-        if !is_public && !is_private { continue; }
-
-        let key_type = if name.contains("ed25519") { "ed25519" }
-            else if name.contains("ecdsa") { "ecdsa" }
-            else if name.contains("rsa") { "rsa" }
-            else if name.contains("dsa") { "dsa" }
-            else { "unknown" }.to_string();
-
-        let fingerprint = if is_public {
-            get_fingerprint(&path)
-        } else {
-            let pub_path = path.with_extension("pub");
-            if pub_path.exists() { get_fingerprint(&pub_path) } else { String::new() }
-        };
-
-        keys.push(SshKeyInfo { name, path: path.to_string_lossy().to_string(), key_type, is_public, fingerprint });
-    }
-    keys.sort_by(|a, b| a.name.cmp(&b.name));
-    keys
-}
-
-fn get_fingerprint(pub_key_path: &std::path::Path) -> String {
-    let output = match std::process::Command::new("ssh-keygen").args(["-lf", &pub_key_path.to_string_lossy()]).output() {
-        Ok(o) => o,
-        Err(_) => return String::new(),
-    };
-    if output.status.success() {
-        let line = String::from_utf8_lossy(&output.stdout);
-        let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
-        if parts.len() >= 2 { return parts[1].to_string(); }
-    }
-    String::new()
-}
-
-fn generate_ssh_key(key_type: &str, comment: &str) -> Result<String, String> {
-    let ssh_dir = dirs::home_dir().ok_or("无法获取用户目录")?.join(".ssh");
-    std::fs::create_dir_all(&ssh_dir).map_err(|e| format!("创建 .ssh 失败: {}", e))?;
-
-    let key_name = format!("id_{}", key_type);
-    let key_path = ssh_dir.join(&key_name);
-    if key_path.exists() { return Err(format!("密钥 {} 已存在", key_name)); }
-
-    let comment = if comment.is_empty() { "generated-by-liteterm" } else { comment };
-    let output = std::process::Command::new("ssh-keygen")
-        .args(["-t", key_type, "-C", comment, "-f", &key_path.to_string_lossy(), "-N", ""])
-        .output()
-        .map_err(|e| format!("执行 ssh-keygen 失败: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!("ssh-keygen 失败: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-    std::fs::read_to_string(key_path.with_extension("pub")).map_err(|e| format!("读取公钥失败: {}", e))
-}
+mod dialogs;
+mod file_dialogs;
+mod ui;
 
 #[cfg(test)]
-mod tests {
-    use super::SshConnection;
-
-    fn monitor_with_rate(
-        iface: &str,
-        rx_rate: u64,
-        tx_rate: u64,
-    ) -> crate::monitor::MonitorData {
-        crate::monitor::MonitorData {
-            cpu_percent: 10.0,
-            cpu_name: "Test CPU".into(),
-            memory_used: 1,
-            memory_total: 2,
-            memory_text: "1G / 2G".into(),
-            memory_percent: 50.0,
-            swap_used: 0,
-            swap_total: 0,
-            swap_text: "0K / 0K".into(),
-            swap_percent: 0.0,
-            uptime_text: "1分钟".into(),
-            load_text: "0.1, 0.2, 0.3".into(),
-            disk_items: Vec::new(),
-            processes: Vec::new(),
-            net_interfaces: vec![crate::monitor::NetIfaceInfo {
-                name: iface.into(),
-                rx_rate,
-                tx_rate,
-            }],
-        }
-    }
-
-    #[test]
-    fn ssh_connection_debug_redacts_key_path_and_password() {
-        let connection = SshConnection {
-            label: "生产机".into(),
-            host: "server.example.com".into(),
-            port: 2222,
-            user: "deploy".into(),
-            auth: "key".into(),
-            key_path: "KEY_PATH_SENTINEL".into(),
-            password: "PASSWORD_SENTINEL".into(),
-            group: "生产".into(),
-            group_color: [1, 2, 3],
-        };
-
-        let debug = format!("{connection:?}");
-
-        assert!(debug.contains("生产机"));
-        assert!(debug.contains("server.example.com"));
-        assert!(debug.contains("deploy"));
-        assert!(!debug.contains("KEY_PATH_SENTINEL"));
-        assert!(!debug.contains("PASSWORD_SENTINEL"));
-    }
-
-    #[test]
-    fn remote_monitor_presentation_without_snapshot_never_falls_back_to_local() {
-        let presentation = super::monitor_source_presentation(
-            &crate::monitor::MonitorKey::remote("alice", "alpha.example", 22),
-            None,
-            None,
-        );
-
-        assert_eq!(presentation.title, "已连接");
-        assert_eq!(presentation.detail, "alice@alpha.example:22");
-        assert_eq!(presentation.message, "正在采集");
-        assert_eq!(presentation.dot, super::MonitorDot::Remote);
-        assert_ne!(presentation.title, "本机");
-    }
-
-    #[test]
-    fn monitor_presentation_uses_placeholder_for_non_finite_cpu() {
-        let snapshot = crate::monitor::MonitorData {
-            cpu_percent: f32::NAN,
-            cpu_name: String::new(),
-            memory_used: 0,
-            memory_total: 0,
-            memory_text: "1G / 2G".into(),
-            memory_percent: 0.0,
-            swap_used: 0,
-            swap_total: 0,
-            swap_text: String::new(),
-            swap_percent: 0.0,
-            uptime_text: String::new(),
-            load_text: String::new(),
-            disk_items: Vec::new(),
-            processes: Vec::new(),
-            net_interfaces: Vec::new(),
-        };
-
-        let presentation = super::monitor_source_presentation(
-            &crate::monitor::MonitorKey::Local,
-            Some(&snapshot),
-            None,
-        );
-
-        assert_eq!(presentation.message, "CPU -- · 1G / 2G");
-        assert!(!presentation.message.contains("NaN"));
-    }
-
-    #[test]
-    fn network_history_is_isolated_between_remote_monitor_keys() {
-        let mut sidebar = super::Sidebar::new_for_test();
-        let a = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let b = crate::monitor::MonitorKey::remote("alice", "beta.example", 22);
-
-        sidebar.on_monitor_update(&a, &monitor_with_rate("eth0", 100, 200));
-        sidebar.on_monitor_update(&b, &monitor_with_rate("ens3", 300, 400));
-
-        assert_eq!(sidebar.monitor_view(&a).net_rx_history, [100.0]);
-        assert_eq!(sidebar.monitor_view(&a).net_tx_history, [200.0]);
-        assert_eq!(sidebar.monitor_view(&b).net_rx_history, [300.0]);
-        assert_eq!(sidebar.monitor_view(&b).net_tx_history, [400.0]);
-    }
-
-    #[test]
-    fn duplicate_tabs_share_monitor_view_history_for_the_same_key() {
-        let mut sidebar = super::Sidebar::new_for_test();
-        let key = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
-
-        sidebar.on_monitor_update(&key, &monitor_with_rate("eth0", 100, 200));
-        sidebar.on_monitor_update(&key, &monitor_with_rate("eth0", 150, 250));
-
-        assert_eq!(sidebar.monitor_view(&key).net_rx_history, [100.0, 150.0]);
-        assert_eq!(sidebar.monitor_view(&key).net_tx_history, [200.0, 250.0]);
-    }
-
-    #[test]
-    fn process_tab_and_interface_selection_are_isolated_by_monitor_key() {
-        let mut sidebar = super::Sidebar::new_for_test();
-        let local = crate::monitor::MonitorKey::Local;
-        let remote = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        sidebar.on_monitor_update(&local, &monitor_with_rate("lo0", 10, 20));
-        sidebar.on_monitor_update(&remote, &monitor_with_rate("eth0", 30, 40));
-
-        {
-            let local_view = sidebar.monitor_views.get_mut(&local).unwrap();
-            local_view.process_tab = 2;
-            local_view.selected_iface = Some("lo0".into());
-        }
-
-        assert_eq!(sidebar.monitor_view(&local).process_tab, 2);
-        assert_eq!(
-            sidebar.monitor_view(&local).selected_iface.as_deref(),
-            Some("lo0")
-        );
-        assert_eq!(sidebar.monitor_view(&remote).process_tab, 1);
-        assert_eq!(
-            sidebar.monitor_view(&remote).selected_iface.as_deref(),
-            Some("eth0")
-        );
-    }
-
-    #[test]
-    fn monitor_errors_distinguish_empty_and_retained_snapshots() {
-        let key = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let error_only = super::monitor_source_presentation(
-            &key,
-            None,
-            Some("监控更新失败：连接暂时不可用\n"),
-        );
-        assert_eq!(error_only.message, "采集失败：连接暂时不可用");
-        assert_eq!(error_only.warning, None);
-
-        let snapshot = monitor_with_rate("eth0", 100, 200);
-        let retained =
-            super::monitor_source_presentation(&key, Some(&snapshot), Some("连接暂时不可用"));
-        assert_eq!(retained.message, "CPU 10% · 1G / 2G");
-        assert_eq!(retained.warning.as_deref(), Some("监控暂时中断"));
-    }
-
-    #[test]
-    fn remove_monitor_view_only_removes_the_target_key() {
-        let mut sidebar = super::Sidebar::new_for_test();
-        let a = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        let b = crate::monitor::MonitorKey::remote("alice", "beta.example", 22);
-        sidebar.on_monitor_update(&a, &monitor_with_rate("eth0", 100, 200));
-        sidebar.on_monitor_update(&b, &monitor_with_rate("ens3", 300, 400));
-
-        sidebar.remove_monitor_view(&a);
-
-        assert!(!sidebar.monitor_views.contains_key(&a));
-        assert_eq!(sidebar.monitor_view(&b).net_rx_history, [300.0]);
-    }
-
-    #[test]
-    fn missing_selected_interface_falls_back_and_resets_history() {
-        let mut sidebar = super::Sidebar::new_for_test();
-        let key = crate::monitor::MonitorKey::remote("alice", "alpha.example", 22);
-        sidebar.on_monitor_update(&key, &monitor_with_rate("eth0", 100, 200));
-
-        sidebar.on_monitor_update(&key, &monitor_with_rate("ens3", 300, 400));
-
-        let view = sidebar.monitor_view(&key);
-        assert_eq!(view.selected_iface.as_deref(), Some("ens3"));
-        assert_eq!(view.last_chart_iface.as_deref(), Some("ens3"));
-        assert_eq!(view.net_rx_history, [300.0]);
-        assert_eq!(view.net_tx_history, [400.0]);
-    }
-}
+#[path = "sidebar/tests.rs"]
+mod ui_tests;

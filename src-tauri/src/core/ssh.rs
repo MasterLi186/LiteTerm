@@ -27,8 +27,7 @@ impl SshConnection {
         )?;
         stream.set_nodelay(true)?;
 
-        let mut session = Session::new()
-            .map_err(io::Error::other)?;
+        let mut session = Session::new().map_err(io::Error::other)?;
         session.set_tcp_stream(stream.try_clone()?);
         session
             .handshake()
@@ -43,7 +42,11 @@ impl SshConnection {
     /// Authenticate using the method specified in the config.
     ///
     /// Tries methods in order: Agent, Keyring (password), Key.
-    pub fn authenticate(&self, config: &ConnectionConfig, password: Option<&str>) -> io::Result<()> {
+    pub fn authenticate(
+        &self,
+        config: &ConnectionConfig,
+        password: Option<&str>,
+    ) -> io::Result<()> {
         match &config.auth {
             AuthMethod::Agent => {
                 self.session
@@ -52,7 +55,10 @@ impl SshConnection {
             }
             AuthMethod::Keyring => {
                 let pw = password.ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "password required for keyring auth")
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "password required for keyring auth",
+                    )
                 })?;
                 self.session
                     .userauth_password(&config.user, pw)
@@ -79,16 +85,11 @@ impl SshConnection {
     /// Requests an xterm-256color PTY of the given dimensions, then starts a
     /// shell on the channel.
     pub fn open_shell_channel(&self, cols: u32, rows: u32) -> io::Result<Channel> {
-        let mut channel = self
-            .session
-            .channel_session()
-            .map_err(io::Error::other)?;
+        let mut channel = self.session.channel_session().map_err(io::Error::other)?;
         channel
             .request_pty("xterm-256color", None, Some((cols, rows, 0, 0)))
             .map_err(io::Error::other)?;
-        channel
-            .shell()
-            .map_err(io::Error::other)?;
+        channel.shell().map_err(io::Error::other)?;
         Ok(channel)
     }
 

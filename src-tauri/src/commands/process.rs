@@ -67,12 +67,10 @@ fn open_ssh_and_exec(
     })?;
 
     match auth_method {
-        "agent" => session
-            .userauth_agent(user)
-            .map_err(|e| {
-                app_log!("PROC", "ERROR: Agent auth failed: {}", e);
-                format!("Agent auth failed: {}", e)
-            })?,
+        "agent" => session.userauth_agent(user).map_err(|e| {
+            app_log!("PROC", "ERROR: Agent auth failed: {}", e);
+            format!("Agent auth failed: {}", e)
+        })?,
         "key" => {
             let key = key_path.unwrap_or_default();
             let expanded = shellexpand::tilde(key);
@@ -90,12 +88,10 @@ fn open_ssh_and_exec(
         }
         _ => {
             let pw = password.unwrap_or_default();
-            session
-                .userauth_password(user, pw)
-                .map_err(|e| {
-                    app_log!("PROC", "ERROR: Password auth failed: {}", e);
-                    format!("Password auth failed: {}", e)
-                })?;
+            session.userauth_password(user, pw).map_err(|e| {
+                app_log!("PROC", "ERROR: Password auth failed: {}", e);
+                format!("Password auth failed: {}", e)
+            })?;
         }
     }
 
@@ -287,18 +283,42 @@ pub async fn get_process_detail(
         for line in output.lines() {
             let trimmed = line.trim();
             match trimmed {
-                "===EXE===" => { section = "exe"; continue; }
-                "===CWD===" => { section = "cwd"; continue; }
-                "===CMD===" => { section = "cmd"; continue; }
-                "===ENV===" => { section = "env"; continue; }
-                "===PS===" => { section = "ps"; continue; }
-                "===END===" => { section = ""; continue; }
+                "===EXE===" => {
+                    section = "exe";
+                    continue;
+                }
+                "===CWD===" => {
+                    section = "cwd";
+                    continue;
+                }
+                "===CMD===" => {
+                    section = "cmd";
+                    continue;
+                }
+                "===ENV===" => {
+                    section = "env";
+                    continue;
+                }
+                "===PS===" => {
+                    section = "ps";
+                    continue;
+                }
+                "===END===" => {
+                    section = "";
+                    continue;
+                }
                 _ => {}
             }
             match section {
-                "exe" => { exe = trimmed.to_string(); }
-                "cwd" => { cwd = trimmed.to_string(); }
-                "cmd" => { cmdline = trimmed.to_string(); }
+                "exe" => {
+                    exe = trimmed.to_string();
+                }
+                "cwd" => {
+                    cwd = trimmed.to_string();
+                }
+                "cmd" => {
+                    cmdline = trimmed.to_string();
+                }
                 "env" => {
                     if !trimmed.is_empty() {
                         environ_lines.push(trimmed.to_string());

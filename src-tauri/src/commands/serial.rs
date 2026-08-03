@@ -45,9 +45,7 @@ struct SysfsUsbInfo {
 /// 从 sysfs 向上找到包含 idVendor 的 USB 设备目录
 #[cfg(target_os = "linux")]
 fn find_usb_device_dir(dev_name: &str) -> Option<std::path::PathBuf> {
-    let tty_device = std::fs::canonicalize(
-        format!("/sys/class/tty/{}/device", dev_name)
-    ).ok()?;
+    let tty_device = std::fs::canonicalize(format!("/sys/class/tty/{}/device", dev_name)).ok()?;
     let mut dir = tty_device.as_path();
     loop {
         if dir.join("idVendor").exists() {
@@ -68,34 +66,57 @@ fn find_adb_siblings(usb_dev_dir: &std::path::Path) -> Vec<AdbSibling> {
         Ok(e) => e,
         Err(_) => return vec![],
     };
-    let self_name = usb_dev_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let self_name = usb_dev_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
     let mut siblings = Vec::new();
 
     for entry in hub_entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str == self_name || name_str.contains(':') || !entry.path().join("idVendor").exists() {
+        if name_str == self_name
+            || name_str.contains(':')
+            || !entry.path().join("idVendor").exists()
+        {
             continue;
         }
         let sibling = entry.path();
-        let has_adb = std::fs::read_dir(&sibling).into_iter().flatten().flatten().any(|iface| {
-            let p = iface.path();
-            let class = std::fs::read_to_string(p.join("bInterfaceClass")).unwrap_or_default();
-            let sub = std::fs::read_to_string(p.join("bInterfaceSubClass")).unwrap_or_default();
-            let proto = std::fs::read_to_string(p.join("bInterfaceProtocol")).unwrap_or_default();
-            class.trim() == "ff" && sub.trim() == "42" && proto.trim() == "01"
-        });
+        let has_adb = std::fs::read_dir(&sibling)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|iface| {
+                let p = iface.path();
+                let class = std::fs::read_to_string(p.join("bInterfaceClass")).unwrap_or_default();
+                let sub = std::fs::read_to_string(p.join("bInterfaceSubClass")).unwrap_or_default();
+                let proto =
+                    std::fs::read_to_string(p.join("bInterfaceProtocol")).unwrap_or_default();
+                class.trim() == "ff" && sub.trim() == "42" && proto.trim() == "01"
+            });
         if has_adb {
             let serial = std::fs::read_to_string(sibling.join("serial"))
-                .unwrap_or_default().trim().to_string();
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             let product = std::fs::read_to_string(sibling.join("product"))
-                .unwrap_or_default().trim().to_string();
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             let manufacturer = std::fs::read_to_string(sibling.join("manufacturer"))
-                .unwrap_or_default().trim().to_string();
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             let port = std::fs::read_to_string(sibling.join("devpath"))
-                .ok().map(|s| s.trim().to_string());
+                .ok()
+                .map(|s| s.trim().to_string());
             if !serial.is_empty() {
-                siblings.push(AdbSibling { serial, product, manufacturer, port });
+                siblings.push(AdbSibling {
+                    serial,
+                    product,
+                    manufacturer,
+                    port,
+                });
             }
         }
     }
@@ -108,7 +129,8 @@ fn find_adb_siblings(usb_dev_dir: &std::path::Path) -> Vec<AdbSibling> {
 fn read_vendor_from_database(port_name: &str) -> Option<String> {
     let output = std::process::Command::new("udevadm")
         .args(["info", "--query=property", &format!("--name={}", port_name)])
-        .output().ok()?;
+        .output()
+        .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         if let Some(val) = line.strip_prefix("ID_VENDOR_FROM_DATABASE=") {
@@ -140,25 +162,35 @@ fn read_usb_sysfs(port_name: &str) -> SysfsUsbInfo {
 
     let usb_dev_dir = find_usb_device_dir(dev_name);
 
-    let (speed, devpath) = usb_dev_dir.as_ref()
+    let (speed, devpath) = usb_dev_dir
+        .as_ref()
         .map(|dir| {
-            let speed = std::fs::read_to_string(dir.join("speed")).ok()
+            let speed = std::fs::read_to_string(dir.join("speed"))
+                .ok()
                 .map(|s| format!("{}Mbps", s.trim()))
                 .unwrap_or_default();
-            let devpath = std::fs::read_to_string(dir.join("devpath")).ok()
+            let devpath = std::fs::read_to_string(dir.join("devpath"))
+                .ok()
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default();
             (Some(speed), Some(devpath))
         })
         .unwrap_or((None, None));
 
-    let adb_siblings = usb_dev_dir.as_ref()
+    let adb_siblings = usb_dev_dir
+        .as_ref()
         .map(|dir| find_adb_siblings(dir))
         .unwrap_or_default();
 
     let vendor_full = read_vendor_from_database(port_name);
 
-    SysfsUsbInfo { usb_path, speed, devpath, vendor_full, adb_siblings }
+    SysfsUsbInfo {
+        usb_path,
+        speed,
+        devpath,
+        vendor_full,
+        adb_siblings,
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -172,7 +204,13 @@ struct SysfsUsbInfo {
 
 #[cfg(not(target_os = "linux"))]
 fn read_usb_sysfs(_port_name: &str) -> SysfsUsbInfo {
-    SysfsUsbInfo { usb_path: None, speed: None, devpath: None, vendor_full: None, adb_siblings: vec![] }
+    SysfsUsbInfo {
+        usb_path: None,
+        speed: None,
+        devpath: None,
+        vendor_full: None,
+        adb_siblings: vec![],
+    }
 }
 
 #[tauri::command]
@@ -190,11 +228,18 @@ pub async fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
                     usb.manufacturer.clone(),
                     usb.product.clone(),
                 ),
-                serialport::SerialPortType::PciPort => ("PCI".to_string(), None, None, None, None, None),
-                serialport::SerialPortType::BluetoothPort => ("Bluetooth".to_string(), None, None, None, None, None),
-                serialport::SerialPortType::Unknown => ("Unknown".to_string(), None, None, None, None, None),
+                serialport::SerialPortType::PciPort => {
+                    ("PCI".to_string(), None, None, None, None, None)
+                }
+                serialport::SerialPortType::BluetoothPort => {
+                    ("Bluetooth".to_string(), None, None, None, None, None)
+                }
+                serialport::SerialPortType::Unknown => {
+                    ("Unknown".to_string(), None, None, None, None, None)
+                }
             };
-            let name = product.clone()
+            let name = product
+                .clone()
                 .or_else(|| manufacturer.clone())
                 .unwrap_or_else(|| {
                     std::path::Path::new(&p.port_name)
@@ -235,14 +280,11 @@ fn resolve_device_path(device: &str) -> Result<String, String> {
         return Err(format!("无法识别的设备标识: {}", device));
     }
 
-    let vid = u16::from_str_radix(parts[0], 16)
-        .map_err(|_| format!("无效的 VID: {}", parts[0]))?;
-    let pid = u16::from_str_radix(parts[1], 16)
-        .map_err(|_| format!("无效的 PID: {}", parts[1]))?;
+    let vid = u16::from_str_radix(parts[0], 16).map_err(|_| format!("无效的 VID: {}", parts[0]))?;
+    let pid = u16::from_str_radix(parts[1], 16).map_err(|_| format!("无效的 PID: {}", parts[1]))?;
     let serial_filter = parts.get(2).copied();
 
-    let ports = serialport::available_ports()
-        .map_err(|e| format!("枚举串口失败: {}", e))?;
+    let ports = serialport::available_ports().map_err(|e| format!("枚举串口失败: {}", e))?;
 
     for p in &ports {
         if let serialport::SerialPortType::UsbPort(usb) = &p.port_type {
@@ -275,7 +317,13 @@ pub async fn open_serial_terminal(
     baud_rate: u32,
 ) -> Result<String, String> {
     let resolved = resolve_device_path(&device)?;
-    app_log!("SERIAL", "打开串口: device={} (resolved={}) baud_rate={}", device, resolved, baud_rate);
+    app_log!(
+        "SERIAL",
+        "打开串口: device={} (resolved={}) baud_rate={}",
+        device,
+        resolved,
+        baud_rate
+    );
 
     let id = uuid::Uuid::new_v4().to_string();
     let stop = Arc::new(AtomicBool::new(false));

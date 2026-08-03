@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use axum::{
-    Router,
-    routing::{get, post, put, delete},
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    Json,
+    routing::{delete, get, post, put},
+    Json, Router,
 };
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -22,7 +21,10 @@ struct ApiState {
 type ApiResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
 
 /// 验证 Bearer token 认证
-fn check_auth(headers: &HeaderMap, token: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn check_auth(
+    headers: &HeaderMap,
+    token: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -54,7 +56,9 @@ pub async fn start_api_server(app_handle: AppHandle) {
     if std::env::var("LITETERM_API_PORT").is_ok() {
         // 指定了端口，只尝试该端口
         match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", base_port)).await {
-            Ok(l) => { listener = Some(l); }
+            Ok(l) => {
+                listener = Some(l);
+            }
             Err(e) => {
                 app_log!("API", "WARNING: 指定端口 {} 绑定失败: {}", base_port, e);
                 return;
@@ -81,7 +85,12 @@ pub async fn start_api_server(app_handle: AppHandle) {
     let listener = match listener {
         Some(l) => l,
         None => {
-            app_log!("API", "WARNING: 端口 {}-{} 全部被占用，HTTP API 不可用", base_port, base_port + MAX_PORT_TRIES - 1);
+            app_log!(
+                "API",
+                "WARNING: 端口 {}-{} 全部被占用，HTTP API 不可用",
+                base_port,
+                base_port + MAX_PORT_TRIES - 1
+            );
             return;
         }
     };
@@ -121,12 +130,15 @@ pub async fn start_api_server(app_handle: AppHandle) {
     }
 
     app_log!("API", "API token 已写入: {}", token_path.display());
-    app_log!("API", "API port 已写入: {} (port={}, pid={})", port_path.display(), actual_port, pid);
+    app_log!(
+        "API",
+        "API port 已写入: {} (port={}, pid={})",
+        port_path.display(),
+        actual_port,
+        pid
+    );
 
-    let api_state = Arc::new(ApiState {
-        app_handle,
-        token,
-    });
+    let api_state = Arc::new(ApiState { app_handle, token });
 
     let app = Router::new()
         .route("/api/v1/tabs", get(list_tabs))
@@ -138,7 +150,11 @@ pub async fn start_api_server(app_handle: AppHandle) {
         .route("/api/v1/tabs/{id}", delete(close_tab))
         .with_state(api_state);
 
-    app_log!("API", "HTTP API 服务器已启动: http://127.0.0.1:{}", actual_port);
+    app_log!(
+        "API",
+        "HTTP API 服务器已启动: http://127.0.0.1:{}",
+        actual_port
+    );
     if let Err(e) = axum::serve(listener, app).await {
         app_log!("API", "HTTP API 服务器异常退出: {}", e);
     }
@@ -148,10 +164,7 @@ pub async fn start_api_server(app_handle: AppHandle) {
 // GET /api/v1/tabs — 列出所有标签页
 // ---------------------------------------------------------------------------
 
-async fn list_tabs(
-    State(api): State<Arc<ApiState>>,
-    headers: HeaderMap,
-) -> ApiResult {
+async fn list_tabs(State(api): State<Arc<ApiState>>, headers: HeaderMap) -> ApiResult {
     check_auth(&headers, &api.token)?;
     let state = api.app_handle.state::<crate::state::AppState>();
     let tabs: Vec<serde_json::Value> = state
@@ -260,7 +273,10 @@ async fn open_ssh(
 ) -> ApiResult {
     check_auth(&headers, &api.token)?;
     let body: SshConnectBody = serde_json::from_slice(&bytes).map_err(|e| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("无效请求: {}", e)})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("无效请求: {}", e)})),
+        )
     })?;
     let state = api.app_handle.state::<crate::state::AppState>();
 
@@ -341,7 +357,9 @@ async fn focus_tab(
         ));
     }
 
-    let _ = api.app_handle.emit("api-tab-focus", serde_json::json!({"id": &id}));
+    let _ = api
+        .app_handle
+        .emit("api-tab-focus", serde_json::json!({"id": &id}));
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
@@ -362,7 +380,10 @@ async fn write_tab(
 ) -> ApiResult {
     check_auth(&headers, &api.token)?;
     let body: WriteBody = serde_json::from_slice(&bytes).map_err(|e| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("无效请求: {}", e)})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("无效请求: {}", e)})),
+        )
     })?;
     let state = api.app_handle.state::<crate::state::AppState>();
     let data = body.data.into_bytes();
@@ -473,8 +494,7 @@ async fn close_tab(
 
     // 清理本地终端(drop input_tx + resize_tx 释放 writer/resize/reader 线程)
     if let Some(term) = state.local_terminals.lock().unwrap().remove(&id) {
-        term.stop
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        term.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         drop(term.input_tx);
         drop(term.resize_tx);
     }
@@ -492,10 +512,9 @@ async fn close_tab(
     state.tab_registry.lock().unwrap().remove(&id);
 
     // 通知前端同步 React state
-    let _ = api.app_handle.emit(
-        "api-tab-closed",
-        serde_json::json!({"id": &id}),
-    );
+    let _ = api
+        .app_handle
+        .emit("api-tab-closed", serde_json::json!({"id": &id}));
 
     Ok(Json(serde_json::json!({"ok": true})))
 }

@@ -61,7 +61,6 @@ pub struct ZmodemSettings {
 
 // --- Default implementations ---
 
-
 impl Default for TerminalSettings {
     fn default() -> Self {
         Self {
@@ -140,9 +139,8 @@ impl Settings {
     pub fn load_from(path: &Path) -> io::Result<Self> {
         match fs::read_to_string(path) {
             Ok(content) => {
-                let settings: Settings = toml::from_str(&content).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, e)
-                })?;
+                let settings: Settings = toml::from_str(&content)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 Ok(settings)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Settings::default()),
@@ -155,9 +153,7 @@ impl Settings {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(self).map_err(|e| {
-            io::Error::other(e)
-        })?;
+        let content = toml::to_string_pretty(self).map_err(io::Error::other)?;
         fs::write(path, content)
     }
 

@@ -19,7 +19,9 @@ impl Default for Osc7Parser {
 
 impl Osc7Parser {
     pub fn new() -> Self {
-        Self { pending: Vec::new() }
+        Self {
+            pending: Vec::new(),
+        }
     }
 
     /// 喂入一段终端输出字节。返回本次累积流中最新一条完整 OSC7 解析出的路径
@@ -80,9 +82,7 @@ fn find_subseq(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// 从 OSC7 payload 解析出路径。payload 形如 `file://host/path`，也兼容直接是路径。
@@ -166,7 +166,10 @@ mod tests {
     fn test_split_across_feeds() {
         let mut p = Osc7Parser::new();
         assert_eq!(p.feed(b"\x1b]7;file://h/ho"), None);
-        assert_eq!(p.feed(b"me/lfl/work\x07"), Some("/home/lfl/work".to_string()));
+        assert_eq!(
+            p.feed(b"me/lfl/work\x07"),
+            Some("/home/lfl/work".to_string())
+        );
     }
 
     #[test]
@@ -212,6 +215,9 @@ mod tests {
         // 路径中混入控制字节（\x01）应被拒绝，避免污染目标路径与 UI
         assert_eq!(p.feed(b"\x1b]7;file://h/home/ev\x01il\x07"), None);
         // 正常路径仍可解析
-        assert_eq!(p.feed(b"\x1b]7;file://h/home/ok\x07"), Some("/home/ok".to_string()));
+        assert_eq!(
+            p.feed(b"\x1b]7;file://h/home/ok\x07"),
+            Some("/home/ok".to_string())
+        );
     }
 }

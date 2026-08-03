@@ -3,6 +3,7 @@ pub mod config;
 pub mod core;
 pub mod log_util;
 pub mod plugin;
+pub mod process_cleanup;
 pub mod state;
 
 use std::collections::HashMap;
@@ -16,11 +17,13 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 尽早安装信号处理器：任务栏「退出」通常发 SIGTERM，必须在此杀掉 WebKit 子进程
+    process_cleanup::install_signal_handlers();
+
     // Load persisted configuration
     let settings = Settings::load().unwrap_or_default();
     let connections_path = Settings::config_dir().join("connections.toml");
-    let connections =
-        ConnectionStore::load_from(&connections_path).unwrap_or_default();
+    let connections = ConnectionStore::load_from(&connections_path).unwrap_or_default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -115,6 +118,18 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            match event {
+                tauri::RunEvent::ExitRequested { .. } => {
+                    // 窗口关闭请求：先清子进程，再让 Tauri 继续退出
+                    process_cleanup::shutdown_cleanup("ExitRequested");
+                }
+                tauri::RunEvent::Exit => {
+                    process_cleanup::shutdown_cleanup("Exit");
+                }
+                _ => {}
+            }
+        });
 }

@@ -1,11 +1,132 @@
+use cosmic_text::{FontSystem, SwashCache};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use wgpu;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
-use cosmic_text::{FontSystem, SwashCache};
 
 use crate::atlas::GlyphAtlas;
 use crate::terminal::TerminalState;
+use crate::terminal_search::SearchMatch;
+
+const BOOTSTRAP_FONT_SIZE: f32 = crate::settings::DEFAULT_TERMINAL_FONT_SIZE;
+
+/// Borrowed view of search match ranges for per-cell highlight classification.
+#[derive(Debug, Clone, Copy)]
+pub struct SearchHighlights<'a> {
+    pub matches: &'a [SearchMatch],
+    pub current: Option<usize>,
+}
+
+/// How a cell participates in search highlighting (absolute line + col).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchHighlightKind {
+    None,
+    Match,
+    Current,
+}
+
+/// Classify a cell against search highlights.
+/// Current (valid index covering the cell) wins over plain Match.
+/// Out-of-bounds / None current is safe and falls through to Match/None.
+pub fn search_highlight_kind(
+    abs_line: i32,
+    col: usize,
+    highlights: &SearchHighlights<'_>,
+) -> SearchHighlightKind {
+    if let Some(idx) = highlights.current {
+        if let Some(m) = highlights.matches.get(idx) {
+            if m.contains_cell(abs_line, col) {
+                return SearchHighlightKind::Current;
+            }
+        }
+    }
+    for m in highlights.matches {
+        if m.contains_cell(abs_line, col) {
+            return SearchHighlightKind::Match;
+        }
+    }
+    SearchHighlightKind::None
+}
+
+/// Resolved background source for a terminal cell (pure priority, no GPU).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellBackgroundSource {
+    Selection,
+    SearchCurrent,
+    SearchMatch,
+    Cell,
+}
+
+/// Priority: selection > search current > search match > cell background.
+pub fn resolve_cell_background_source(
+    selected: bool,
+    kind: SearchHighlightKind,
+) -> CellBackgroundSource {
+    if selected {
+        return CellBackgroundSource::Selection;
+    }
+    match kind {
+        SearchHighlightKind::Current => CellBackgroundSource::SearchCurrent,
+        SearchHighlightKind::Match => CellBackgroundSource::SearchMatch,
+        SearchHighlightKind::None => CellBackgroundSource::Cell,
+    }
+}
+
+fn cursor_screen_rect_for_metrics(
+    viewport_x: f32,
+    viewport_y: f32,
+    cell_width: f32,
+    cell_height: f32,
+    point_line: i32,
+    point_column: usize,
+    display_offset: i32,
+    rows: u16,
+) -> Option<egui::Rect> {
+    let visual_row = point_line + display_offset + 1;
+    if visual_row < 0 || visual_row >= i32::from(rows) {
+        return None;
+    }
+    Some(egui::Rect::from_min_size(
+        egui::pos2(
+            viewport_x + point_column as f32 * cell_width,
+            viewport_y + visual_row as f32 * cell_height,
+        ),
+        egui::vec2(cell_width, cell_height),
+    ))
+}
+
+fn cursor_screen_rect_for_viewport(
+    viewport_x: f32,
+    viewport_y: f32,
+    cell_width: f32,
+    cell_height: f32,
+    viewport_height: f32,
+    point_line: i32,
+    point_column: usize,
+    display_offset: i32,
+) -> Option<egui::Rect> {
+    if !viewport_height.is_finite()
+        || !cell_height.is_finite()
+        || viewport_height <= 0.0
+        || cell_height <= 0.0
+    {
+        return None;
+    }
+    let visible_rows = (viewport_height / cell_height)
+        .floor()
+        .clamp(0.0, f32::from(u16::MAX)) as u16;
+    cursor_screen_rect_for_metrics(
+        viewport_x,
+        viewport_y,
+        cell_width,
+        cell_height,
+        point_line,
+        point_column,
+        display_offset,
+        visible_rows,
+    )
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -25,14 +146,137 @@ struct CellInstance {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    screen_size: [f32; 2],
+    surface_size: [f32; 2],
     atlas_size: [f32; 2],
+    pane_origin: [f32; 2],
+    _padding: [f32; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PaneContentSignature {
+    pane_key: String,
+    terminal_revision: u64,
+    style_revision: u64,
+    cursor_visible: bool,
+    selection_start: Option<(usize, usize)>,
+    selection_end: Option<(usize, usize)>,
+    search_fingerprint: u64,
+}
+
+fn search_highlights_fingerprint(highlights: Option<SearchHighlights<'_>>) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match highlights {
+        None => 0_u8.hash(&mut hasher),
+        Some(highlights) => {
+            1_u8.hash(&mut hasher);
+            highlights.current.hash(&mut hasher);
+            for item in highlights.matches {
+                item.line.hash(&mut hasher);
+                item.start_col.hash(&mut hasher);
+                item.end_col.hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
+/// Surface-space rectangle used for one terminal pane draw.
+///
+/// Cell instances are local to this rectangle. The renderer translates them by
+/// the original pane origin and only clips rasterization to the rectangle's
+/// intersection with the surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaneRenderRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl PaneRenderRect {
+    pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClampedPaneRenderRect {
+    pane_x: f32,
+    pane_y: f32,
+    pane_width: f32,
+    pane_height: f32,
+    scissor_x: u32,
+    scissor_y: u32,
+    scissor_width: u32,
+    scissor_height: u32,
+}
+
+fn clamp_pane_render_rect(
+    rect: PaneRenderRect,
+    surface_width: u32,
+    surface_height: u32,
+) -> Option<ClampedPaneRenderRect> {
+    if surface_width == 0
+        || surface_height == 0
+        || !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+    {
+        return None;
+    }
+
+    let right = rect.x + rect.width;
+    let bottom = rect.y + rect.height;
+    if !right.is_finite() || !bottom.is_finite() {
+        return None;
+    }
+
+    let surface_width_f = surface_width as f32;
+    let surface_height_f = surface_height as f32;
+    let left = rect.x.clamp(0.0, surface_width_f);
+    let top = rect.y.clamp(0.0, surface_height_f);
+    let right = right.clamp(0.0, surface_width_f);
+    let bottom = bottom.clamp(0.0, surface_height_f);
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    let scissor_x = left.floor() as u32;
+    let scissor_y = top.floor() as u32;
+    let scissor_right = (right.ceil() as u32).min(surface_width);
+    let scissor_bottom = (bottom.ceil() as u32).min(surface_height);
+    let scissor_width = scissor_right.saturating_sub(scissor_x);
+    let scissor_height = scissor_bottom.saturating_sub(scissor_y);
+    if scissor_width == 0 || scissor_height == 0 {
+        return None;
+    }
+
+    Some(ClampedPaneRenderRect {
+        pane_x: rect.x,
+        pane_y: rect.y,
+        pane_width: rect.width,
+        pane_height: rect.height,
+        scissor_x,
+        scissor_y,
+        scissor_width,
+        scissor_height,
+    })
 }
 
 const SHADER: &str = r#"
 struct Uniforms {
-    screen_size: vec2<f32>,
+    surface_size: vec2<f32>,
     atlas_size: vec2<f32>,
+    pane_origin: vec2<f32>,
+    _padding: vec2<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var t_atlas: texture_2d<f32>;
@@ -71,10 +315,10 @@ fn vs_main(@builtin(vertex_index) vi: u32, cell: CellInstance) -> VertexOutput {
         vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
     );
     let corner = corners[vi];
-    let pixel = cell.pos + corner * cell.size;
+    let pixel = u.pane_origin + cell.pos + corner * cell.size;
     let ndc = vec2(
-        pixel.x / u.screen_size.x * 2.0 - 1.0,
-        1.0 - pixel.y / u.screen_size.y * 2.0,
+        pixel.x / u.surface_size.x * 2.0 - 1.0,
+        1.0 - pixel.y / u.surface_size.y * 2.0,
     );
 
     var out: VertexOutput;
@@ -123,17 +367,50 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-// AdventureTime 配色方案
-const ANSI_COLORS: [[u8; 3]; 16] = [
-    [0x05,0x04,0x04], [0xbd,0x00,0x13], [0x4a,0xb1,0x18], [0xe7,0x74,0x1e],
-    [0x0f,0x4a,0xc6], [0x66,0x59,0x93], [0x70,0xa5,0x98], [0xf8,0xdc,0xc0],
-    [0x4e,0x7c,0xbf], [0xfc,0x5f,0x5a], [0x9e,0xff,0x6e], [0xef,0xc1,0x1a],
-    [0x19,0x97,0xc6], [0x9b,0x59,0x53], [0xc8,0xfa,0xf4], [0xf6,0xf5,0xfb],
-];
-pub const BG_DEFAULT: [u8; 4] = [0x1f, 0x1d, 0x45, 255];
-const FG_DEFAULT: [u8; 4] = [0xf8, 0xdc, 0xc0, 255];
-const CURSOR_COLOR: [f32; 4] = [0xef as f32/255.0, 0xbf as f32/255.0, 0x38 as f32/255.0, 1.0];
-const SELECTION_BG: [f32; 4] = [0x26 as f32/255.0, 0x4f as f32/255.0, 0x78 as f32/255.0, 1.0];
+#[derive(Debug, Clone, Copy)]
+pub struct TerminalPalette {
+    pub background: [u8; 4],
+    pub foreground: [u8; 4],
+    pub cursor: [f32; 4],
+    pub selection: [f32; 4],
+    pub ansi: [[u8; 4]; 16],
+}
+
+impl TerminalPalette {
+    pub fn from_theme(theme: &crate::themes::TerminalTheme) -> Self {
+        let mut ansi = [[0u8; 4]; 16];
+        for i in 0..16 {
+            ansi[i] = [theme.ansi[i][0], theme.ansi[i][1], theme.ansi[i][2], 255];
+        }
+        Self {
+            background: [
+                theme.background[0],
+                theme.background[1],
+                theme.background[2],
+                255,
+            ],
+            foreground: [
+                theme.foreground[0],
+                theme.foreground[1],
+                theme.foreground[2],
+                255,
+            ],
+            cursor: [
+                theme.cursor[0] as f32 / 255.0,
+                theme.cursor[1] as f32 / 255.0,
+                theme.cursor[2] as f32 / 255.0,
+                1.0,
+            ],
+            selection: [
+                theme.selection[0] as f32 / 255.0,
+                theme.selection[1] as f32 / 255.0,
+                theme.selection[2] as f32 / 255.0,
+                1.0,
+            ],
+            ansi,
+        }
+    }
+}
 
 /// Shared GPU state accessible from main for egui integration
 pub struct GpuState {
@@ -169,8 +446,11 @@ impl GpuState {
             .expect("无法获取 GPU device");
 
         let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps.formats.iter()
-            .find(|f| !f.is_srgb()).copied()
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .find(|f| !f.is_srgb())
+            .copied()
             .unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
@@ -186,13 +466,19 @@ impl GpuState {
         surface.configure(&device, &config);
 
         Self {
-            surface, device, queue, config,
-            width: size.width.max(1), height: size.height.max(1),
+            surface,
+            device,
+            queue,
+            config,
+            width: size.width.max(1),
+            height: size.height.max(1),
         }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 { return; }
+        if width == 0 || height == 0 {
+            return;
+        }
         self.width = width;
         self.height = height;
         self.config.width = width;
@@ -205,381 +491,439 @@ impl GpuState {
     }
 }
 
-pub struct Renderer {
-    font_system: FontSystem,
-    swash_cache: SwashCache,
-    atlas: GlyphAtlas,
-    atlas_texture: wgpu::Texture,
-    pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    uniform_buffer: wgpu::Buffer,
-    sampler: wgpu::Sampler,
-    pub viewport_x: f32,
-    pub viewport_y: f32,
-    pub viewport_width: f32,
-    pub viewport_height: f32,
-}
+const MAX_CACHED_PANE_DRAW_SLOTS: usize = 32;
 
-impl Renderer {
-    pub fn new(gpu: &GpuState) -> Self {
-        let mut font_system = FontSystem::new();
-        let mut swash_cache = SwashCache::new();
-        let font_size = 15.0;
-        let atlas = GlyphAtlas::new(&mut font_system, &mut swash_cache, font_size);
+mod core;
 
-        let atlas_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Glyph Atlas"),
-            size: wgpu::Extent3d { width: atlas.atlas_width, height: atlas.atlas_height, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        gpu.queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &atlas_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            &atlas.data,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(atlas.atlas_width), rows_per_image: Some(atlas.atlas_height) },
-            wgpu::Extent3d { width: atlas.atlas_width, height: atlas.atlas_height, depth_or_array_layers: 1 },
+#[cfg(test)]
+use core::cached_pane_slot_index;
+pub use core::Renderer;
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+    use crate::smart_completion::CompletionSessionKey;
+    use crate::terminal::CompletionHarness;
+    use crate::terminal_search::SearchMatch;
+    use alacritty_terminal::grid::Dimensions;
+
+    #[test]
+    fn pane_rect_preserves_projection_and_only_clamps_scissor_to_surface() {
+        assert_eq!(
+            clamp_pane_render_rect(PaneRenderRect::new(-5.25, 8.5, 20.0, 30.75), 100, 25),
+            Some(ClampedPaneRenderRect {
+                pane_x: -5.25,
+                pane_y: 8.5,
+                pane_width: 20.0,
+                pane_height: 30.75,
+                scissor_x: 0,
+                scissor_y: 8,
+                scissor_width: 15,
+                scissor_height: 17,
+            })
+        );
+    }
+
+    #[test]
+    fn pane_rect_skips_empty_off_surface_and_invalid_rectangles() {
+        assert_eq!(
+            clamp_pane_render_rect(PaneRenderRect::new(100.0, 0.0, 10.0, 10.0), 100, 100),
+            None
+        );
+        assert_eq!(
+            clamp_pane_render_rect(PaneRenderRect::new(0.0, 0.0, 0.0, 10.0), 100, 100),
+            None
+        );
+        assert_eq!(
+            clamp_pane_render_rect(PaneRenderRect::new(f32::NAN, 0.0, 10.0, 10.0), 100, 100),
+            None
+        );
+        assert_eq!(
+            clamp_pane_render_rect(PaneRenderRect::new(0.0, 0.0, 10.0, 10.0), 0, 100),
+            None
+        );
+    }
+
+    #[test]
+    fn pane_draw_cache_is_bounded_and_overflow_is_transient() {
+        assert_eq!(cached_pane_slot_index(0), Some(0));
+        assert_eq!(
+            cached_pane_slot_index(MAX_CACHED_PANE_DRAW_SLOTS - 1),
+            Some(MAX_CACHED_PANE_DRAW_SLOTS - 1)
+        );
+        assert_eq!(cached_pane_slot_index(MAX_CACHED_PANE_DRAW_SLOTS), None);
+        assert_eq!(
+            cached_pane_slot_index(MAX_CACHED_PANE_DRAW_SLOTS + 100),
+            None
+        );
+    }
+
+    #[test]
+    fn cursor_rect_matches_render_formula_at_zero_display_offset() {
+        let rect = cursor_screen_rect_for_metrics(220.0, 34.0, 10.0, 20.0, -1, 7, 0, 24).unwrap();
+
+        assert_eq!(
+            rect,
+            egui::Rect::from_min_size(egui::pos2(290.0, 34.0), egui::vec2(10.0, 20.0))
+        );
+    }
+
+    #[test]
+    fn cursor_rect_rejects_a_cursor_outside_the_visible_scrollback_view() {
+        assert_eq!(
+            cursor_screen_rect_for_metrics(220.0, 34.0, 10.0, 20.0, -24, 7, 0, 24,),
+            None
+        );
+        assert_eq!(
+            cursor_screen_rect_for_metrics(220.0, 34.0, 10.0, 20.0, -1, 7, 24, 24,),
+            None
+        );
+    }
+
+    #[test]
+    fn cursor_rect_keeps_the_bottom_physical_viewport_row_available_for_overlays() {
+        let rect =
+            cursor_screen_rect_for_viewport(220.0, 34.0, 10.0, 15.0, 722.0, 46, 7, 0).unwrap();
+
+        assert_eq!(
+            rect,
+            egui::Rect::from_min_size(egui::pos2(290.0, 739.0), egui::vec2(10.0, 15.0))
+        );
+    }
+
+    #[test]
+    fn completion_cursor_remains_visible_after_terminal_output_scrolls_to_the_bottom() {
+        let mut terminal =
+            CompletionHarness::new(80, 47, CompletionSessionKey::new_for_test(1, "bottom-row"));
+        terminal.feed("output\r\n".repeat(80).as_bytes());
+        let term = terminal.terminal().term().unwrap();
+        let point = term.grid().cursor.point;
+        let display_offset = term.grid().display_offset() as i32;
+
+        assert_eq!(display_offset, 0, "回归夹具应停留在实时终端底部");
+        assert!(term.grid().history_size() > 0, "回归夹具必须产生滚屏历史");
+        assert_eq!(
+            point.line.0 + display_offset + 1,
+            47,
+            "回归夹具的光标必须位于最后一个完整物理行"
+        );
+        assert!(
+            cursor_screen_rect_for_metrics(
+                220.0,
+                28.0,
+                8.0,
+                15.0,
+                point.line.0,
+                point.column.0,
+                display_offset,
+                47,
+            )
+            .is_none(),
+            "回归夹具必须复现旧逻辑把底行光标误判为越界"
+        );
+        assert!(
+            cursor_screen_rect_for_viewport(
+                220.0,
+                28.0,
+                8.0,
+                15.0,
+                722.0,
+                point.line.0,
+                point.column.0,
+                display_offset,
+            )
+            .is_some(),
+            "滚屏后的底行光标仍应能作为补全弹窗锚点"
+        );
+    }
+
+    // =========================================================================
+    // P0 Task 4 RED-C: SearchHighlights pure cell classification
+    // Locks SearchHighlights<'a> {matches,current} + SearchHighlightKind
+    // and absolute line+col half-open judgement. Filter: search_
+    // =========================================================================
+
+    fn match_at(line: i32, start_col: usize, end_col: usize) -> SearchMatch {
+        SearchMatch {
+            line,
+            start_col,
+            end_col,
+        }
+    }
+
+    /// Half-open absolute range: start inclusive, end exclusive; other lines None.
+    #[test]
+    fn search_highlight_kind_uses_absolute_line_col_half_open() {
+        let matches = [match_at(5, 2, 5)];
+        let hl = SearchHighlights {
+            matches: &matches,
+            current: None,
+        };
+
+        assert_eq!(
+            search_highlight_kind(5, 1, &hl),
+            SearchHighlightKind::None,
+            "col before start_col"
+        );
+        assert_eq!(
+            search_highlight_kind(5, 2, &hl),
+            SearchHighlightKind::Match,
+            "start_col inclusive"
+        );
+        assert_eq!(
+            search_highlight_kind(5, 4, &hl),
+            SearchHighlightKind::Match,
+            "last col inside [start, end)"
+        );
+        assert_eq!(
+            search_highlight_kind(5, 5, &hl),
+            SearchHighlightKind::None,
+            "end_col exclusive"
+        );
+        assert_eq!(
+            search_highlight_kind(4, 3, &hl),
+            SearchHighlightKind::None,
+            "different absolute line"
+        );
+        assert_eq!(
+            search_highlight_kind(6, 3, &hl),
+            SearchHighlightKind::None,
+            "different absolute line"
+        );
+    }
+
+    /// Current match index overrides plain Match for its cells.
+    #[test]
+    fn search_highlight_kind_prefers_current_over_other_matches() {
+        let matches = [
+            match_at(0, 0, 2), // current
+            match_at(0, 4, 6), // other
+            match_at(1, 1, 3), // other line
+        ];
+        let hl = SearchHighlights {
+            matches: &matches,
+            current: Some(0),
+        };
+
+        assert_eq!(
+            search_highlight_kind(0, 0, &hl),
+            SearchHighlightKind::Current
+        );
+        assert_eq!(
+            search_highlight_kind(0, 1, &hl),
+            SearchHighlightKind::Current
+        );
+        assert_eq!(search_highlight_kind(0, 4, &hl), SearchHighlightKind::Match);
+        assert_eq!(search_highlight_kind(0, 5, &hl), SearchHighlightKind::Match);
+        assert_eq!(search_highlight_kind(1, 1, &hl), SearchHighlightKind::Match);
+        assert_eq!(search_highlight_kind(0, 2, &hl), SearchHighlightKind::None);
+        assert_eq!(search_highlight_kind(0, 3, &hl), SearchHighlightKind::None);
+    }
+
+    /// Out-of-bounds / None current must not panic; still classify plain matches.
+    #[test]
+    fn search_highlight_kind_out_of_bounds_current_does_not_panic() {
+        let matches = [match_at(2, 1, 3)];
+
+        let hl_none = SearchHighlights {
+            matches: &matches,
+            current: None,
+        };
+        assert_eq!(
+            search_highlight_kind(2, 1, &hl_none),
+            SearchHighlightKind::Match
         );
 
-        let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        let hl_oob = SearchHighlights {
+            matches: &matches,
+            current: Some(99),
+        };
+        assert_eq!(
+            search_highlight_kind(2, 1, &hl_oob),
+            SearchHighlightKind::Match,
+            "oob current falls back to Match for covered cells"
+        );
+        assert_eq!(
+            search_highlight_kind(2, 3, &hl_oob),
+            SearchHighlightKind::None
+        );
 
-        let bind_group_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { multisampled: false, view_dimension: wgpu::TextureViewDimension::D2, sample_type: wgpu::TextureSampleType::Float { filterable: true } },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+        let empty = SearchHighlights {
+            matches: &[][..],
+            current: Some(0),
+        };
+        assert_eq!(
+            search_highlight_kind(0, 0, &empty),
+            SearchHighlightKind::None
+        );
+    }
 
-        let uniform_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Uniforms"),
-            contents: bytemuck::cast_slice(&[Uniforms {
-                screen_size: [gpu.width as f32, gpu.height as f32],
-                atlas_size: [atlas.atlas_width as f32, atlas.atlas_height as f32],
-            }]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
-
-        let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let instance_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<CellInstance>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 8,  shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 4, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 40, shader_location: 5, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 48, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 64, shader_location: 7, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 80, shader_location: 8, format: wgpu::VertexFormat::Uint32 },
-            ],
+    /// Wide primary covering half-open [1, 3): col1 and col2 hit, col3 does not.
+    #[test]
+    fn search_highlight_kind_wide_char_primary_covers_both_columns() {
+        // Wide glyph primary at col 1 with width 2 → match span [1, 3).
+        let matches = [match_at(-1, 1, 3)];
+        let hl = SearchHighlights {
+            matches: &matches,
+            current: Some(0),
         };
 
-        let pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[instance_layout],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: gpu.config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        Self {
-            font_system, swash_cache, atlas, atlas_texture,
-            pipeline, bind_group_layout, uniform_buffer, sampler,
-            viewport_x: 0.0,
-            viewport_y: 0.0,
-            viewport_width: gpu.width as f32,
-            viewport_height: gpu.height as f32,
-        }
+        assert_eq!(
+            search_highlight_kind(-1, 0, &hl),
+            SearchHighlightKind::None,
+            "column before wide primary"
+        );
+        assert_eq!(
+            search_highlight_kind(-1, 1, &hl),
+            SearchHighlightKind::Current,
+            "wide primary start col"
+        );
+        assert_eq!(
+            search_highlight_kind(-1, 2, &hl),
+            SearchHighlightKind::Current,
+            "wide spacer / second grid col of primary"
+        );
+        assert_eq!(
+            search_highlight_kind(-1, 3, &hl),
+            SearchHighlightKind::None,
+            "end_col exclusive — third col must not highlight"
+        );
     }
 
-    pub fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32, gpu: &GpuState) {
-        self.viewport_x = x;
-        self.viewport_y = y;
-        self.viewport_width = width;
-        self.viewport_height = height;
-        // shader 的 screen_size 用 viewport 宽高（不是整个窗口），
-        // 这样 NDC 坐标在 viewport 内部是 [-1,1]
-        gpu.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[Uniforms {
-            screen_size: [width, height],
-            atlas_size: [self.atlas.atlas_width as f32, self.atlas.atlas_height as f32],
-        }]));
+    // =========================================================================
+    // P0 Task 4 RED-C: cell background source priority (pure, no GPU)
+    // selection > Current > Match > cell background
+    // =========================================================================
+
+    #[test]
+    fn cell_background_source_priority_selection_then_search_then_cell() {
+        // Selection wins over every search kind.
+        assert_eq!(
+            resolve_cell_background_source(true, SearchHighlightKind::Current),
+            CellBackgroundSource::Selection
+        );
+        assert_eq!(
+            resolve_cell_background_source(true, SearchHighlightKind::Match),
+            CellBackgroundSource::Selection
+        );
+        assert_eq!(
+            resolve_cell_background_source(true, SearchHighlightKind::None),
+            CellBackgroundSource::Selection
+        );
+
+        // Without selection: Current > Match > Cell.
+        assert_eq!(
+            resolve_cell_background_source(false, SearchHighlightKind::Current),
+            CellBackgroundSource::SearchCurrent
+        );
+        assert_eq!(
+            resolve_cell_background_source(false, SearchHighlightKind::Match),
+            CellBackgroundSource::SearchMatch
+        );
+        assert_eq!(
+            resolve_cell_background_source(false, SearchHighlightKind::None),
+            CellBackgroundSource::Cell
+        );
     }
+}
 
-    pub fn calculate_grid_size(&self) -> (u16, u16) {
-        let cols = (self.viewport_width / self.atlas.cell_width).floor() as u16;
-        let rows = (self.viewport_height / self.atlas.cell_height).floor() as u16;
-        (cols.max(1), rows.max(1))
-    }
+#[cfg(test)]
+mod tests {
+    use super::{search_highlights_fingerprint, SearchHighlights, TerminalPalette};
+    use crate::terminal_search::SearchMatch;
+    use crate::themes::theme_by_name;
 
-    pub fn cell_size(&self) -> (f32, f32) {
-        (self.atlas.cell_width, self.atlas.cell_height)
-    }
+    const F32_EPS: f32 = 1e-6;
 
-    fn color_to_f32(colors: &alacritty_terminal::term::color::Colors, c: alacritty_terminal::vte::ansi::Color, default: [u8; 4]) -> [f32; 4] {
-        use alacritty_terminal::vte::ansi::Color as AC;
-        let rgba = match c {
-            AC::Spec(rgb) => [rgb.r, rgb.g, rgb.b, 255],
-            AC::Named(named) => {
-                if let Some(rgb) = colors[named] { [rgb.r, rgb.g, rgb.b, 255] }
-                else {
-                    let idx = named as usize;
-                    if idx < 16 { [ANSI_COLORS[idx][0], ANSI_COLORS[idx][1], ANSI_COLORS[idx][2], 255] }
-                    else { default }
-                }
-            }
-            AC::Indexed(idx) => {
-                if let Some(rgb) = colors[idx as usize] { [rgb.r, rgb.g, rgb.b, 255] }
-                else if (idx as usize) < 16 { [ANSI_COLORS[idx as usize][0], ANSI_COLORS[idx as usize][1], ANSI_COLORS[idx as usize][2], 255] }
-                else if idx < 232 {
-                    let i = idx - 16;
-                    [(i / 36) * 51, ((i % 36) / 6) * 51, (i % 6) * 51, 255]
-                } else {
-                    let v = 8 + (idx - 232) * 10;
-                    [v, v, v, 255]
-                }
-            }
-        };
-        [rgba[0] as f32 / 255.0, rgba[1] as f32 / 255.0, rgba[2] as f32 / 255.0, rgba[3] as f32 / 255.0]
-    }
-
-    pub fn is_selected(col: usize, row: usize, sel_start: Option<(usize, usize)>, sel_end: Option<(usize, usize)>) -> bool {
-        let (start, end) = match (sel_start, sel_end) {
-            (Some(s), Some(e)) => {
-                if (s.1, s.0) <= (e.1, e.0) { (s, e) } else { (e, s) }
-            }
-            _ => return false,
-        };
-        if row < start.1 || row > end.1 { return false; }
-        if row == start.1 && row == end.1 { return col >= start.0 && col <= end.0; }
-        if row == start.1 { return col >= start.0; }
-        if row == end.1 { return col <= end.0; }
-        true
-    }
-
-    pub fn is_mouse_mode(terminal: &TerminalState) -> bool {
-        if let Some(t) = terminal.term() {
-            let mode = *t.mode();
-            use alacritty_terminal::term::TermMode;
-            mode.intersects(TermMode::MOUSE_MODE)
-        } else {
-            false
-        }
-    }
-
-    /// Render terminal cells into an existing render pass.
-    /// Call this AFTER egui has rendered, within the same encoder.
-    pub fn render_to_pass(
-        &mut self,
-        gpu: &GpuState,
-        view: &wgpu::TextureView,
-        encoder: &mut wgpu::CommandEncoder,
-        terminal: &TerminalState,
-        cursor_visible: bool,
-        sel_start: Option<(usize, usize)>,
-        sel_end: Option<(usize, usize)>,
-    ) {
-        let term = match terminal.term() {
-            Some(t) => t,
-            None => return,
-        };
-
-        let content = term.renderable_content();
-        let cw = self.atlas.cell_width;
-        let ch = self.atlas.cell_height;
-        // cell 位置不需要加 offset_x — viewport 已经偏移了
-        let offset_x = 0.0f32;
-        let bg_default_f = [BG_DEFAULT[0] as f32 / 255.0, BG_DEFAULT[1] as f32 / 255.0, BG_DEFAULT[2] as f32 / 255.0, 1.0];
-
-        let mut instances: Vec<CellInstance> = Vec::with_capacity(8192);
-        let cursor = content.cursor;
-
-        use alacritty_terminal::term::cell::Flags as CellFlags;
-
-        for indexed in content.display_iter {
-            let cell = &indexed.cell;
-            let col_idx = indexed.point.column.0;
-            let row_idx = indexed.point.line.0 as usize;
-            // Offset cell positions by sidebar width
-            let px = offset_x + col_idx as f32 * cw;
-            let py = row_idx as f32 * ch;
-
-            let flags = cell.flags;
-
-            if flags.contains(CellFlags::HIDDEN) || flags.contains(CellFlags::WIDE_CHAR_SPACER) {
-                continue;
-            }
-
-            let mut fg = Self::color_to_f32(content.colors, cell.fg, FG_DEFAULT);
-            let mut bg = Self::color_to_f32(content.colors, cell.bg, BG_DEFAULT);
-
-            if flags.contains(CellFlags::INVERSE) { std::mem::swap(&mut fg, &mut bg); }
-            if flags.contains(CellFlags::DIM) { fg[0] *= 0.5; fg[1] *= 0.5; fg[2] *= 0.5; }
-
-            if Self::is_selected(col_idx, row_idx, sel_start, sel_end) {
-                std::mem::swap(&mut fg, &mut bg);
-                if bg == bg_default_f { bg = SELECTION_BG; }
-            }
-
-            let mut gpu_flags: u32 = 0;
-            if flags.intersects(CellFlags::ALL_UNDERLINES) { gpu_flags |= 1; }
-            if flags.contains(CellFlags::STRIKEOUT) { gpu_flags |= 2; }
-
-            let bold = flags.contains(CellFlags::BOLD);
-            let italic = flags.contains(CellFlags::ITALIC);
-
-            let ch_char = cell.c;
-            if ch_char == ' ' || ch_char == '\0' {
-                if bg != bg_default_f || gpu_flags != 0 {
-                    instances.push(CellInstance {
-                        pos: [px, py], size: [cw, ch],
-                        uv_pos: [0.0, 0.0], uv_size: [0.0, 0.0],
-                        glyph_offset: [0.0, 0.0], glyph_size: [0.0, 0.0],
-                        fg, bg, flags: gpu_flags, _pad: [0; 3],
-                    });
-                }
-                continue;
-            }
-
-            let glyph = self.atlas.ensure_glyph(&mut self.font_system, &mut self.swash_cache, ch_char, bold, italic);
-
-            let cell_w = if flags.contains(CellFlags::WIDE_CHAR) { cw * 2.0 } else { cw };
-            let (uv_pos, uv_size, g_offset, g_size) = if let Some(g) = glyph {
-                ([g.x as f32, g.y as f32], [g.width as f32, g.height as f32],
-                 [g.bearing_x as f32, g.bearing_y as f32], [g.width as f32, g.height as f32])
-            } else {
-                ([0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
-            };
-
-            instances.push(CellInstance {
-                pos: [px, py], size: [cell_w, ch],
-                uv_pos, uv_size,
-                glyph_offset: g_offset, glyph_size: g_size,
-                fg, bg, flags: gpu_flags, _pad: [0; 3],
-            });
-        }
-
-        // Cursor
-        if cursor_visible {
-            let cx = offset_x + cursor.point.column.0 as f32 * cw;
-            let cy = cursor.point.line.0 as f32 * ch;
-            instances.push(CellInstance {
-                pos: [cx, cy], size: [2.0, ch],
-                uv_pos: [0.0, 0.0], uv_size: [0.0, 0.0],
-                glyph_offset: [0.0, 0.0], glyph_size: [0.0, 0.0],
-                fg: CURSOR_COLOR, bg: CURSOR_COLOR,
-                flags: 0, _pad: [0; 3],
-            });
-        }
-
-        if instances.is_empty() { return; }
-
-        if self.atlas.dirty {
-            gpu.queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &self.atlas_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                &self.atlas.data,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(self.atlas.atlas_width), rows_per_image: Some(self.atlas.atlas_height) },
-                wgpu::Extent3d { width: self.atlas.atlas_width, height: self.atlas.atlas_height, depth_or_array_layers: 1 },
+    fn assert_rgba_f32_near(actual: [f32; 4], expected: [f32; 4]) {
+        for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - e).abs() < F32_EPS,
+                "component {i}: actual={a}, expected={e}, eps={F32_EPS}"
             );
-            self.atlas.dirty = false;
         }
+    }
 
-        let instance_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cell Instances"),
-            contents: bytemuck::cast_slice(&instances),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+    #[test]
+    fn from_theme_maps_adventure_time_bytes_with_opaque_alpha() {
+        let theme = theme_by_name("AdventureTime").unwrap();
+        let palette = TerminalPalette::from_theme(theme);
 
-        let atlas_view = self.atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bind_group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+        assert_eq!(palette.background, [0x1f, 0x1d, 0x45, 255]);
+        assert_eq!(palette.foreground, [0xf8, 0xdc, 0xc0, 255]);
+        assert_eq!(palette.ansi[1], [0xbd, 0x00, 0x13, 255]);
+    }
+
+    #[test]
+    fn from_theme_maps_cursor_and_selection_to_normalized_f32() {
+        let theme = theme_by_name("AdventureTime").unwrap();
+        let palette = TerminalPalette::from_theme(theme);
+
+        assert_rgba_f32_near(
+            palette.cursor,
+            [
+                0xef as f32 / 255.0,
+                0xbf as f32 / 255.0,
+                0x38 as f32 / 255.0,
+                1.0,
             ],
-        });
+        );
+        assert_rgba_f32_near(
+            palette.selection,
+            [
+                0x26 as f32 / 255.0,
+                0x4f as f32 / 255.0,
+                0x78 as f32 / 255.0,
+                1.0,
+            ],
+        );
+    }
 
-        // Terminal render pass with viewport scissor
-        {
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Terminal Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load, // Don't clear — egui already rendered
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            // Clip to terminal viewport (right of sidebar, below tab bar)
-            rp.set_viewport(
-                self.viewport_x, self.viewport_y,
-                self.viewport_width, self.viewport_height,
-                0.0, 1.0,
-            );
-            rp.set_scissor_rect(
-                self.viewport_x as u32, self.viewport_y as u32,
-                self.viewport_width as u32, self.viewport_height as u32,
-            );
-            rp.set_pipeline(&self.pipeline);
-            rp.set_bind_group(0, &bind_group, &[]);
-            rp.set_vertex_buffer(0, instance_buffer.slice(..));
-            rp.draw(0..6, 0..instances.len() as u32);
-        }
+    #[test]
+    fn from_theme_produces_distinct_palette_for_3024_day() {
+        let adventure = TerminalPalette::from_theme(theme_by_name("AdventureTime").unwrap());
+        let day = TerminalPalette::from_theme(theme_by_name("3024 Day").unwrap());
+
+        assert_eq!(day.background, [0xf7, 0xf7, 0xf7, 255]);
+        assert_eq!(day.foreground, [0x4a, 0x45, 0x43, 255]);
+        assert_ne!(day.background, adventure.background);
+        assert_ne!(day.foreground, adventure.foreground);
+    }
+
+    /// P0 Task 3 RED: 编译期锁定 `Renderer::set_font` 精确签名。
+    /// 不创建 GPU/窗口；方法尚不存在时应编译失败。
+    fn accept_set_font_fn(_f: fn(&mut super::Renderer, &super::GpuState, &str, f32)) {}
+
+    #[test]
+    fn set_font_signature_matches_live_font_application_api() {
+        accept_set_font_fn(super::Renderer::set_font);
+    }
+
+    #[test]
+    fn bootstrap_font_size_uses_shared_native_default() {
+        assert_eq!(
+            super::BOOTSTRAP_FONT_SIZE,
+            crate::settings::DEFAULT_TERMINAL_FONT_SIZE
+        );
+    }
+
+    #[test]
+    fn search_fingerprint_changes_with_current_match_and_ranges() {
+        let matches = [SearchMatch {
+            line: 3,
+            start_col: 2,
+            end_col: 5,
+        }];
+        let first = search_highlights_fingerprint(Some(SearchHighlights {
+            matches: &matches,
+            current: None,
+        }));
+        let current = search_highlights_fingerprint(Some(SearchHighlights {
+            matches: &matches,
+            current: Some(0),
+        }));
+        let absent = search_highlights_fingerprint(None);
+        assert_ne!(first, current);
+        assert_ne!(first, absent);
     }
 }

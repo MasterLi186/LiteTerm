@@ -77,10 +77,8 @@ pub async fn do_ssh_connect(
                 loop {
                     match reader.read(&mut read_buf) {
                         Ok(0) => {
-                            let _ = app_clone.emit(
-                                "terminal-closed",
-                                serde_json::json!({"id": id_clone}),
-                            );
+                            let _ = app_clone
+                                .emit("terminal-closed", serde_json::json!({"id": id_clone}));
                             break;
                         }
                         Ok(n) => {
@@ -96,10 +94,8 @@ pub async fn do_ssh_connect(
                             }
                         }
                         Err(_) => {
-                            let _ = app_clone.emit(
-                                "terminal-closed",
-                                serde_json::json!({"id": id_clone}),
-                            );
+                            let _ = app_clone
+                                .emit("terminal-closed", serde_json::json!({"id": id_clone}));
                             break;
                         }
                     }
@@ -128,7 +124,10 @@ pub async fn do_ssh_connect(
             });
 
             // 连接成功后才初始化输出缓冲区（避免失败路径泄漏 1MB）
-            state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
+            state.output_buffers.lock().unwrap().insert(
+                id.clone(),
+                crate::state::TerminalOutputBuffer::new(1_048_576),
+            );
 
             state.local_terminals.lock().unwrap().insert(
                 id.clone(),
@@ -155,13 +154,21 @@ pub async fn do_ssh_connect(
     let osc7_cwd_clone = osc7_cwd.clone();
 
     let zmodem_active = Arc::new(AtomicBool::new(false));
-    let zmodem_request: Arc<Mutex<Option<crate::state::ZmodemSendRequest>>> = Arc::new(Mutex::new(None));
+    let zmodem_request: Arc<Mutex<Option<crate::state::ZmodemSendRequest>>> =
+        Arc::new(Mutex::new(None));
     let zmodem_active_clone = zmodem_active.clone();
     let zmodem_request_clone = zmodem_request.clone();
     let output_bufs = state.output_buffers.clone();
 
     std::thread::spawn(move || {
-        app_log!("SSH", "SSH CONNECT START: {}:{} user={} auth={}", host, port, user, auth_method);
+        app_log!(
+            "SSH",
+            "SSH CONNECT START: {}:{} user={} auth={}",
+            host,
+            port,
+            user,
+            auth_method
+        );
 
         // 1. TCP connect + SSH handshake
         let addr = format!("{}:{}", host, port);
@@ -177,7 +184,10 @@ pub async fn do_ssh_connect(
             &sock_addr,
             std::time::Duration::from_secs(timeout as u64),
         ) {
-            Ok(tcp) => { app_log!("SSH", "TCP connected to {}", addr); tcp },
+            Ok(tcp) => {
+                app_log!("SSH", "TCP connected to {}", addr);
+                tcp
+            }
             Err(e) => {
                 app_log!("SSH", "ERROR: TCP connect failed: {}", e);
                 let _ = status_tx.send(Err(format!("TCP connect failed: {}", e)));
@@ -227,7 +237,9 @@ pub async fn do_ssh_connect(
                 None => format!("{}: (未知)", label),
             }
         };
-        app_log!("SSH", "协商结果: {} | {} | {}",
+        app_log!(
+            "SSH",
+            "协商结果: {} | {} | {}",
             active_algs(ssh2::MethodType::Kex, "Kex"),
             active_algs(ssh2::MethodType::CryptCs, "Cipher"),
             active_algs(ssh2::MethodType::MacCs, "MAC"),
@@ -280,23 +292,27 @@ pub async fn do_ssh_connect(
         // ECHO=false 使随后注入的 bash/zsh OSC7 钩子不回显;注入完成后 stty echo 恢复
         let mut pty_modes = ssh2::PtyModes::new();
         // 输入模式
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::ICRNL, true);  // CR→NL(输入)
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::IXON, true);   // 输出流控
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::IXANY, true);  // 任意键恢复输出
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ICRNL, true); // CR→NL(输入)
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::IXON, true); // 输出流控
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::IXANY, true); // 任意键恢复输出
         pty_modes.set_boolean(ssh2::PtyModeOpcode::IMAXBEL, true); // 输入队列满时响铃
-        // 输出模式
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::OPOST, true);  // 启用输出处理
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::ONLCR, true);  // NL→CR-NL(输出)
-        // 本地模式
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::ISIG, true);   // 信号(Ctrl+C等)
+                                                                   // 输出模式
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::OPOST, true); // 启用输出处理
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ONLCR, true); // NL→CR-NL(输出)
+                                                                 // 本地模式
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ISIG, true); // 信号(Ctrl+C等)
         pty_modes.set_boolean(ssh2::PtyModeOpcode::ICANON, true); // 规范输入
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHO, false);  // 注入期间不回显
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOE, true);  // 退格可视擦除
-        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOK, true);  // kill 后回显 NL
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHO, false); // 注入期间不回显
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOE, true); // 退格可视擦除
+        pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOK, true); // kill 后回显 NL
         pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOCTL, true); // 控制字符显示为 ^X
         pty_modes.set_boolean(ssh2::PtyModeOpcode::ECHOKE, true); // kill 可视擦除
         pty_modes.set_boolean(ssh2::PtyModeOpcode::IEXTEN, true); // 扩展输入处理
-        if let Err(e) = channel.request_pty("xterm-256color", Some(pty_modes), Some((pty_cols, pty_rows, 0, 0))) {
+        if let Err(e) = channel.request_pty(
+            "xterm-256color",
+            Some(pty_modes),
+            Some((pty_cols, pty_rows, 0, 0)),
+        ) {
             let _ = status_tx.send(Err(format!("PTY request failed: {}", e)));
             return;
         }
@@ -396,10 +412,8 @@ pub async fn do_ssh_connect(
                 Ok(0) => {
                     answer_orphan();
                     app_log!("SSH", "terminal-closed via EOF id={} host={}:{} user={} channel_eof={} (服务端关闭/shell 退出,非客户端误判)", id_for_read, host, port, user, channel.eof());
-                    let _ = app_clone.emit(
-                        "terminal-closed",
-                        serde_json::json!({"id": id_for_read}),
-                    );
+                    let _ =
+                        app_clone.emit("terminal-closed", serde_json::json!({"id": id_for_read}));
                     break;
                 }
                 Ok(n) => {
@@ -432,10 +446,8 @@ pub async fn do_ssh_connect(
                     // 本机到对端链路/路由断=本机网络共因)、110(ETIMEDOUT)、32(EPIPE);kind=Other
                     // 且 raw_os=None 则为 libssh2 协议错(看 err 文本)。区分'本机网络事件'与'误判'。
                     app_log!("SSH", "terminal-closed via READ-ERR id={} host={}:{} user={} kind={:?} raw_os={:?} err={}", id_for_read, host, port, user, e.kind(), e.raw_os_error(), e);
-                    let _ = app_clone.emit(
-                        "terminal-closed",
-                        serde_json::json!({"id": id_for_read}),
-                    );
+                    let _ =
+                        app_clone.emit("terminal-closed", serde_json::json!({"id": id_for_read}));
                     break;
                 }
             }
@@ -461,7 +473,12 @@ pub async fn do_ssh_connect(
                     let stty = format!(" stty cols {} rows {} echo 2>/dev/null; command stty cols {} rows {} echo < /dev/tty 2>/dev/null; printf '\\r\\033[2K\\r'\r", cols, rows, cols, rows);
                     let _ = channel.write_all(stty.as_bytes());
                     let _ = channel.flush();
-                    app_log!("SSH", "resize 时注入 stty cols={} rows={} + echo (ECHO=false 不可见)", cols, rows);
+                    app_log!(
+                        "SSH",
+                        "resize 时注入 stty cols={} rows={} + echo (ECHO=false 不可见)",
+                        cols,
+                        rows
+                    );
                 }
                 session.set_blocking(false);
             }
@@ -470,7 +487,14 @@ pub async fn do_ssh_connect(
             if last_keepalive.elapsed() >= std::time::Duration::from_secs(15) {
                 // keepalive 失败是 socket 死亡的早期信号(通常紧邻随后的 READ-ERR);只记录不视为致命。
                 if let Err(e) = session.keepalive_send() {
-                    app_log!("SSH", "keepalive_send 失败 id={} host={}:{} err={} (连接可能正在劣化)", id_for_read, host, port, e);
+                    app_log!(
+                        "SSH",
+                        "keepalive_send 失败 id={} host={}:{} err={} (连接可能正在劣化)",
+                        id_for_read,
+                        host,
+                        port,
+                        e
+                    );
                 }
                 last_keepalive = std::time::Instant::now();
             }
@@ -486,7 +510,10 @@ pub async fn do_ssh_connect(
     match recv_result {
         Ok(Ok(())) => {
             // 连接成功后才初始化输出缓冲区（避免失败路径泄漏 1MB）
-            state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
+            state.output_buffers.lock().unwrap().insert(
+                id.clone(),
+                crate::state::TerminalOutputBuffer::new(1_048_576),
+            );
 
             let monitor_stop = Arc::new(AtomicBool::new(false));
             let (sftp_tx, _sftp_rx) = std::sync::mpsc::channel::<SftpRequest>();
@@ -527,7 +554,21 @@ pub async fn ssh_connect(
     cols: Option<u32>,
     rows: Option<u32>,
 ) -> Result<String, String> {
-    do_ssh_connect(&state, &app, host, port, user, password, auth_method, key_path, label, proxy_jump, cols, rows).await
+    do_ssh_connect(
+        &state,
+        &app,
+        host,
+        port,
+        user,
+        password,
+        auth_method,
+        key_path,
+        label,
+        proxy_jump,
+        cols,
+        rows,
+    )
+    .await
 }
 
 /// 返回客户端支持的 SSH 加密算法列表，用于连接失败时诊断

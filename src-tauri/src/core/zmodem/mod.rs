@@ -1,15 +1,15 @@
 // src-tauri/src/core/zmodem/mod.rs
 
-pub mod encode;
 pub mod decode;
+pub mod encode;
 pub mod sender;
 
 // ZMODEM 协议常量
 
-pub const ZPAD: u8 = 0x2a;  // '*'
-pub const ZDLE: u8 = 0x18;  // CAN
-pub const ZHEX: u8 = 0x42;  // 'B'
-pub const ZBIN: u8 = 0x41;  // 'A'（二进制 CRC-16 帧）
+pub const ZPAD: u8 = 0x2a; // '*'
+pub const ZDLE: u8 = 0x18; // CAN
+pub const ZHEX: u8 = 0x42; // 'B'
+pub const ZBIN: u8 = 0x41; // 'A'（二进制 CRC-16 帧）
 pub const ZBIN32: u8 = 0x43; // 'C'
 pub const XON: u8 = 0x11;
 pub const XOFF: u8 = 0x13;
@@ -71,14 +71,14 @@ pub const ZCRCQ: u8 = 0x6a; // 校验下一字节，帧持续，期待 ZACK
 pub const ZCRCW: u8 = 0x6b; // 校验下一字节，帧结束，期待 ZACK
 
 /// ZRINIT 能力标志位（ZF0 字节）
-pub const CANFDX: u8 = 0x01;  // 全双工
+pub const CANFDX: u8 = 0x01; // 全双工
 pub const CANOVIO: u8 = 0x02; // 支持 I/O 重叠
-pub const CANBRK: u8 = 0x04;  // 可发送 break 信号
-pub const CANCRY: u8 = 0x08;  // 可解密
-pub const CANLZW: u8 = 0x10;  // 可解压
+pub const CANBRK: u8 = 0x04; // 可发送 break 信号
+pub const CANCRY: u8 = 0x08; // 可解密
+pub const CANLZW: u8 = 0x10; // 可解压
 pub const CANFC32: u8 = 0x20; // 帧中可使用 CRC-32
-pub const ESCCTL: u8 = 0x40;  // 接收方要求转义控制字符
-pub const ESC8: u8 = 0x80;    // 接收方要求转义第 8 位字符
+pub const ESCCTL: u8 = 0x40; // 接收方要求转义控制字符
+pub const ESC8: u8 = 0x80; // 接收方要求转义第 8 位字符
 
 /// 从线路解码出的帧
 #[derive(Debug, Clone, PartialEq, Eq)]

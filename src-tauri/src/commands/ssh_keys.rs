@@ -11,9 +11,7 @@ pub struct SshKeyInfo {
 
 #[tauri::command]
 pub async fn list_ssh_keys() -> Result<Vec<SshKeyInfo>, String> {
-    let ssh_dir = dirs::home_dir()
-        .ok_or("无法获取用户目录")?
-        .join(".ssh");
+    let ssh_dir = dirs::home_dir().ok_or("无法获取用户目录")?.join(".ssh");
 
     if !ssh_dir.exists() {
         return Ok(Vec::new());
@@ -24,7 +22,11 @@ pub async fn list_ssh_keys() -> Result<Vec<SshKeyInfo>, String> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
         // Only include key files (id_* or *.pub)
         let is_public = name.ends_with(".pub");
@@ -94,17 +96,11 @@ fn get_fingerprint(pub_key_path: &std::path::Path) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn generate_ssh_key(
-    key_type: String,
-    comment: String,
-) -> Result<String, String> {
-    let ssh_dir = dirs::home_dir()
-        .ok_or("无法获取用户目录")?
-        .join(".ssh");
+pub async fn generate_ssh_key(key_type: String, comment: String) -> Result<String, String> {
+    let ssh_dir = dirs::home_dir().ok_or("无法获取用户目录")?.join(".ssh");
 
     // Ensure .ssh directory exists
-    std::fs::create_dir_all(&ssh_dir)
-        .map_err(|e| format!("创建 .ssh 目录失败: {}", e))?;
+    std::fs::create_dir_all(&ssh_dir).map_err(|e| format!("创建 .ssh 目录失败: {}", e))?;
 
     let key_name = format!("id_{}", key_type);
     let key_path = ssh_dir.join(&key_name);
@@ -116,10 +112,14 @@ pub async fn generate_ssh_key(
 
     let output = std::process::Command::new("ssh-keygen")
         .args([
-            "-t", &key_type,
-            "-C", &comment,
-            "-f", &key_path.to_string_lossy(),
-            "-N", "",
+            "-t",
+            &key_type,
+            "-C",
+            &comment,
+            "-f",
+            &key_path.to_string_lossy(),
+            "-N",
+            "",
         ])
         .output()
         .map_err(|e| format!("执行 ssh-keygen 失败: {}", e))?;
@@ -131,13 +131,11 @@ pub async fn generate_ssh_key(
 
     // Read and return the public key
     let pub_path = key_path.with_extension("pub");
-    std::fs::read_to_string(&pub_path)
-        .map_err(|e| format!("读取公钥失败: {}", e))
+    std::fs::read_to_string(&pub_path).map_err(|e| format!("读取公钥失败: {}", e))
 }
 
 #[tauri::command]
 pub async fn read_ssh_public_key(path: String) -> Result<String, String> {
     let expanded = shellexpand::tilde(&path);
-    std::fs::read_to_string(expanded.as_ref())
-        .map_err(|e| format!("读取公钥失败: {}", e))
+    std::fs::read_to_string(expanded.as_ref()).map_err(|e| format!("读取公钥失败: {}", e))
 }

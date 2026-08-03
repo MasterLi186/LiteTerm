@@ -3,9 +3,9 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
+use super::encode::*;
 use super::{DecodedFrame, FrameType, ESCCTL};
 use super::{ZCRCE, ZCRCG, ZCRCW};
-use super::encode::*;
 
 const SUBPACKET_SIZE: usize = 8192;
 
@@ -19,7 +19,11 @@ pub struct FileInfo {
 #[derive(Debug)]
 pub enum SenderAction {
     Send(Vec<u8>),
-    Progress { bytes_sent: u64, total: u64, filename: String },
+    Progress {
+        bytes_sent: u64,
+        total: u64,
+        filename: String,
+    },
     FileComplete(String),
     AllComplete,
     Error(String),
@@ -139,10 +143,9 @@ impl ZmodemSender {
                     _ => {}
                 }
             }
-            State::WaitZfinReply
-                if frame.frame_type == FrameType::ZFIN => {
-                    self.state = State::Done;
-                    return SenderAction::Send(over_and_out());
+            State::WaitZfinReply if frame.frame_type == FrameType::ZFIN => {
+                self.state = State::Done;
+                return SenderAction::Send(over_and_out());
             }
             _ => {}
         }
@@ -168,7 +171,10 @@ impl ZmodemSender {
             self.state = State::SentEof;
             let offset = self.file_offset as u32;
             let mut out = encode_data_subpacket(&[], ZCRCE);
-            out.extend(encode_zbin32_header(FrameType::ZEOF as u8, offset.to_le_bytes()));
+            out.extend(encode_zbin32_header(
+                FrameType::ZEOF as u8,
+                offset.to_le_bytes(),
+            ));
             return Some(SenderAction::Send(out));
         }
 
@@ -259,8 +265,8 @@ impl ZmodemSender {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::FrameType;
+    use super::*;
 
     #[test]
     fn test_sender_start_sends_zrqinit() {
@@ -279,7 +285,10 @@ mod tests {
     fn test_sender_empty_files_sends_zfin() {
         let mut sender = ZmodemSender::new(vec![]);
         sender.start();
-        let zrinit = DecodedFrame { frame_type: FrameType::ZRINIT, flags: [0, 0, 0, 0x23] };
+        let zrinit = DecodedFrame {
+            frame_type: FrameType::ZRINIT,
+            flags: [0, 0, 0, 0x23],
+        };
         match sender.handle_frame(&zrinit) {
             SenderAction::Send(data) => {
                 // With no files, should send ZFIN

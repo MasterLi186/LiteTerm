@@ -40,17 +40,18 @@ impl KeyringEntry {
         let mut key = vec![0u8; 32]; // AES-256
         pbkdf2_hmac(
             b"liteterm-credential-store", // pass: 应用固定密码
-            salt.as_bytes(),               // salt: hostname+username(绑定机器)
+            salt.as_bytes(),              // salt: hostname+username(绑定机器)
             100_000,
             MessageDigest::sha256(),
             &mut key,
-        ).expect("PBKDF2 失败");
+        )
+        .expect("PBKDF2 失败");
         key
     }
 
     fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        use openssl::symm::{encrypt_aead, Cipher};
         use openssl::rand::rand_bytes;
+        use openssl::symm::{encrypt_aead, Cipher};
 
         let key = Self::derive_key();
         let mut nonce = vec![0u8; 12];
@@ -130,7 +131,9 @@ impl KeyringEntry {
 
         // 从磁盘重读验证(确认文件写入完整)
         let reloaded = Self::load_store();
-        let stored = reloaded.get(&self.storage_key()).ok_or("写入后磁盘读回找不到记录")?;
+        let stored = reloaded
+            .get(&self.storage_key())
+            .ok_or("写入后磁盘读回找不到记录")?;
         let decoded = hex::decode(stored)?;
         let decrypted = Self::decrypt(&decoded)?;
         let verify = String::from_utf8(decrypted)?;
@@ -171,8 +174,20 @@ impl KeyringEntry {
                 attrs.insert("application", "guishell");
                 let key = self.storage_key();
                 attrs.insert("key", &key);
-                collection.create_item(&self.storage_key(), attrs, password.as_bytes(), true, "text/plain").await?;
-                app_log!("KEYRING", "secret-service store 成功: {}", self.storage_key());
+                collection
+                    .create_item(
+                        &self.storage_key(),
+                        attrs,
+                        password.as_bytes(),
+                        true,
+                        "text/plain",
+                    )
+                    .await?;
+                app_log!(
+                    "KEYRING",
+                    "secret-service store 成功: {}",
+                    self.storage_key()
+                );
                 // 同时写文件备份,secret-service 不可用时还能取到
                 let _ = self.file_store(password);
                 Ok(())
@@ -197,13 +212,20 @@ impl KeyringEntry {
                 let item = match results.unlocked.first() {
                     Some(item) => item,
                     None => match results.locked.first() {
-                        Some(item) => { item.unlock().await?; item }
+                        Some(item) => {
+                            item.unlock().await?;
+                            item
+                        }
                         None => return self.file_retrieve(),
                     },
                 };
                 let secret = item.get_secret().await?;
                 let password = String::from_utf8(secret)?;
-                app_log!("KEYRING", "secret-service retrieve 成功: {}", self.storage_key());
+                app_log!(
+                    "KEYRING",
+                    "secret-service retrieve 成功: {}",
+                    self.storage_key()
+                );
                 Ok(Some(password))
             }
             Err(e) => {

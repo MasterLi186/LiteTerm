@@ -76,11 +76,19 @@ pub async fn list_local_dir(path: String) -> Result<Vec<FileEntry>, String> {
         #[cfg(unix)]
         let (permissions, owner, group) = {
             let mode = meta.mode();
-            (mode_to_string(mode, meta.is_dir()), meta.uid().to_string(), meta.gid().to_string())
+            (
+                mode_to_string(mode, meta.is_dir()),
+                meta.uid().to_string(),
+                meta.gid().to_string(),
+            )
         };
         #[cfg(not(unix))]
         let (permissions, owner, group) = {
-            let perm = if meta.permissions().readonly() { "r--r--r--" } else { "rw-rw-rw-" };
+            let perm = if meta.permissions().readonly() {
+                "r--r--r--"
+            } else {
+                "rw-rw-rw-"
+            };
             let p = format!("{}{}", if meta.is_dir() { "d" } else { "-" }, perm);
             (p, String::new(), String::new())
         };
@@ -114,7 +122,15 @@ pub async fn start_sftp_session(
     auth_method: String,
     key_path: Option<String>,
 ) -> Result<(), String> {
-    app_log!("SFTP", "SFTP SESSION START: {}:{} user={} auth={} session_id={}", host, port, user, auth_method, session_id);
+    app_log!(
+        "SFTP",
+        "SFTP SESSION START: {}:{} user={} auth={} session_id={}",
+        host,
+        port,
+        user,
+        auth_method,
+        session_id
+    );
 
     // Open a separate SSH connection for SFTP
     let addr = format!("{}:{}", host, port);
@@ -123,14 +139,11 @@ pub async fn start_sftp_session(
         e
     })?;
 
-    let tcp = std::net::TcpStream::connect_timeout(
-        &sock_addr,
-        std::time::Duration::from_secs(10),
-    )
-    .map_err(|e| {
-        app_log!("SFTP", "ERROR: SFTP连接失败: {} ({}:{})", e, host, port);
-        format!("SFTP连接失败: {}", e)
-    })?;
+    let tcp = std::net::TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_secs(10))
+        .map_err(|e| {
+            app_log!("SFTP", "ERROR: SFTP连接失败: {} ({}:{})", e, host, port);
+            format!("SFTP连接失败: {}", e)
+        })?;
 
     tcp.set_nodelay(true).ok();
     tcp.set_write_timeout(None).ok();
@@ -173,12 +186,10 @@ pub async fn start_sftp_session(
         }
         _ => {
             let pw = password.unwrap_or_default();
-            session
-                .userauth_password(&user, &pw)
-                .map_err(|e| {
-                    app_log!("SFTP", "ERROR: 密码认证失败: {}", e);
-                    format!("密码认证失败: {}", e)
-                })?;
+            session.userauth_password(&user, &pw).map_err(|e| {
+                app_log!("SFTP", "ERROR: 密码认证失败: {}", e);
+                format!("密码认证失败: {}", e)
+            })?;
         }
     }
     app_log!("SFTP", "SFTP认证成功: {}:{}", host, port);
@@ -206,11 +217,13 @@ pub async fn start_sftp_session(
     }
 
     // Store the SFTP session (session must live as long as sftp)
-    state
-        .sftp_sessions
-        .lock()
-        .unwrap()
-        .insert(session_id, SftpHandle { _session: session, sftp });
+    state.sftp_sessions.lock().unwrap().insert(
+        session_id,
+        SftpHandle {
+            _session: session,
+            sftp,
+        },
+    );
 
     Ok(())
 }
@@ -239,15 +252,18 @@ pub async fn sftp_exec(
         .get(&session_id)
         .ok_or_else(|| "SFTP会话未找到".to_string())?;
 
-    let mut channel = handle._session
+    let mut channel = handle
+        ._session
         .channel_session()
         .map_err(|e| format!("打开通道失败: {}", e))?;
 
-    channel.exec(&command)
+    channel
+        .exec(&command)
         .map_err(|e| format!("执行命令失败: {}", e))?;
 
     let mut output = String::new();
-    channel.read_to_string(&mut output)
+    channel
+        .read_to_string(&mut output)
         .map_err(|e| format!("读取输出失败: {}", e))?;
 
     channel.wait_close().ok();
@@ -257,7 +273,10 @@ pub async fn sftp_exec(
 /// Flip the cancel flag for an in-progress transfer (keyed `<direction>-<filename>`).
 /// Used by the progress panel's cancel button (e.g. ZMODEM upload).
 #[tauri::command]
-pub async fn cancel_transfer(state: State<'_, AppState>, transfer_key: String) -> Result<(), String> {
+pub async fn cancel_transfer(
+    state: State<'_, AppState>,
+    transfer_key: String,
+) -> Result<(), String> {
     if let Some(flag) = state.transfer_cancel.lock().unwrap().get(&transfer_key) {
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
         app_log!("SFTP", "cancel_transfer: {}", transfer_key);
@@ -313,7 +332,13 @@ pub async fn sftp_download(
     remote_path: String,
     local_path: String,
 ) -> Result<(), String> {
-    app_log!("SFTP", "DOWNLOAD START: session={}, remote={}, local={}", session_id, remote_path, local_path);
+    app_log!(
+        "SFTP",
+        "DOWNLOAD START: session={}, remote={}, local={}",
+        session_id,
+        remote_path,
+        local_path
+    );
 
     let sftp_sessions = state.sftp_sessions.lock().unwrap();
     let handle = match sftp_sessions.get(&session_id) {
@@ -326,38 +351,31 @@ pub async fn sftp_download(
     };
 
     app_log!("SFTP", "SFTP session found, stat remote file...");
-    let stat = handle
-        .sftp
-        .stat(Path::new(&remote_path))
-        .map_err(|e| {
-            let msg = format!("无法获取远程文件信息: {} (path={})", e, remote_path);
-            app_log!("SFTP", "ERROR: {}", msg);
-            msg
-        })?;
+    let stat = handle.sftp.stat(Path::new(&remote_path)).map_err(|e| {
+        let msg = format!("无法获取远程文件信息: {} (path={})", e, remote_path);
+        app_log!("SFTP", "ERROR: {}", msg);
+        msg
+    })?;
     let total = stat.size.unwrap_or(0);
     app_log!("SFTP", "Remote file size: {} bytes", total);
 
     app_log!("SFTP", "Opening remote file...");
-    let mut remote_file = handle
-        .sftp
-        .open(Path::new(&remote_path))
-        .map_err(|e| {
-            let msg = format!("无法打开远程文件: {} (path={})", e, remote_path);
-            app_log!("SFTP", "ERROR: {}", msg);
-            msg
-        })?;
+    let mut remote_file = handle.sftp.open(Path::new(&remote_path)).map_err(|e| {
+        let msg = format!("无法打开远程文件: {} (path={})", e, remote_path);
+        app_log!("SFTP", "ERROR: {}", msg);
+        msg
+    })?;
 
     app_log!("SFTP", "Creating local file: {}", local_path);
     let expanded_local = shellexpand::tilde(&local_path).to_string();
     if let Some(parent) = Path::new(&expanded_local).parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let mut local_file = std::fs::File::create(&expanded_local)
-        .map_err(|e| {
-            let msg = format!("无法创建本地文件: {} (path={})", e, expanded_local);
-            app_log!("SFTP", "ERROR: {}", msg);
-            msg
-        })?;
+    let mut local_file = std::fs::File::create(&expanded_local).map_err(|e| {
+        let msg = format!("无法创建本地文件: {} (path={})", e, expanded_local);
+        app_log!("SFTP", "ERROR: {}", msg);
+        msg
+    })?;
 
     let filename = Path::new(&remote_path)
         .file_name()
@@ -368,23 +386,19 @@ pub async fn sftp_download(
     let mut buf = [0u8; 32768];
     let mut bytes_so_far: u64 = 0;
     loop {
-        let n = remote_file
-            .read(&mut buf)
-            .map_err(|e| {
-                let msg = format!("读取远程文件失败: {} (bytes_so_far={})", e, bytes_so_far);
-                app_log!("SFTP", "ERROR: {}", msg);
-                msg
-            })?;
+        let n = remote_file.read(&mut buf).map_err(|e| {
+            let msg = format!("读取远程文件失败: {} (bytes_so_far={})", e, bytes_so_far);
+            app_log!("SFTP", "ERROR: {}", msg);
+            msg
+        })?;
         if n == 0 {
             break;
         }
-        local_file
-            .write_all(&buf[..n])
-            .map_err(|e| {
-                let msg = format!("写入本地文件失败: {} (bytes_so_far={})", e, bytes_so_far);
-                app_log!("SFTP", "ERROR: {}", msg);
-                msg
-            })?;
+        local_file.write_all(&buf[..n]).map_err(|e| {
+            let msg = format!("写入本地文件失败: {} (bytes_so_far={})", e, bytes_so_far);
+            app_log!("SFTP", "ERROR: {}", msg);
+            msg
+        })?;
         bytes_so_far += n as u64;
         let _ = app.emit(
             "transfer-progress",
@@ -397,7 +411,11 @@ pub async fn sftp_download(
         );
     }
 
-    app_log!("SFTP", "DOWNLOAD COMPLETE: {} bytes transferred", bytes_so_far);
+    app_log!(
+        "SFTP",
+        "DOWNLOAD COMPLETE: {} bytes transferred",
+        bytes_so_far
+    );
     Ok(())
 }
 
@@ -410,43 +428,42 @@ pub async fn sftp_upload(
     local_path: String,
     remote_path: String,
 ) -> Result<(), String> {
-    app_log!("SFTP", "UPLOAD START: session={}, local={}, remote={}", session_id, local_path, remote_path);
+    app_log!(
+        "SFTP",
+        "UPLOAD START: session={}, local={}, remote={}",
+        session_id,
+        local_path,
+        remote_path
+    );
 
     let expanded_local = shellexpand::tilde(&local_path).to_string();
-    let meta =
-        std::fs::metadata(&expanded_local).map_err(|e| {
-            let msg = format!("无法读取本地文件信息: {} (path={})", e, expanded_local);
-            app_log!("SFTP", "ERROR: {}", msg);
-            msg
-        })?;
+    let meta = std::fs::metadata(&expanded_local).map_err(|e| {
+        let msg = format!("无法读取本地文件信息: {} (path={})", e, expanded_local);
+        app_log!("SFTP", "ERROR: {}", msg);
+        msg
+    })?;
     let total = meta.len();
     app_log!("SFTP", "Local file size: {} bytes", total);
 
     let sftp_sessions = state.sftp_sessions.lock().unwrap();
-    let handle = sftp_sessions
-        .get(&session_id)
-        .ok_or_else(|| {
-            let msg = format!("SFTP会话未找到, session_id={}", session_id);
-            app_log!("SFTP", "ERROR: {}", msg);
-            msg
-        })?;
+    let handle = sftp_sessions.get(&session_id).ok_or_else(|| {
+        let msg = format!("SFTP会话未找到, session_id={}", session_id);
+        app_log!("SFTP", "ERROR: {}", msg);
+        msg
+    })?;
 
     app_log!("SFTP", "Creating remote file: {}", remote_path);
-    let mut remote_file = handle
-        .sftp
-        .create(Path::new(&remote_path))
-        .map_err(|e| {
-            let msg = format!("无法创建远程文件: {} (path={})", e, remote_path);
-            app_log!("SFTP", "ERROR: {}", msg);
-            msg
-        })?;
+    let mut remote_file = handle.sftp.create(Path::new(&remote_path)).map_err(|e| {
+        let msg = format!("无法创建远程文件: {} (path={})", e, remote_path);
+        app_log!("SFTP", "ERROR: {}", msg);
+        msg
+    })?;
 
-    let mut local_file =
-        std::fs::File::open(&expanded_local).map_err(|e| {
-            let msg = format!("无法打开本地文件: {} (path={})", e, expanded_local);
-            app_log!("SFTP", "ERROR: {}", msg);
-            msg
-        })?;
+    let mut local_file = std::fs::File::open(&expanded_local).map_err(|e| {
+        let msg = format!("无法打开本地文件: {} (path={})", e, expanded_local);
+        app_log!("SFTP", "ERROR: {}", msg);
+        msg
+    })?;
 
     let filename = Path::new(&expanded_local)
         .file_name()
@@ -458,28 +475,30 @@ pub async fn sftp_upload(
     let mut bytes_so_far: u64 = 0;
     let mut last_log_mb: u64 = 0;
     loop {
-        let n = read_full(&mut local_file, &mut buf)
-            .map_err(|e| {
-                let msg = format!("读取本地文件失败: {} (bytes_so_far={})", e, bytes_so_far);
-                app_log!("SFTP", "ERROR: {}", msg);
-                msg
-            })?;
+        let n = read_full(&mut local_file, &mut buf).map_err(|e| {
+            let msg = format!("读取本地文件失败: {} (bytes_so_far={})", e, bytes_so_far);
+            app_log!("SFTP", "ERROR: {}", msg);
+            msg
+        })?;
         if n == 0 {
             break;
         }
-        remote_file
-            .write_all(&buf[..n])
-            .map_err(|e| {
-                let msg = format!("写入远程文件失败: {} (bytes_so_far={})", e, bytes_so_far);
-                app_log!("SFTP", "ERROR: {}", msg);
-                msg
-            })?;
+        remote_file.write_all(&buf[..n]).map_err(|e| {
+            let msg = format!("写入远程文件失败: {} (bytes_so_far={})", e, bytes_so_far);
+            app_log!("SFTP", "ERROR: {}", msg);
+            msg
+        })?;
         bytes_so_far += n as u64;
         // 每 10MB 记录一次进度
         let current_mb = bytes_so_far / (10 * 1024 * 1024);
         if current_mb > last_log_mb {
             last_log_mb = current_mb;
-            app_log!("SFTP", "PROGRESS: {}MB / {}MB", bytes_so_far / (1024 * 1024), total / (1024 * 1024));
+            app_log!(
+                "SFTP",
+                "PROGRESS: {}MB / {}MB",
+                bytes_so_far / (1024 * 1024),
+                total / (1024 * 1024)
+            );
         }
         let _ = app.emit(
             "transfer-progress",
@@ -492,7 +511,11 @@ pub async fn sftp_upload(
         );
     }
 
-    app_log!("SFTP", "UPLOAD COMPLETE: {} bytes transferred", bytes_so_far);
+    app_log!(
+        "SFTP",
+        "UPLOAD COMPLETE: {} bytes transferred",
+        bytes_so_far
+    );
     Ok(())
 }
 
@@ -583,8 +606,7 @@ pub async fn read_local_file(path: String) -> Result<Vec<u8>, String> {
 pub async fn local_rename(old_path: String, new_path: String) -> Result<(), String> {
     let old_expanded = shellexpand::tilde(&old_path).to_string();
     let new_expanded = shellexpand::tilde(&new_path).to_string();
-    std::fs::rename(&old_expanded, &new_expanded)
-        .map_err(|e| format!("重命名失败: {}", e))?;
+    std::fs::rename(&old_expanded, &new_expanded).map_err(|e| format!("重命名失败: {}", e))?;
     Ok(())
 }
 
@@ -627,9 +649,17 @@ pub async fn drag_upload(
 
     // SFTP 不可用（如交互式堡垒机跳到目标机：独立 SFTP 连接到不了目标机）→ 回退 ZMODEM，
     // rz 在终端会话内运行，能穿透堡垒机菜单把文件传到目标机（终端 cwd 即目标目录）。
-    let sftp_available = state.sftp_sessions.lock().unwrap().contains_key(&session_id);
+    let sftp_available = state
+        .sftp_sessions
+        .lock()
+        .unwrap()
+        .contains_key(&session_id);
     if !sftp_available {
-        app_log!("SFTP", "DRAG UPLOAD: 无 SFTP 会话，回退 ZMODEM: session={}", session_id);
+        app_log!(
+            "SFTP",
+            "DRAG UPLOAD: 无 SFTP 会话，回退 ZMODEM: session={}",
+            session_id
+        );
         return crate::commands::zmodem::run_zmodem_upload(&state, session_id, files).await;
     }
 
@@ -642,7 +672,15 @@ pub async fn drag_upload(
     };
     let target_dir = cwd.clone().or_else(|| fallback_dir.clone()); // None 时用相对路径（落到 home）
     let target_display = target_dir.clone().unwrap_or_else(|| "~".to_string());
-    app_log!("SFTP", "DRAG UPLOAD: session={}, files={}, osc7_cwd={:?}, fallback={:?}, target={}", session_id, files.len(), cwd, fallback_dir, target_display);
+    app_log!(
+        "SFTP",
+        "DRAG UPLOAD: session={}, files={}, osc7_cwd={:?}, fallback={:?}, target={}",
+        session_id,
+        files.len(),
+        cwd,
+        fallback_dir,
+        target_display
+    );
 
     // 2. 逐个上传：同批次内文件名去重，避免不同目录的同名文件相互覆盖（数据丢失）；
     //    取消标志按去重后文件名注册（与进度事件、前端取消键 upload-<文件名> 一致）。
@@ -668,7 +706,17 @@ pub async fn drag_upload(
             Some(d) => format!("{}/{}", d.trim_end_matches('/'), name),
             None => name.clone(), // 相对路径 → SFTP home
         };
-        if let Err(e) = upload_one(&state, &app, &session_id, &expanded, &remote_path, &name, &target_display, &cancel, &mut buf) {
+        if let Err(e) = upload_one(
+            &state,
+            &app,
+            &session_id,
+            &expanded,
+            &remote_path,
+            &name,
+            &target_display,
+            &cancel,
+            &mut buf,
+        ) {
             app_log!("SFTP", "DRAG UPLOAD 失败: {} - {}", name, e);
             errs.push(format!("{}: {}", name, e));
             if cancel.load(Ordering::Relaxed) {
@@ -716,8 +764,7 @@ fn upload_one(
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
 
-    let meta = std::fs::metadata(expanded_local)
-        .map_err(|e| format!("无法读取本地文件: {}", e))?;
+    let meta = std::fs::metadata(expanded_local).map_err(|e| format!("无法读取本地文件: {}", e))?;
     let total = meta.len();
 
     let sftp_sessions = state.sftp_sessions.lock().unwrap();
@@ -739,8 +786,7 @@ fn upload_one(
             let _ = handle.sftp.unlink(Path::new(remote_path));
             return Err("已取消".to_string());
         }
-        let n = read_full(&mut local_file, buf)
-            .map_err(|e| format!("读取本地文件失败: {}", e))?;
+        let n = read_full(&mut local_file, buf).map_err(|e| format!("读取本地文件失败: {}", e))?;
         if n == 0 {
             break;
         }
@@ -759,7 +805,13 @@ fn upload_one(
             }),
         );
     }
-    app_log!("SFTP", "DRAG UPLOAD 完成: {} ({} bytes) -> {}", filename, bytes_so_far, remote_path);
+    app_log!(
+        "SFTP",
+        "DRAG UPLOAD 完成: {} ({} bytes) -> {}",
+        filename,
+        bytes_so_far,
+        remote_path
+    );
     Ok(())
 }
 
@@ -808,4 +860,3 @@ fn install_rc_snippet(
         Err(e) => format!("{}：打开失败 {}", rc, e),
     }
 }
-

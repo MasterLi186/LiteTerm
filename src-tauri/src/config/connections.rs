@@ -123,21 +123,13 @@ impl ConnectionStore {
     /// Returns an empty vec if the group does not exist.
     pub fn hosts_in_group(&self, group_id: &str) -> Vec<(String, &HostConfig)> {
         match self.groups.get(group_id) {
-            Some(group) => group
-                .hosts
-                .iter()
-                .map(|(id, h)| (id.clone(), h))
-                .collect(),
+            Some(group) => group.hosts.iter().map(|(id, h)| (id.clone(), h)).collect(),
             None => Vec::new(),
         }
     }
 
     /// Look up a specific host and return a runtime ConnectionConfig.
-    pub fn get_connection_config(
-        &self,
-        group_id: &str,
-        host_id: &str,
-    ) -> Option<ConnectionConfig> {
+    pub fn get_connection_config(&self, group_id: &str, host_id: &str) -> Option<ConnectionConfig> {
         self.groups
             .get(group_id)
             .and_then(|g| g.hosts.get(host_id))
@@ -163,8 +155,7 @@ impl ConnectionStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(self)
-            .map_err(io::Error::other)?;
+        let content = toml::to_string_pretty(self).map_err(io::Error::other)?;
         fs::write(path, content)
     }
 }

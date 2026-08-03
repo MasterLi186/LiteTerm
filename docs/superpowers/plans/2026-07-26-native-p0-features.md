@@ -31,7 +31,7 @@ After each phase, compare owned files against their snapshots and inspect every 
 - Modify: `native-prototype/src/main.rs`
 - Test: unit tests inside `native-prototype/src/shortcuts.rs` and `native-prototype/src/settings.rs`
 
-- [ ] **Step 1: Write failing shortcut parsing and conflict tests**
+- [x] **Step 1: Write failing shortcut parsing and conflict tests**
 
 ```rust
 #[test]
@@ -54,7 +54,7 @@ fn rejects_duplicate_shortcuts() {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm RED**
+- [x] **Step 2: Run the focused tests and confirm RED**
 
 Run:
 
@@ -65,7 +65,7 @@ cargo test shortcuts::tests settings::tests
 
 Expected: compilation fails because `KeyChord`, `ShortcutSettings`, or the new settings field does not exist.
 
-- [ ] **Step 3: Implement the typed shortcut API**
+- [x] **Step 3: Implement the typed shortcut API**
 
 Use these public contracts:
 
@@ -99,7 +99,7 @@ impl ShortcutSettings {
 
 Defaults are `Ctrl+Shift+T`, `Ctrl+Shift+W`, `Ctrl+Shift+F`, `Ctrl+Shift+C`, `Ctrl+Shift+V`, `Ctrl+Tab`, and `Ctrl+Shift+Tab`. Add `pub shortcuts: ShortcutSettings` to `Settings` with `serde(default)`.
 
-- [ ] **Step 4: Add settings compatibility tests**
+- [x] **Step 4: Add settings compatibility tests**
 
 ```rust
 #[test]
@@ -118,7 +118,7 @@ fn settings_roundtrip_preserves_shortcuts() {
 }
 ```
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 Run:
 
@@ -140,7 +140,7 @@ Expected: all focused tests pass.
 - Modify: `native-prototype/src/main.rs`
 - Test: unit tests inside `native-prototype/src/themes.rs` and `native-prototype/src/renderer.rs`
 
-- [ ] **Step 1: Write failing catalog tests**
+- [x] **Step 1: Write failing catalog tests**
 
 ```rust
 #[test]
@@ -163,7 +163,7 @@ fn theme_names_are_unique() {
 }
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run:
 
@@ -174,7 +174,7 @@ cargo test themes::tests
 
 Expected: compilation fails because the theme module and catalog do not exist.
 
-- [ ] **Step 3: Implement the theme data contract**
+- [x] **Step 3: Implement the theme data contract**
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,7 +198,7 @@ pub fn theme_by_name(name: &str) -> Option<&'static TerminalTheme> {
 
 The generator reads `../src/themes.ts`, extracts each quoted theme and the 20 required colors, and writes deterministic Rust. It exits non-zero for a missing field, duplicate name, invalid hex color, or a count other than 191.
 
-- [ ] **Step 4: Generate the checked-in catalog**
+- [x] **Step 4: Generate the checked-in catalog**
 
 Run:
 
@@ -208,7 +208,7 @@ node native-prototype/scripts/generate-themes.mjs
 
 Expected: `native-prototype/src/themes_generated.rs` contains exactly 191 `TerminalTheme` values.
 
-- [ ] **Step 5: Replace hard-coded renderer colors with `TerminalPalette`**
+- [x] **Step 5: Replace hard-coded renderer colors with `TerminalPalette`**
 
 Use this contract:
 
@@ -234,7 +234,7 @@ impl Renderer {
 
 `color_to_f32`, the render-pass clear color, cursor, selection, and ANSI fallbacks must use `self.palette`. Existing OSC/true-color values retain priority.
 
-- [ ] **Step 6: Verify catalog and renderer tests**
+- [x] **Step 6: Verify catalog and renderer tests**
 
 Run:
 
@@ -262,7 +262,7 @@ git diff --exit-code -- src/themes_generated.rs
 - Modify: `native-prototype/src/main.rs`
 - Test: unit tests inside the changed modules
 
-- [ ] **Step 1: Write failing draft validation and atlas reset tests**
+- [x] **Step 1: Write failing draft validation and atlas reset tests**
 
 ```rust
 #[test]
@@ -282,7 +282,7 @@ fn atlas_reset_updates_metrics_and_drops_cached_glyphs() {
 }
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run:
 
@@ -293,7 +293,7 @@ cargo test settings_panel::tests atlas::tests
 
 Expected: compilation fails for the missing draft and reset APIs.
 
-- [ ] **Step 3: Extend terminal settings**
+- [x] **Step 3: Extend terminal settings**
 
 Use explicit fields and compatible defaults:
 
@@ -311,7 +311,7 @@ pub struct TerminalSettings {
 
 Defaults are `Ubuntu Mono`, `26.0`, and `AdventureTime`. Loading an old value such as `Monospace 12` must not panic; normalize the family and retain the explicit default size when no `font_size` key exists.
 
-- [ ] **Step 4: Implement settings draft and UI actions**
+- [x] **Step 4: Implement settings draft and UI actions**
 
 ```rust
 pub enum SettingsPanelAction {
@@ -336,7 +336,7 @@ impl SettingsPanel {
 
 The Chinese UI includes font family, size 8–48, searchable theme list with previews, and the seven shortcuts. Save validates shortcuts and writes settings; Cancel discards the draft.
 
-- [ ] **Step 5: Implement live renderer application**
+- [x] **Step 5: Implement live renderer application**
 
 Add:
 
@@ -352,7 +352,7 @@ impl TabManager {
 
 Applying settings updates the theme, rebuilds font GPU resources only when font fields changed, recalculates the grid, and resizes every local and SSH terminal.
 
-- [ ] **Step 6: Verify focused tests**
+- [x] **Step 6: Verify focused tests**
 
 Run:
 
@@ -374,7 +374,7 @@ Expected: all focused tests pass.
 - Modify: `native-prototype/src/main.rs`
 - Test: unit tests inside `native-prototype/src/terminal_search.rs`
 
-- [ ] **Step 1: Write failing pure search tests**
+- [x] **Step 1: Write failing pure search tests**
 
 ```rust
 #[test]
@@ -383,7 +383,7 @@ fn finds_ascii_and_cjk_by_grid_columns() {
         SearchLine::new(-1, vec![cell('a', 1), cell('中', 2), spacer(), cell('b', 1)]),
     ];
     let matches = find_matches(&lines, "中b", false);
-    assert_eq!(matches, vec![SearchMatch { line: -1, start_col: 1, end_col: 3 }]);
+    assert_eq!(matches, vec![SearchMatch { line: -1, start_col: 1, end_col: 4 }]);
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn empty_query_has_no_matches() {
 }
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run:
 
@@ -410,7 +410,7 @@ cargo test terminal_search::tests
 
 Expected: compilation fails because the search module does not exist.
 
-- [ ] **Step 3: Implement search state and terminal snapshot**
+- [x] **Step 3: Implement search state and terminal snapshot**
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,11 +436,11 @@ impl TerminalState {
 
 Skip `WIDE_CHAR_SPACER` as text while retaining its grid width. Search is a literal substring for P0 and covers history plus visible screen.
 
-- [ ] **Step 4: Add search bar and input routing**
+- [x] **Step 4: Add search bar and input routing**
 
 `Ctrl+Shift+F` and the existing right-click item open the search bar and focus its text field. Query changes recompute active-tab matches. Enter/Shift+Enter select next/previous, Escape closes, and terminal PTY input is suppressed while the search field owns focus. The status reads `current/total`, including `0/0`.
 
-- [ ] **Step 5: Add renderer highlights**
+- [x] **Step 5: Add renderer highlights**
 
 Extend `render_to_pass` with:
 
@@ -453,7 +453,7 @@ pub struct SearchHighlights<'a> {
 
 Compare each displayed cell's absolute grid line and column. Use subdued background for all matches and a distinct background for the current match without replacing selection semantics.
 
-- [ ] **Step 6: Verify focused tests**
+- [x] **Step 6: Verify focused tests**
 
 Run:
 
@@ -472,7 +472,7 @@ Expected: all focused tests pass.
 - Modify: `native-prototype/src/main.rs`
 - Test: unit tests inside `native-prototype/src/ime.rs`
 
-- [ ] **Step 1: Write failing IME state tests**
+- [x] **Step 1: Write failing IME state tests**
 
 ```rust
 #[test]
@@ -498,7 +498,7 @@ fn dialog_commit_does_not_reach_pty() {
 }
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run:
 
@@ -509,7 +509,7 @@ cargo test ime::tests
 
 Expected: compilation fails because `ImeState` does not exist.
 
-- [ ] **Step 3: Implement the state machine**
+- [x] **Step 3: Implement the state machine**
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -536,15 +536,15 @@ pub struct ImeState {
 
 Enabled/Disabled update state, Preedit only updates overlay data, and Commit returns PTY text only for `InputOwner::Terminal`.
 
-- [ ] **Step 4: Route winit IME events**
+- [x] **Step 4: Route winit IME events**
 
 Enable IME after window creation with `window.set_ime_allowed(true)`. Handle `WindowEvent::Ime(Ime::Enabled/Disabled/Preedit/Commit)` before generic keyboard text. Update `set_ime_cursor_area` from `Renderer::cursor_screen_rect`; suppress only the matching duplicate keyboard text after a commit.
 
-- [ ] **Step 5: Render preedit overlay**
+- [x] **Step 5: Render preedit overlay**
 
 When the terminal owns focus and preedit is non-empty, render a compact egui overlay at the terminal cursor with underline styling. Dialog, command-bar, completion-popup, search, and settings focus take precedence over terminal routing.
 
-- [ ] **Step 6: Verify focused tests**
+- [x] **Step 6: Verify focused tests**
 
 Run:
 
@@ -564,7 +564,7 @@ Expected: all focused tests pass.
 - Modify: `native-prototype/src/tab_bar.rs`
 - Test: unit tests inside `native-prototype/src/new_tab_selector.rs`
 
-- [ ] **Step 1: Write failing shell filtering and action tests**
+- [x] **Step 1: Write failing shell filtering and action tests**
 
 ```rust
 #[test]
@@ -581,7 +581,7 @@ fn serial_choice_is_disabled() {
 }
 ```
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run:
 
@@ -592,7 +592,7 @@ cargo test new_tab_selector::tests
 
 Expected: compilation fails because the selector module does not exist.
 
-- [ ] **Step 3: Implement selector state and actions**
+- [x] **Step 3: Implement selector state and actions**
 
 ```rust
 pub enum NewTabAction {
@@ -620,11 +620,11 @@ impl NewTabSelector {
 
 Read `/etc/shells` on open, filter non-executable paths, preserve file order, and deduplicate. Show grouped saved SSH connections through the existing connection data. Serial is visible, disabled, and adds no dependency.
 
-- [ ] **Step 4: Replace new-tab entry behavior**
+- [x] **Step 4: Replace new-tab entry behavior**
 
 The tab-bar `+` action and configured `Ctrl+Shift+T` chord open the selector. `OpenShell` calls `new_local_tab_with_shell`; `OpenSsh` resolves the saved connection and calls the existing `new_ssh_tab`. Escape and backdrop clicks close without creating a tab.
 
-- [ ] **Step 5: Verify focused tests**
+- [x] **Step 5: Verify focused tests**
 
 Run:
 
@@ -644,11 +644,11 @@ Expected: all focused tests pass.
 - Create: `.ccg/tasks/implement-p0-todos/review.md`
 - Test: Native full build and manual acceptance
 
-- [ ] **Step 1: Format only changed Rust files**
+- [x] **Step 1: Format only changed Rust files**
 
 Run `rustfmt` with explicit file paths. Do not run a repository-wide formatter.
 
-- [ ] **Step 2: Run the required Native verification**
+- [x] **Step 2: Run the required Native verification**
 
 Run:
 
@@ -658,12 +658,14 @@ Run:
 
 Expected: `cargo build`, `cargo clippy --all-targets`, and `cargo test` all exit 0, and `native-prototype/target/debug/liteterm-native` exists.
 
-- [ ] **Step 3: Run script contract tests**
+- [x] **Step 3: Run script contract tests**
 
 Run:
 
 ```bash
-cargo test --test native_build_script_test --test native_color_api_test --test run_native_script_test
+bash tests/native_build_script_test.sh
+bash tests/native_color_api_test.sh
+bash tests/run_native_script_test.sh
 ```
 
 Expected: all root integration tests pass.
@@ -684,11 +686,11 @@ Verify:
 4. fcitx5 or ibus preedit is visible; committed Chinese appears exactly once.
 5. `+` and `Ctrl+Shift+T` open the selector; Shell and SSH work; Serial is disabled.
 
-- [ ] **Step 5: Review only P0-owned deltas**
+- [x] **Step 5: Review only P0-owned deltas**
 
 Compare each owned file to its phase snapshot, inspect new files, and confirm no unrelated Native behavior changed. Run a CCG Grok review and a Codex lead review, merge findings into `review.md`, fix every Critical issue, and rerun the full verification.
 
-- [ ] **Step 6: Update P0 checkboxes**
+- [x] **Step 6: Update P0 checkboxes**
 
 Mark the five P0 items complete only when their automated and manual acceptance evidence exists.
 

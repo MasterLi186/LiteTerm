@@ -51,7 +51,16 @@ pub async fn create_tunnel(
     let (status_tx, status_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
     std::thread::spawn(move || {
-        app_log!("TUNNEL", "TUNNEL START: {}:{} -> {}:{} type={} local_port={}", host, port, remote_host_clone, remote_port, tunnel_type_clone, local_port);
+        app_log!(
+            "TUNNEL",
+            "TUNNEL START: {}:{} -> {}:{} type={} local_port={}",
+            host,
+            port,
+            remote_host_clone,
+            remote_port,
+            tunnel_type_clone,
+            local_port
+        );
 
         // 1. TCP connect + SSH handshake
         let addr = format!("{}:{}", host, port);
@@ -154,17 +163,14 @@ pub async fn create_tunnel(
                     // ssh2::Session is !Send, so channel_direct_tcpip must happen
                     // on this thread. We open the channel here, then hand both
                     // the local stream and the channel to a new thread for copying.
-                    let channel = match session.channel_direct_tcpip(
-                        &remote_host_clone,
-                        remote_port,
-                        None,
-                    ) {
-                        Ok(ch) => ch,
-                        Err(e) => {
-                            app_log!("TUNNEL", "ERROR: channel_direct_tcpip failed: {}", e);
-                            continue;
-                        }
-                    };
+                    let channel =
+                        match session.channel_direct_tcpip(&remote_host_clone, remote_port, None) {
+                            Ok(ch) => ch,
+                            Err(e) => {
+                                app_log!("TUNNEL", "ERROR: channel_direct_tcpip failed: {}", e);
+                                continue;
+                            }
+                        };
 
                     let stop_for_copy = stop_clone.clone();
                     let _ = local_stream.set_nonblocking(true);
@@ -251,13 +257,11 @@ pub async fn create_tunnel(
                 remote_port,
                 status: "active".to_string(),
             };
-            state.tunnels.lock().unwrap().insert(
-                id.clone(),
-                TunnelHandle {
-                    info,
-                    stop,
-                },
-            );
+            state
+                .tunnels
+                .lock()
+                .unwrap()
+                .insert(id.clone(), TunnelHandle { info, stop });
             Ok(id)
         }
         Ok(Err(e)) => Err(e),

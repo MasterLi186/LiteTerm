@@ -38,7 +38,11 @@ pub struct ShellInfo {
 }
 
 /// 本地终端核心逻辑(供 Tauri 命令和 HTTP API 共用)
-pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<String>) -> Result<String, String> {
+pub fn do_open_terminal(
+    state: &AppState,
+    app: &AppHandle,
+    shell_path: Option<String>,
+) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
 
     let pty_system = portable_pty::native_pty_system();
@@ -62,13 +66,10 @@ pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<St
     })?;
     drop(pair.slave);
 
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| {
-            app_log!("TERM", "ERROR: clone reader failed: {}", e);
-            e.to_string()
-        })?;
+    let reader = pair.master.try_clone_reader().map_err(|e| {
+        app_log!("TERM", "ERROR: clone reader failed: {}", e);
+        e.to_string()
+    })?;
     let writer = pair.master.take_writer().map_err(|e| {
         app_log!("TERM", "ERROR: take writer failed: {}", e);
         e.to_string()
@@ -78,7 +79,10 @@ pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<St
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
 
     // PTY + shell 创建成功后才初始化输出缓冲区（避免失败路径泄漏 1MB）
-    state.output_buffers.lock().unwrap().insert(id.clone(), crate::state::TerminalOutputBuffer::new(1_048_576));
+    state.output_buffers.lock().unwrap().insert(
+        id.clone(),
+        crate::state::TerminalOutputBuffer::new(1_048_576),
+    );
 
     // Reader 线程: PTY 输出 -> Tauri 事件 + 输出缓冲区
     let id_clone = id.clone();
@@ -132,16 +136,15 @@ pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<St
         }
     });
 
-    state
-        .local_terminals
-        .lock()
-        .unwrap()
-        .insert(id.clone(), LocalTerminal {
+    state.local_terminals.lock().unwrap().insert(
+        id.clone(),
+        LocalTerminal {
             id: id.clone(),
             input_tx,
             resize_tx,
             stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        });
+        },
+    );
 
     Ok(id)
 }
@@ -168,7 +171,10 @@ pub async fn list_shells() -> Result<Vec<ShellInfo>, String> {
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    shells.push(ShellInfo { name, path: line.to_string() });
+                    shells.push(ShellInfo {
+                        name,
+                        path: line.to_string(),
+                    });
                 }
             }
         }
@@ -183,19 +189,28 @@ pub async fn list_shells() -> Result<Vec<ShellInfo>, String> {
         ];
         for p in &git_bash_paths {
             if std::path::Path::new(p).exists() {
-                shells.push(ShellInfo { name: "Git Bash".to_string(), path: p.to_string() });
+                shells.push(ShellInfo {
+                    name: "Git Bash".to_string(),
+                    path: p.to_string(),
+                });
                 break;
             }
         }
         // MSYS2 Bash
         let msys2_path = r"C:\msys64\usr\bin\bash.exe";
         if std::path::Path::new(msys2_path).exists() {
-            shells.push(ShellInfo { name: "MSYS2 Bash".to_string(), path: msys2_path.to_string() });
+            shells.push(ShellInfo {
+                name: "MSYS2 Bash".to_string(),
+                path: msys2_path.to_string(),
+            });
         }
         // WSL
         let wsl_path = r"C:\Windows\System32\wsl.exe";
         if std::path::Path::new(wsl_path).exists() {
-            shells.push(ShellInfo { name: "WSL".to_string(), path: wsl_path.to_string() });
+            shells.push(ShellInfo {
+                name: "WSL".to_string(),
+                path: wsl_path.to_string(),
+            });
         }
         // PowerShell 7+
         let pwsh_paths = [
@@ -204,19 +219,28 @@ pub async fn list_shells() -> Result<Vec<ShellInfo>, String> {
         ];
         for p in &pwsh_paths {
             if std::path::Path::new(p).exists() {
-                shells.push(ShellInfo { name: "PowerShell 7".to_string(), path: p.to_string() });
+                shells.push(ShellInfo {
+                    name: "PowerShell 7".to_string(),
+                    path: p.to_string(),
+                });
                 break;
             }
         }
         // Windows PowerShell（兜底）
         let win_ps = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
         if std::path::Path::new(win_ps).exists() {
-            shells.push(ShellInfo { name: "PowerShell".to_string(), path: win_ps.to_string() });
+            shells.push(ShellInfo {
+                name: "PowerShell".to_string(),
+                path: win_ps.to_string(),
+            });
         }
         // CMD（最后兜底）
         let cmd_path = r"C:\Windows\System32\cmd.exe";
         if std::path::Path::new(cmd_path).exists() {
-            shells.push(ShellInfo { name: "CMD".to_string(), path: cmd_path.to_string() });
+            shells.push(ShellInfo {
+                name: "CMD".to_string(),
+                path: cmd_path.to_string(),
+            });
         }
     }
 
@@ -300,7 +324,7 @@ pub async fn close_terminal(state: State<'_, AppState>, id: String) -> Result<()
 /// 本地进程列表(sysinfo,跨平台)
 #[tauri::command]
 pub async fn get_local_processes() -> Result<serde_json::Value, String> {
-    use sysinfo::{System, ProcessesToUpdate};
+    use sysinfo::{ProcessesToUpdate, System};
     let mut sys = System::new();
     sys.refresh_cpu_all();
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -308,7 +332,11 @@ pub async fn get_local_processes() -> Result<serde_json::Value, String> {
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let num_cpus = sys.cpus().len().max(1) as f32;
     let mut procs: Vec<(&sysinfo::Pid, &sysinfo::Process)> = sys.processes().iter().collect();
-    procs.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
+    procs.sort_by(|a, b| {
+        b.1.cpu_usage()
+            .partial_cmp(&a.1.cpu_usage())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let list: Vec<serde_json::Value> = procs.iter().take(100).map(|(pid, p)| {
         let mem = p.memory();
         let mem_str = if mem >= 1_073_741_824 { format!("{:.1}G", mem as f64 / 1_073_741_824.0) }
@@ -330,15 +358,19 @@ pub async fn get_local_processes() -> Result<serde_json::Value, String> {
 /// 本地进程详情(sysinfo)
 #[tauri::command]
 pub async fn get_local_process_detail(pid: u32) -> Result<serde_json::Value, String> {
-    use sysinfo::{System, ProcessesToUpdate, Pid};
+    use sysinfo::{Pid, ProcessesToUpdate, System};
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let target = Pid::from_u32(pid);
     let p = sys.process(target).ok_or("进程未找到")?;
     let mem = p.memory();
-    let mem_str = if mem >= 1_073_741_824 { format!("{:.1}G", mem as f64 / 1_073_741_824.0) }
-        else if mem >= 1_048_576 { format!("{:.1}M", mem as f64 / 1_048_576.0) }
-        else { format!("{}K", mem / 1024) };
+    let mem_str = if mem >= 1_073_741_824 {
+        format!("{:.1}G", mem as f64 / 1_073_741_824.0)
+    } else if mem >= 1_048_576 {
+        format!("{:.1}M", mem as f64 / 1_048_576.0)
+    } else {
+        format!("{}K", mem / 1024)
+    };
     let parent_pid = p.parent().map(|pp| pp.as_u32());
     // 向上追溯进程树
     let mut ancestors = Vec::new();
@@ -353,7 +385,9 @@ pub async fn get_local_process_detail(pid: u32) -> Result<serde_json::Value, Str
                         "cmdline": proc.cmd().iter().map(|s| s.to_string_lossy().to_string()).collect::<Vec<_>>().join(" "),
                     }));
                     cur = proc.parent();
-                } else { break; }
+                } else {
+                    break;
+                }
             }
             _ => break,
         }
@@ -579,8 +613,20 @@ mod open_uri_tests {
 
 /// HTTP API 标签页注册(前端打开标签时调用)
 #[tauri::command]
-pub async fn register_tab(state: State<'_, AppState>, id: String, label: String, tab_type: String) -> Result<(), String> {
-    state.tab_registry.lock().unwrap().insert(id.clone(), crate::state::TabInfo { id, label, tab_type });
+pub async fn register_tab(
+    state: State<'_, AppState>,
+    id: String,
+    label: String,
+    tab_type: String,
+) -> Result<(), String> {
+    state.tab_registry.lock().unwrap().insert(
+        id.clone(),
+        crate::state::TabInfo {
+            id,
+            label,
+            tab_type,
+        },
+    );
     Ok(())
 }
 
@@ -593,7 +639,9 @@ pub async fn unregister_tab(state: State<'_, AppState>, id: String) -> Result<()
 
 #[tauri::command]
 pub fn force_quit() {
-    crate::log_util::app_log("关闭", "force_quit: destroy 超时或失败,强制退出进程");
+    crate::log_util::app_log("关闭", "force_quit: destroy 超时或失败,先杀子进程树再退出");
+    // 必须先杀 WebKit 等后代，否则 exit 后它们被 init 收养继续占内存
+    crate::process_cleanup::shutdown_cleanup("force_quit");
     std::process::exit(0);
 }
 
@@ -604,7 +652,10 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Valu
 }
 
 #[tauri::command]
-pub async fn update_settings(state: State<'_, AppState>, patch: serde_json::Value) -> Result<(), String> {
+pub async fn update_settings(
+    state: State<'_, AppState>,
+    patch: serde_json::Value,
+) -> Result<(), String> {
     let mut settings = state.settings.lock().unwrap();
     let mut current = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
     if let (Some(cur_obj), Some(patch_obj)) = (current.as_object_mut(), patch.as_object()) {
@@ -622,7 +673,8 @@ pub async fn update_settings(state: State<'_, AppState>, patch: serde_json::Valu
             }
         }
     }
-    let updated: crate::config::settings::Settings = serde_json::from_value(current).map_err(|e| e.to_string())?;
+    let updated: crate::config::settings::Settings =
+        serde_json::from_value(current).map_err(|e| e.to_string())?;
     updated.save().map_err(|e| e.to_string())?;
     *settings = updated;
     Ok(())

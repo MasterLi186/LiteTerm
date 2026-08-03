@@ -121,16 +121,12 @@ impl<'a> SftpOps<'a> {
 
     /// Remove a remote file.
     pub fn remove_file(&self, path: &str) -> io::Result<()> {
-        self.sftp
-            .unlink(Path::new(path))
-            .map_err(io::Error::other)
+        self.sftp.unlink(Path::new(path)).map_err(io::Error::other)
     }
 
     /// Remove a remote directory.
     pub fn remove_dir(&self, path: &str) -> io::Result<()> {
-        self.sftp
-            .rmdir(Path::new(path))
-            .map_err(io::Error::other)
+        self.sftp.rmdir(Path::new(path)).map_err(io::Error::other)
     }
 
     /// Rename (move) a remote file or directory.
@@ -142,10 +138,7 @@ impl<'a> SftpOps<'a> {
 
     /// Get metadata for a remote path.
     pub fn stat(&self, path: &str) -> io::Result<SftpEntry> {
-        let stat = self
-            .sftp
-            .stat(Path::new(path))
-            .map_err(io::Error::other)?;
+        let stat = self.sftp.stat(Path::new(path)).map_err(io::Error::other)?;
 
         let name = Path::new(path)
             .file_name()

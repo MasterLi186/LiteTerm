@@ -10,9 +10,7 @@ static LOG_LOCK: Mutex<()> = Mutex::new(());
 /// 全局 Mutex 保证多线程写入不交错。
 pub fn app_log(category: &str, message: &str) {
     let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let log_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join("guishell.log");
+    let log_path = dirs::home_dir().unwrap_or_default().join("guishell.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -21,7 +19,14 @@ pub fn app_log(category: &str, message: &str) {
         let d = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
-        let _ = writeln!(f, "[{}.{:03}] [{}] {}", d.as_secs(), d.subsec_millis(), category, message);
+        let _ = writeln!(
+            f,
+            "[{}.{:03}] [{}] {}",
+            d.as_secs(),
+            d.subsec_millis(),
+            category,
+            message
+        );
     }
 }
 

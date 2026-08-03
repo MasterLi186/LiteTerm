@@ -3,6 +3,7 @@
 /node_modules
 /.dev-deps
 /.superpowers
+/.ccb/
 src-tauri/target
 src-tauri/gen
 .cargo/config.toml

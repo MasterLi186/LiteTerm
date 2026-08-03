@@ -170,7 +170,7 @@ mod tests {
     fn test_buffer_wrap_around() {
         let mut buf = TerminalOutputBuffer::new(8);
         buf.write(b"12345678"); // 填满
-        buf.write(b"ab");       // 覆盖前 2 字节
+        buf.write(b"ab"); // 覆盖前 2 字节
         let (data, cursor, truncated) = buf.read_from(0);
         // cursor=0 太旧，truncated
         assert!(truncated);

@@ -50,10 +50,7 @@ pub fn start_recording(
 }
 
 #[tauri::command]
-pub fn stop_recording(
-    state: State<'_, AppState>,
-    terminal_id: String,
-) -> Result<String, String> {
+pub fn stop_recording(state: State<'_, AppState>, terminal_id: String) -> Result<String, String> {
     let mut recordings = state.recordings.lock().map_err(|e| e.to_string())?;
     let recording = recordings
         .remove(&terminal_id)
@@ -88,10 +85,7 @@ pub fn record_event(
 }
 
 #[tauri::command]
-pub fn is_recording(
-    state: State<'_, AppState>,
-    terminal_id: String,
-) -> Result<bool, String> {
+pub fn is_recording(state: State<'_, AppState>, terminal_id: String) -> Result<bool, String> {
     let recordings = state.recordings.lock().map_err(|e| e.to_string())?;
     Ok(recordings.contains_key(&terminal_id))
 }

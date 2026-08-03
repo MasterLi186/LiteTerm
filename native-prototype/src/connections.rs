@@ -62,14 +62,20 @@ impl ConnectionStore {
     pub fn load() -> Self {
         let path = Self::config_path();
         match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                toml::from_str(&content).unwrap_or_else(|e| {
-                    log::error!("Failed to parse connections.toml: {}", e);
-                    ConnectionStore::default()
-                })
-            }
+            Ok(content) => toml::from_str(&content).unwrap_or_else(|e| {
+                log::error!("Failed to parse connections.toml: {}", e);
+                ConnectionStore::default()
+            }),
             Err(_) => ConnectionStore::default(),
         }
+    }
+
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(path, content)
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -77,17 +83,19 @@ impl ConnectionStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
         }
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| format!("序列化失败: {}", e))?;
+        let content = toml::to_string_pretty(self).map_err(|e| format!("序列化失败: {}", e))?;
         std::fs::write(&path, content).map_err(|e| format!("写入失败: {}", e))
     }
 
     pub fn add_group(&mut self, id: &str, label: &str, color: &str) {
-        let entry = self.groups.entry(id.to_string()).or_insert_with(|| GroupConfig {
-            label: label.to_string(),
-            color: color.to_string(),
-            hosts: BTreeMap::new(),
-        });
+        let entry = self
+            .groups
+            .entry(id.to_string())
+            .or_insert_with(|| GroupConfig {
+                label: label.to_string(),
+                color: color.to_string(),
+                hosts: BTreeMap::new(),
+            });
         entry.label = label.to_string();
         entry.color = color.to_string();
     }

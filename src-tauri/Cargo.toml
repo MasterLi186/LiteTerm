@@ -40,3 +40,6 @@ rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
