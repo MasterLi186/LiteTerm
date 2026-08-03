@@ -2,7 +2,11 @@ use std::collections::HashMap;
 use std::{
     fmt,
     io::{self, Read},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+        Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -119,6 +123,7 @@ impl fmt::Debug for RemoteMonitorEvent {
 pub(crate) struct RemoteMonitorHandle {
     generation: u64,
     tx: Sender<RemoteMonitorCommand>,
+    refresh_pending: Arc<AtomicBool>,
     #[cfg(test)]
     done_rx: Option<Receiver<()>>,
 }
@@ -133,7 +138,14 @@ impl RemoteMonitorHandle {
     }
 
     pub(crate) fn refresh(&self) {
-        let _ = self.tx.send(RemoteMonitorCommand::Refresh);
+        if self
+            .refresh_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            && self.tx.send(RemoteMonitorCommand::Refresh).is_err()
+        {
+            self.refresh_pending.store(false, Ordering::Release);
+        }
     }
 
     pub(crate) fn fetch_process_detail(&self, requester: String, request_id: u64, pid: u32) {
@@ -396,6 +408,8 @@ where
     Spawn: FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
 {
     let (tx, rx) = mpsc::channel();
+    let refresh_pending = Arc::new(AtomicBool::new(false));
+    let worker_refresh_pending = Arc::clone(&refresh_pending);
     #[cfg(test)]
     let (worker_done_tx, worker_done_rx) = mpsc::channel();
     #[cfg(test)]
@@ -403,7 +417,15 @@ where
     #[cfg(not(test))]
     let worker_done_tx = None::<Sender<()>>;
     spawn(Box::new(move || {
-        run_worker(key, generation, &mut source_factory, &sink, timing, &rx);
+        run_worker(
+            key,
+            generation,
+            &mut source_factory,
+            &sink,
+            timing,
+            &rx,
+            &worker_refresh_pending,
+        );
         if let Some(done) = done {
             let _ = done.send(());
         }
@@ -414,6 +436,7 @@ where
     Ok(RemoteMonitorHandle {
         generation,
         tx,
+        refresh_pending,
         #[cfg(test)]
         done_rx: Some(worker_done_rx),
     })
@@ -433,6 +456,7 @@ fn run_worker<S, F, E>(
     sink: &E,
     timing: WorkerTiming,
     commands: &Receiver<RemoteMonitorCommand>,
+    refresh_pending: &AtomicBool,
 ) where
     S: SnapshotSource,
     F: FnMut() -> Result<S, String>,
@@ -441,10 +465,18 @@ fn run_worker<S, F, E>(
     let mut source = None;
     let mut parser = RemoteSnapshotParser::default();
     let mut previous_sample_at = None;
+    let mut satisfies_pending_refresh = false;
 
     loop {
         if source.is_none() {
-            if !dispatch_ready_commands(commands, &mut source, sink, &key, generation) {
+            if !dispatch_ready_commands(
+                commands,
+                &mut source,
+                sink,
+                &key,
+                generation,
+                &mut satisfies_pending_refresh,
+            ) {
                 return;
             }
             match source_factory() {
@@ -463,6 +495,7 @@ fn run_worker<S, F, E>(
                                 &key,
                                 generation,
                                 timing.retry_wait,
+                                &mut satisfies_pending_refresh,
                             ),
                             WorkerControl::Shutdown
                         )
@@ -474,7 +507,14 @@ fn run_worker<S, F, E>(
             }
         }
 
-        if !dispatch_ready_commands(commands, &mut source, sink, &key, generation) {
+        if !dispatch_ready_commands(
+            commands,
+            &mut source,
+            sink,
+            &key,
+            generation,
+            &mut satisfies_pending_refresh,
+        ) {
             return;
         }
 
@@ -487,6 +527,11 @@ fn run_worker<S, F, E>(
             .expect("source is initialized")
             .collect()
             .and_then(|snapshot| parser.parse(&snapshot, elapsed));
+
+        if satisfies_pending_refresh {
+            refresh_pending.store(false, Ordering::Release);
+            satisfies_pending_refresh = false;
+        }
 
         match result {
             Ok(data) => {
@@ -506,6 +551,7 @@ fn run_worker<S, F, E>(
                             &key,
                             generation,
                             timing.healthy_wait,
+                            &mut satisfies_pending_refresh,
                         ),
                         WorkerControl::Shutdown
                     )
@@ -526,6 +572,7 @@ fn run_worker<S, F, E>(
                             &key,
                             generation,
                             timing.retry_wait,
+                            &mut satisfies_pending_refresh,
                         ),
                         WorkerControl::Shutdown
                     )
@@ -557,6 +604,7 @@ fn dispatch_ready_commands<S, E>(
     sink: &E,
     key: &MonitorKey,
     generation: u64,
+    satisfies_pending_refresh: &mut bool,
 ) -> bool
 where
     S: SnapshotSource,
@@ -567,6 +615,7 @@ where
             Ok(RemoteMonitorCommand::Refresh) => {
                 // A snapshot is already about to be collected, so adjacent
                 // refresh requests are intentionally coalesced.
+                *satisfies_pending_refresh = true;
             }
             Ok(RemoteMonitorCommand::FetchProcessDetail {
                 requester,
@@ -600,6 +649,7 @@ fn wait_for_command<S, E>(
     key: &MonitorKey,
     generation: u64,
     duration: Duration,
+    satisfies_pending_refresh: &mut bool,
 ) -> WorkerControl
 where
     S: SnapshotSource,
@@ -609,7 +659,10 @@ where
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match commands.recv_timeout(remaining) {
-            Ok(RemoteMonitorCommand::Refresh) => return WorkerControl::Collect,
+            Ok(RemoteMonitorCommand::Refresh) => {
+                *satisfies_pending_refresh = true;
+                return WorkerControl::Collect;
+            }
             Ok(RemoteMonitorCommand::FetchProcessDetail {
                 requester,
                 request_id,

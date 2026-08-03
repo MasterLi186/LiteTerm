@@ -37,6 +37,7 @@
             &|_| Ok(()),
             timing(),
             &commands_rx,
+            &std::sync::atomic::AtomicBool::new(false),
         );
 
         assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
