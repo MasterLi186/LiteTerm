@@ -351,7 +351,7 @@
     #[test]
     fn non_bash_local_tab_does_not_get_a_bash_history_path() {
         let mut manager = TabManager::new();
-        manager.new_local("fish", 80, 24);
+        manager.new_local("/bin/sh", 80, 24);
 
         assert_eq!(manager.tabs[0].completion.history_path(), None);
     }

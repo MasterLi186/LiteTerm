@@ -1,6 +1,6 @@
 [package]
 name = "liteterm-native"
-version = "0.1.0-memory.1"
+version = "0.1.0-memory.2"
 edition = "2021"
 
 [[bin]]
