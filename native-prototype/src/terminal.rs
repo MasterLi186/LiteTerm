@@ -413,6 +413,7 @@ pub struct PromptTracking {
 }
 
 const SNAPSHOT_RETRY_TIMEOUT: Duration = Duration::from_millis(250);
+const MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CandidateWriteTarget {
@@ -450,6 +451,7 @@ pub struct TerminalState {
     prompt_tracking: Option<PromptTracking>,
     replay_parser: Option<Processor>,
     render_revision: u64,
+    output_bytes_since_user_input: usize,
 }
 
 impl Drop for TerminalState {

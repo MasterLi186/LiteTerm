@@ -612,12 +612,74 @@
         ssh.writer = Some(write_tx);
         let mut ssh_parser = TestProcessor::new();
 
-        local.process_pty_output(&mut local_parser, b"\x1b[18t");
-        ssh.process_pty_output(&mut ssh_parser, b"\x1b[18t");
+        local.process_pty_output(&mut local_parser, b"\x1b[?1049h\x1b[18t");
+        ssh.process_pty_output(&mut ssh_parser, b"\x1b[?1049h\x1b[18t");
 
         completed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(&*captured.lock().unwrap(), b"\x1b[8;48;180t");
         assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[8;48;180t");
+    }
+
+    #[test]
+    fn primary_screen_queries_from_cat_do_not_reach_shell_input() {
+        let (write_tx, write_rx) = test_transport_capture();
+        let mut terminal = TerminalState::new();
+        terminal.init_term(212, 48);
+        terminal.writer = Some(write_tx);
+        let mut parser = TestProcessor::new();
+
+        terminal.process_pty_output(
+            &mut parser,
+            &vec![b'x'; MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES + 1],
+        );
+        terminal.process_pty_output(&mut parser, b"\x1b[c\x1b[c\x1b[c\x1b[c");
+        terminal.process_pty_output(&mut parser, b"\x1b[1;212H\x1b[6n");
+
+        assert!(matches!(
+            write_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(terminal.take_pty_write_events().is_empty());
+    }
+
+    #[test]
+    fn short_primary_screen_probe_still_supports_resize() {
+        let (write_tx, write_rx) = test_transport_capture();
+        let mut terminal = TerminalState::new();
+        terminal.init_term(212, 48);
+        terminal.writer = Some(write_tx);
+        let mut parser = TestProcessor::new();
+
+        terminal.process_pty_output(
+            &mut parser,
+            &vec![b'x'; MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES + 1],
+        );
+        terminal.write_input("resize\r");
+        assert_eq!(write_rx.try_recv().unwrap(), b"resize\r");
+        terminal.process_pty_output(&mut parser, b"resize\r\n\x1b[c");
+
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[?6c");
+    }
+
+    #[test]
+    fn alternate_screen_queries_still_reach_interactive_application() {
+        let (write_tx, write_rx) = test_transport_capture();
+        let mut terminal = TerminalState::new();
+        terminal.init_term(212, 48);
+        terminal.writer = Some(write_tx);
+        let mut parser = TestProcessor::new();
+
+        terminal.process_pty_output(
+            &mut parser,
+            &vec![b'x'; MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES + 1],
+        );
+        terminal.process_pty_output(
+            &mut parser,
+            b"\x1b[?1049h\x1b[c\x1b[1;212H\x1b[6n",
+        );
+
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[?6c");
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[1;212R");
     }
 
     #[test]
@@ -632,7 +694,7 @@
         })));
         let mut parser = TestProcessor::new();
 
-        terminal.process_pty_output(&mut parser, b"\x1b[18t");
+        terminal.process_pty_output(&mut parser, b"\x1b[?1049h\x1b[18t");
 
         attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -651,7 +713,7 @@
         })));
         let mut parser = TestProcessor::new();
 
-        terminal.process_pty_output(&mut parser, b"\x1b[18t");
+        terminal.process_pty_output(&mut parser, b"\x1b[?1049h\x1b[18t");
 
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         release_tx.send(()).unwrap();

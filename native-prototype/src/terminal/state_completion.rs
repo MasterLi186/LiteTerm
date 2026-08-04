@@ -284,6 +284,9 @@ impl TerminalState {
     ) -> Vec<IntegrationEvent> {
         if !data.is_empty() {
             self.mark_render_dirty();
+            self.output_bytes_since_user_input = self
+                .output_bytes_since_user_input
+                .saturating_add(data.len());
         }
         let boundaries = match &mut self.prompt_tracking {
             Some(tracking) => tracking.decoder.scan(data),

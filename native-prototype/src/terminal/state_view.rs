@@ -237,6 +237,19 @@ impl TerminalState {
 
     pub(super) fn flush_pty_write_events(&mut self) {
         let writes = self.take_pty_write_events();
+        // A large transcript printed by `cat` can contain recorded DA/DSR
+        // queries. Replying to those injects bytes into the shell input queue,
+        // where readline exposes tails like `6c1;212R` after the command exits.
+        // Keep short, live primary-screen probes (for example `resize`) working,
+        // and always support full-screen terminal applications.
+        let replies_allowed = self
+            .term
+            .as_ref()
+            .is_some_and(|term| term.mode().contains(TermMode::ALT_SCREEN))
+            || self.output_bytes_since_user_input <= MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES;
+        if !replies_allowed {
+            return;
+        }
         for text in writes {
             self.enqueue_writer_bytes(text.into_bytes());
         }

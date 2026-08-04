@@ -25,6 +25,7 @@ impl TerminalState {
             prompt_tracking: None,
             replay_parser: None,
             render_revision: 1,
+            output_bytes_since_user_input: 0,
         }
     }
 
@@ -86,6 +87,7 @@ impl TerminalState {
         self.term = Some(Term::new(config, &dims, Listener { pty_write_tx }));
         self.pty_write_rx = Some(pty_write_rx);
         self.replay_parser = None;
+        self.output_bytes_since_user_input = 0;
     }
 
     pub fn spawn_shell(&mut self, cols: u16, rows: u16) {
@@ -286,6 +288,7 @@ impl TerminalState {
         if self.zmodem_active() {
             return;
         }
+        self.output_bytes_since_user_input = 0;
         self.enqueue_writer_bytes(text.as_bytes().to_vec());
     }
 
@@ -297,9 +300,13 @@ impl TerminalState {
             .writer
             .as_ref()
             .ok_or_else(|| "终端写入通道尚未就绪".to_string())?;
-        writer
+        let result = writer
             .try_send_normal(text.as_bytes().to_vec())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+        if result.is_ok() {
+            self.output_bytes_since_user_input = 0;
+        }
+        result
     }
 
     pub fn stage_completion_fill(
