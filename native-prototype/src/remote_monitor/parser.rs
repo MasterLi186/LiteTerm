@@ -33,6 +33,13 @@ impl RemoteSnapshotParser {
         );
 
         let mut processes = parse_processes(sections.get("PS").map(String::as_str).unwrap_or(""));
+        let zombie_processes = parse_processes_with_limit(
+            sections.get("PSZOMBIE").map(String::as_str).unwrap_or(""),
+            200,
+        )
+        .into_iter()
+        .filter(|process| process.state.starts_with('Z'))
+        .collect();
         apply_process_application_memory(
             &mut processes,
             sections.get("PSANON").map(String::as_str).unwrap_or(""),
@@ -61,6 +68,7 @@ impl RemoteSnapshotParser {
             load_text: parse_load(sections.get("LOAD").map(String::as_str).unwrap_or("")),
             disk_items,
             processes,
+            zombie_processes,
             process_stats: parse_process_stats(
                 sections.get("PSSTATS").map(String::as_str).unwrap_or(""),
             ),
@@ -190,6 +198,7 @@ pub(super) fn section_marker(line: &str) -> Option<&'static str> {
         "UPTIME" => Some("UPTIME"),
         "PS" => Some("PS"),
         "PSANON" => Some("PSANON"),
+        "PSZOMBIE" => Some("PSZOMBIE"),
         "PSSTATS" => Some("PSSTATS"),
         "CPUINFO" => Some("CPUINFO"),
         "END" => Some("END"),
@@ -307,6 +316,10 @@ pub(super) fn parse_cpu_name(cpu_info: &str) -> String {
 }
 
 pub(super) fn parse_processes(processes: &str) -> Vec<ProcessInfo> {
+    parse_processes_with_limit(processes, 100)
+}
+
+fn parse_processes_with_limit(processes: &str, limit: usize) -> Vec<ProcessInfo> {
     processes
         .lines()
         .filter_map(|line| {
@@ -345,7 +358,7 @@ pub(super) fn parse_processes(processes: &str) -> Vec<ProcessInfo> {
                 start_time: truncate_utf8(&start_time, 256),
             })
         })
-        .take(100)
+        .take(limit)
         .collect()
 }
 

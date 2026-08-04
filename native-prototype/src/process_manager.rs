@@ -16,6 +16,10 @@ const CYAN: egui::Color32 = egui::Color32::from_rgb(0x00, 0xd4, 0xff);
 const GREEN: egui::Color32 = egui::Color32::from_rgb(0x3f, 0xb9, 0x50);
 const YELLOW: egui::Color32 = egui::Color32::from_rgb(0xd2, 0x99, 0x22);
 const RED: egui::Color32 = egui::Color32::from_rgb(0xf8, 0x51, 0x49);
+const PROCESS_TEXT_SIZE: f32 = 12.0;
+const PROCESS_META_SIZE: f32 = 11.0;
+const PROCESS_ROW_HEIGHT: f32 = 26.0;
+const PROCESS_TABLE_MIN_WIDTH: f32 = 1_160.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessSortKey {
@@ -63,6 +67,7 @@ pub struct ProcessManagerState {
     detail_error: Option<String>,
     search_query: String,
     search_request_focus: bool,
+    show_zombie_dialog: bool,
 }
 
 impl fmt::Debug for ProcessManagerState {
@@ -97,6 +102,7 @@ impl ProcessManagerState {
             detail_error: None,
             search_query: String::new(),
             search_request_focus: false,
+            show_zombie_dialog: false,
         }
     }
 
@@ -134,6 +140,14 @@ impl ProcessManagerState {
 
     pub fn set_search_query(&mut self, query: impl Into<String>) {
         self.search_query = query.into();
+    }
+
+    pub fn zombie_dialog_open(&self) -> bool {
+        self.show_zombie_dialog
+    }
+
+    pub fn set_zombie_dialog_open(&mut self, open: bool) {
+        self.show_zombie_dialog = open;
     }
 
     pub fn select_sort(&mut self, key: ProcessSortKey) {
@@ -231,6 +245,7 @@ pub fn render(
     ctx: &egui::Context,
     state: &mut ProcessManagerState,
     processes: Option<&[ProcessInfo]>,
+    zombie_processes: Option<&[ProcessInfo]>,
     stats: Option<&ProcessStats>,
     monitor_error: Option<&str>,
 ) -> Vec<ProcessManagerAction> {
@@ -269,6 +284,7 @@ pub fn render(
             }
             render_processes(ui, state, processes, &mut actions);
         });
+    render_zombie_dialog(ctx, state, zombie_processes, stats);
     actions
 }
 
@@ -315,14 +331,18 @@ fn render_toolbar(
                 };
                 ui.label(egui::RichText::new(title).strong().color(TEXT));
                 if let Some(stats) = stats {
-                    render_stats(ui, stats);
+                    render_stats(ui, state, stats);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add(
-                            egui::Button::new(egui::RichText::new("刷新").size(11.0).color(MUTED))
-                                .fill(PANEL_ALT)
-                                .stroke(egui::Stroke::new(1.0, BORDER)),
+                            egui::Button::new(
+                                egui::RichText::new("刷新")
+                                    .size(PROCESS_TEXT_SIZE)
+                                    .color(MUTED),
+                            )
+                            .fill(PANEL_ALT)
+                            .stroke(egui::Stroke::new(1.0, BORDER)),
                         )
                         .on_hover_text("立即刷新当前目标的进程快照")
                         .clicked()
@@ -330,7 +350,7 @@ fn render_toolbar(
                         actions.push(ProcessManagerAction::Refresh);
                     }
                     let search = ui.add_sized(
-                        [220.0_f32.min(ui.available_width().max(100.0)), 26.0],
+                        [240.0_f32.min(ui.available_width().max(120.0)), 30.0],
                         egui::TextEdit::singleline(&mut state.search_query)
                             .hint_text("搜索进程、命令、PID 或用户…"),
                     );
@@ -368,39 +388,220 @@ fn render_toolbar(
         });
 }
 
-fn render_stats(ui: &mut egui::Ui, stats: &ProcessStats) {
-    ui.label(egui::RichText::new("共").size(10.0).color(DIM));
+fn render_stats(ui: &mut egui::Ui, state: &mut ProcessManagerState, stats: &ProcessStats) {
+    ui.label(egui::RichText::new("共").size(PROCESS_META_SIZE).color(DIM));
     ui.label(
         egui::RichText::new(stats.total.to_string())
-            .size(10.0)
+            .size(PROCESS_META_SIZE)
             .color(if stats.total > 10_000 { RED } else { TEXT }),
     );
-    ui.label(egui::RichText::new("运行").size(10.0).color(DIM));
+    ui.label(
+        egui::RichText::new("运行")
+            .size(PROCESS_META_SIZE)
+            .color(DIM),
+    );
     ui.label(
         egui::RichText::new(stats.running.to_string())
-            .size(10.0)
+            .size(PROCESS_META_SIZE)
             .color(GREEN),
     );
-    ui.label(egui::RichText::new("休眠").size(10.0).color(DIM));
+    ui.label(
+        egui::RichText::new("休眠")
+            .size(PROCESS_META_SIZE)
+            .color(DIM),
+    );
     ui.label(
         egui::RichText::new(stats.sleeping.to_string())
-            .size(10.0)
+            .size(PROCESS_META_SIZE)
             .color(MUTED),
     );
-    ui.label(egui::RichText::new("僵尸").size(10.0).color(DIM));
-    ui.label(
-        egui::RichText::new(stats.zombie.to_string())
-            .size(10.0)
-            .color(if stats.zombie > 0 { RED } else { DIM }),
-    );
+    let zombie_color = if stats.zombie > 0 { RED } else { DIM };
+    let zombie_button = egui::Button::new(
+        egui::RichText::new(format!("僵尸 {}", stats.zombie))
+            .size(PROCESS_META_SIZE)
+            .color(zombie_color),
+    )
+    .fill(PANEL_ALT)
+    .stroke(egui::Stroke::new(1.0, BORDER));
+    let zombie_response = ui
+        .add_enabled(stats.zombie > 0, zombie_button)
+        .on_hover_text("在独立弹窗中查看僵尸进程");
+    if zombie_response.clicked() {
+        state.show_zombie_dialog = true;
+    }
     if stats.stopped > 0 {
-        ui.label(egui::RichText::new("停止").size(10.0).color(DIM));
+        ui.label(
+            egui::RichText::new("停止")
+                .size(PROCESS_META_SIZE)
+                .color(DIM),
+        );
         ui.label(
             egui::RichText::new(stats.stopped.to_string())
-                .size(10.0)
+                .size(PROCESS_META_SIZE)
                 .color(YELLOW),
         );
     }
+}
+
+fn render_zombie_dialog(
+    ctx: &egui::Context,
+    state: &mut ProcessManagerState,
+    zombie_processes: Option<&[ProcessInfo]>,
+    stats: Option<&ProcessStats>,
+) {
+    if !state.show_zombie_dialog {
+        return;
+    }
+    if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        state.show_zombie_dialog = false;
+        return;
+    }
+
+    let total = stats.map(|value| value.zombie).unwrap_or(0);
+    let mut open = true;
+    let mut close_requested = false;
+    egui::Window::new("僵尸进程")
+        .id(egui::Id::new("process_manager_zombie_dialog"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_size(egui::vec2(980.0, 420.0))
+        .min_width(680.0)
+        .frame(
+            egui::Frame::window(&ctx.style())
+                .fill(PANEL)
+                .stroke(egui::Stroke::new(1.0, RED.gamma_multiply(0.65))),
+        )
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(format!("检测到 {total} 个僵尸进程"))
+                    .size(14.0)
+                    .strong()
+                    .color(if total > 0 { RED } else { MUTED }),
+            );
+            ui.label(
+                egui::RichText::new("僵尸进程已经退出，但仍等待父进程回收。请优先检查其父进程。")
+                    .size(PROCESS_META_SIZE)
+                    .color(MUTED),
+            );
+            ui.add_space(6.0);
+
+            match zombie_processes {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("正在加载僵尸进程快照…").color(MUTED));
+                    });
+                }
+                Some(processes) if processes.is_empty() => {
+                    ui.label(
+                        egui::RichText::new(if total == 0 {
+                            "当前没有僵尸进程"
+                        } else {
+                            "统计已检测到僵尸进程，详细列表将在下一次监控刷新后显示"
+                        })
+                        .color(MUTED),
+                    );
+                }
+                Some(processes) => {
+                    if processes.len() < total as usize {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "当前展示 {} / {total} 个，单次快照最多保留 200 个",
+                                processes.len()
+                            ))
+                            .size(PROCESS_META_SIZE)
+                            .color(YELLOW),
+                        );
+                    }
+                    render_zombie_table(ui, processes);
+                }
+            }
+
+            ui.add_space(6.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("关闭").clicked() {
+                    close_requested = true;
+                }
+            });
+        });
+    state.show_zombie_dialog = open && !close_requested;
+}
+
+fn render_zombie_table(ui: &mut egui::Ui, processes: &[ProcessInfo]) {
+    const COLUMNS: [(&str, f32); 6] = [
+        ("PID", 72.0),
+        ("用户", 110.0),
+        ("驻留内存", 90.0),
+        ("状态", 56.0),
+        ("命令", 390.0),
+        ("启动时间", 210.0),
+    ];
+
+    egui::ScrollArea::horizontal()
+        .id_salt("process_manager_zombie_table_horizontal")
+        .show(ui, |ui| {
+            ui.set_min_width(980.0);
+            egui::Frame::new()
+                .fill(PANEL_ALT)
+                .stroke(egui::Stroke::new(1.0, BORDER))
+                .inner_margin(egui::Margin::symmetric(5, 3))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for (label, width) in COLUMNS {
+                            ui.add_sized(
+                                [width, 24.0],
+                                egui::Label::new(
+                                    egui::RichText::new(label)
+                                        .size(PROCESS_META_SIZE)
+                                        .strong()
+                                        .color(MUTED),
+                                ),
+                            );
+                        }
+                    });
+                });
+
+            egui::ScrollArea::vertical()
+                .id_salt("process_manager_zombie_table_vertical")
+                .max_height(300.0)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for (index, process) in processes.iter().enumerate() {
+                        egui::Frame::new()
+                            .fill(if index % 2 == 0 {
+                                BACKGROUND
+                            } else {
+                                PANEL_ALT
+                            })
+                            .inner_margin(egui::Margin::symmetric(5, 2))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let cells = [
+                                        process.pid.to_string(),
+                                        process.user.clone(),
+                                        process.resident_mem_mb.clone(),
+                                        process.state.clone(),
+                                        display_command(process).to_string(),
+                                        process.start_time.clone(),
+                                    ];
+                                    for ((_, width), value) in COLUMNS.into_iter().zip(cells) {
+                                        ui.add_sized(
+                                            [width, PROCESS_ROW_HEIGHT],
+                                            egui::Label::new(
+                                                egui::RichText::new(value)
+                                                    .monospace()
+                                                    .size(PROCESS_TEXT_SIZE)
+                                                    .color(TEXT),
+                                            )
+                                            .truncate(),
+                                        );
+                                    }
+                                });
+                            });
+                    }
+                });
+        });
 }
 
 fn render_monitor_state(
@@ -435,7 +636,11 @@ fn state_banner(ui: &mut egui::Ui, color: egui::Color32, text: String) {
         .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.45)))
         .inner_margin(egui::Margin::symmetric(10, 5))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(10.0).color(color));
+            ui.label(
+                egui::RichText::new(text)
+                    .size(PROCESS_META_SIZE)
+                    .color(color),
+            );
         });
 }
 
@@ -446,13 +651,13 @@ fn render_processes(
     actions: &mut Vec<ProcessManagerAction>,
 ) {
     let table_height = ui.available_height().max(0.0);
-    let rows_height = (table_height - 28.0).max(0.0);
+    let rows_height = (table_height - 32.0).max(0.0);
     egui::ScrollArea::horizontal()
         .id_salt("process_manager_table")
         .auto_shrink([false, false])
         .max_height(table_height)
         .show(ui, |ui| {
-            ui.set_min_width(980.0);
+            ui.set_min_width(PROCESS_TABLE_MIN_WIDTH);
             render_column_headers(ui, state);
 
             let Some(processes) = processes else {
@@ -464,7 +669,7 @@ fn render_processes(
                     ui.label(egui::RichText::new("暂无进程数据").color(MUTED));
                     ui.label(
                         egui::RichText::new("进程采集已成功，但当前列表为空")
-                            .size(10.0)
+                            .size(PROCESS_META_SIZE)
                             .color(DIM),
                     );
                 });
@@ -502,21 +707,21 @@ fn render_column_headers(ui: &mut egui::Ui, state: &mut ProcessManagerState) {
         .stroke(egui::Stroke::new(1.0, BORDER))
         .inner_margin(egui::Margin::symmetric(4, 2))
         .show(ui, |ui| {
-            ui.set_min_width(980.0);
+            ui.set_min_width(PROCESS_TABLE_MIN_WIDTH);
             ui.horizontal(|ui| {
-                sort_header(ui, state, "PID", ProcessSortKey::Pid, 60.0);
-                sort_header(ui, state, "用户", ProcessSortKey::User, 90.0);
+                sort_header(ui, state, "PID", ProcessSortKey::Pid, 70.0);
+                sort_header(ui, state, "用户", ProcessSortKey::User, 105.0);
                 sort_header(
                     ui,
                     state,
                     "应用内存",
                     ProcessSortKey::ApplicationMemory,
-                    75.0,
+                    90.0,
                 );
-                sort_header(ui, state, "驻留内存", ProcessSortKey::ResidentMemory, 75.0);
-                sort_header(ui, state, "CPU", ProcessSortKey::Cpu, 60.0);
-                sort_header(ui, state, "命令", ProcessSortKey::Command, 390.0);
-                sort_header(ui, state, "启动时间", ProcessSortKey::StartTime, 180.0);
+                sort_header(ui, state, "驻留内存", ProcessSortKey::ResidentMemory, 90.0);
+                sort_header(ui, state, "CPU", ProcessSortKey::Cpu, 70.0);
+                sort_header(ui, state, "命令", ProcessSortKey::Command, 455.0);
+                sort_header(ui, state, "启动时间", ProcessSortKey::StartTime, 210.0);
             });
         });
 }
@@ -538,10 +743,10 @@ fn sort_header(
     };
     if ui
         .add_sized(
-            egui::vec2(width, 20.0),
+            egui::vec2(width, 24.0),
             egui::Button::new(
                 egui::RichText::new(format!("{label}{arrow}"))
-                    .size(10.0)
+                    .size(PROCESS_META_SIZE)
                     .color(if state.sort_key == key { CYAN } else { MUTED }),
             )
             .frame(false),
@@ -553,7 +758,7 @@ fn sort_header(
 }
 
 fn render_process_row(ui: &mut egui::Ui, process: &ProcessInfo, selected: bool) -> egui::Response {
-    let row_height = 22.0;
+    let row_height = PROCESS_ROW_HEIGHT;
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), row_height),
         egui::Sense::click(),
@@ -569,38 +774,38 @@ fn render_process_row(ui: &mut egui::Ui, process: &ProcessInfo, selected: bool) 
 
     let columns = [
         (
-            60.0,
+            70.0,
             process.pid.to_string(),
             MUTED,
             egui::Align2::LEFT_CENTER,
         ),
-        (90.0, process.user.clone(), TEXT, egui::Align2::LEFT_CENTER),
+        (105.0, process.user.clone(), TEXT, egui::Align2::LEFT_CENTER),
         (
-            75.0,
+            90.0,
             process.mem_mb.clone(),
             TEXT,
             egui::Align2::RIGHT_CENTER,
         ),
         (
-            75.0,
+            90.0,
             process.resident_mem_mb.clone(),
             MUTED,
             egui::Align2::RIGHT_CENTER,
         ),
         (
-            60.0,
+            70.0,
             format!("{:.1}", process.cpu),
             TEXT,
             egui::Align2::RIGHT_CENTER,
         ),
         (
-            390.0,
+            455.0,
             display_command(process).to_string(),
             TEXT,
             egui::Align2::LEFT_CENTER,
         ),
         (
-            180.0,
+            210.0,
             process.start_time.clone(),
             DIM,
             egui::Align2::LEFT_CENTER,
@@ -618,7 +823,7 @@ fn render_process_row(ui: &mut egui::Ui, process: &ProcessInfo, selected: bool) 
             position,
             align,
             text,
-            egui::FontId::monospace(10.0),
+            egui::FontId::monospace(PROCESS_TEXT_SIZE),
             color,
         );
         left += width + ui.spacing().item_spacing.x;
@@ -741,7 +946,9 @@ fn render_detail(
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new("复制全部").size(10.5).color(TEXT),
+                                egui::RichText::new("复制全部")
+                                    .size(PROCESS_TEXT_SIZE)
+                                    .color(TEXT),
                             )
                             .fill(PANEL_ALT)
                             .stroke(egui::Stroke::new(1.0, BORDER)),
@@ -769,7 +976,7 @@ fn render_detail(
                     if detail.environ.is_empty() {
                         ui.label(
                             egui::RichText::new("环境变量不可用或无读取权限")
-                                .size(10.0)
+                                .size(PROCESS_META_SIZE)
                                 .color(DIM),
                         );
                     } else {
@@ -820,13 +1027,17 @@ fn render_basic_detail(ui: &mut egui::Ui, detail: &ProcessDetail) {
 }
 
 fn detail_row(ui: &mut egui::Ui, label: &str, value: impl Into<String>, color: egui::Color32) {
-    ui.label(egui::RichText::new(label).size(10.0).color(DIM));
+    ui.label(
+        egui::RichText::new(label)
+            .size(PROCESS_META_SIZE)
+            .color(DIM),
+    );
     let value = value.into();
     let response = ui.add(
         egui::Label::new(
             egui::RichText::new(&value)
                 .monospace()
-                .size(10.0)
+                .size(PROCESS_TEXT_SIZE)
                 .color(color),
         )
         .selectable(true),
@@ -862,7 +1073,7 @@ fn render_ancestors(ui: &mut egui::Ui, detail: &ProcessDetail) {
                 ui.label(
                     egui::RichText::new(&ancestor.command)
                         .monospace()
-                        .size(10.0)
+                        .size(PROCESS_TEXT_SIZE)
                         .color(DIM),
                 );
             }

@@ -239,6 +239,8 @@ pub struct MonitorData {
     pub load_text: String,
     pub disk_items: Vec<DiskItem>,
     pub processes: Vec<ProcessInfo>,
+    /// Bounded zombie list retained independently from the CPU-sorted process table.
+    pub zombie_processes: Vec<ProcessInfo>,
     pub process_stats: ProcessStats,
     pub net_interfaces: Vec<NetIfaceInfo>,
     /// Interface carrying the default route, or the best active physical fallback.
@@ -713,6 +715,12 @@ impl MonitorCollector {
                 }
             })
             .collect();
+        let zombie_processes = processes
+            .iter()
+            .filter(|process| process.state.starts_with('Z'))
+            .take(200)
+            .cloned()
+            .collect();
         processes.sort_by(|a, b| {
             b.cpu
                 .partial_cmp(&a.cpu)
@@ -768,6 +776,7 @@ impl MonitorCollector {
             load_text,
             disk_items,
             processes,
+            zombie_processes,
             process_stats,
             net_interfaces,
             preferred_net_interface,

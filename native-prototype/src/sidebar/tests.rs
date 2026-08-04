@@ -16,6 +16,7 @@ fn monitor_with_rate(iface: &str, rx_rate: u64, tx_rate: u64) -> crate::monitor:
         load_text: "0.1, 0.2, 0.3".into(),
         disk_items: Vec::new(),
         processes: Vec::new(),
+        zombie_processes: Vec::new(),
         process_stats: crate::monitor::ProcessStats::default(),
         net_interfaces: vec![crate::monitor::NetIfaceInfo {
             name: iface.into(),
@@ -873,6 +874,7 @@ fn monitor_presentation_omits_redundant_cpu_and_memory_summary() {
         load_text: String::new(),
         disk_items: Vec::new(),
         processes: Vec::new(),
+        zombie_processes: Vec::new(),
         process_stats: crate::monitor::ProcessStats::default(),
         net_interfaces: Vec::new(),
         preferred_net_interface: None,

@@ -299,6 +299,9 @@ impl App {
                     active_monitor_data
                         .as_ref()
                         .map(|data| data.processes.as_slice()),
+                    active_monitor_data
+                        .as_ref()
+                        .map(|data| data.zombie_processes.as_slice()),
                     active_monitor_data.as_ref().map(|data| &data.process_stats),
                     active_monitor_error.as_deref(),
                 );

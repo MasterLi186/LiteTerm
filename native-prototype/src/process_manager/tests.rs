@@ -101,6 +101,56 @@ fn process_search_matches_pid_user_name_and_full_command_case_insensitively() {
 }
 
 #[test]
+fn process_table_uses_readable_font_and_row_metrics() {
+    assert!(PROCESS_TEXT_SIZE >= 12.0);
+    assert!(PROCESS_META_SIZE >= 11.0);
+    assert!(PROCESS_ROW_HEIGHT >= 26.0);
+    assert!(PROCESS_TABLE_MIN_WIDTH >= 1_160.0);
+}
+
+#[test]
+fn zombie_dialog_does_not_replace_the_selected_process_detail() {
+    let ctx = egui::Context::default();
+    let mut state = state();
+    state.select_process(10, DETAIL_START);
+    assert!(state.apply_detail(1, Ok(detail(10, "CURRENT_SECRET"))));
+
+    let mut zombie = process(73, "root", 2048, 0.0, "defunct", "2026-01-02");
+    zombie.state = "Z".into();
+    let processes = vec![process(10, "dev", 1024, 1.0, "worker", DETAIL_START)];
+    let zombies = vec![zombie];
+    let stats = ProcessStats {
+        zombie: 1,
+        total: 2,
+        ..ProcessStats::default()
+    };
+    state.set_zombie_dialog_open(true);
+
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1_400.0, 900.0),
+        )),
+        ..Default::default()
+    };
+    let output = ctx.run(input, |ctx| {
+        render(
+            ctx,
+            &mut state,
+            Some(&processes),
+            Some(&zombies),
+            Some(&stats),
+            None,
+        );
+    });
+
+    assert!(output.shapes.len() > 0);
+    assert!(state.zombie_dialog_open());
+    assert_eq!(state.selected_pid(), Some(10));
+    assert!(state.detail().is_some());
+}
+
+#[test]
 fn copied_process_detail_contains_forensic_path_and_start_time() {
     let detail = detail(42, "COPY_SECRET");
     let copied = format_process_detail(&detail);
@@ -238,7 +288,7 @@ fn maximizing_keeps_detail_panel_height_and_gives_new_space_to_process_list() {
             ..Default::default()
         };
         let _ = ctx.run(input, |ctx| {
-            render(ctx, state, Some(&processes), Some(&stats), None);
+            render(ctx, state, Some(&processes), Some(&[]), Some(&stats), None);
         });
         egui::containers::panel::PanelState::load(
             ctx,
@@ -264,12 +314,19 @@ fn render_smoke_covers_loading_empty_and_stale_states() {
     let stats = ProcessStats::default();
 
     let loading = ctx.run(egui::RawInput::default(), |ctx| {
-        render(ctx, &mut state, None, None, None);
+        render(ctx, &mut state, None, None, None, None);
     });
     assert!(loading.shapes.len() > 0);
 
     let empty_output = ctx.run(egui::RawInput::default(), |ctx| {
-        render(ctx, &mut state, Some(&empty), Some(&stats), None);
+        render(
+            ctx,
+            &mut state,
+            Some(&empty),
+            Some(&empty),
+            Some(&stats),
+            None,
+        );
     });
     assert!(empty_output.shapes.len() > 0);
 
@@ -277,6 +334,7 @@ fn render_smoke_covers_loading_empty_and_stale_states() {
         render(
             ctx,
             &mut state,
+            Some(&empty),
             Some(&empty),
             Some(&stats),
             Some("连接已断开"),

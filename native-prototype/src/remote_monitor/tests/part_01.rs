@@ -76,6 +76,10 @@
         assert_eq!(data.processes[0].name, "worker");
         assert_eq!(data.processes[0].command, "/usr/bin/test process --flag");
         assert_eq!(data.processes[0].start_time, "Mon Jul 27 10:00:00 2026");
+        assert_eq!(data.zombie_processes.len(), 1);
+        assert_eq!(data.zombie_processes[0].pid, 73);
+        assert_eq!(data.zombie_processes[0].state, "Z");
+        assert_eq!(data.zombie_processes[0].name, "defunct");
         assert_eq!(data.process_stats.total, 28);
         assert_eq!(data.process_stats.running, 1);
         assert_eq!(data.process_stats.sleeping, 12);
@@ -376,6 +380,7 @@
             "cat /proc/uptime",
             "ps -eo pid=,user=,stat=,rss=,pcpu=,comm=,lstart=,args= --sort=-pcpu | head -n 100",
             "RssAnon:",
+            "ps -eo pid=,user=,stat=,rss=,pcpu=,comm=,lstart= | awk '$3 ~ /^Z/' | head -n 200",
             "ps h -eo stat= | cut -c1 | sort | uniq -c",
             "grep -m1 -E '^(model name|Hardware|Processor)[[:space:]]*:' /proc/cpuinfo",
         ] {
@@ -391,6 +396,7 @@
             "UPTIME",
             "PS",
             "PSANON",
+            "PSZOMBIE",
             "PSSTATS",
             "CPUINFO",
             "END",

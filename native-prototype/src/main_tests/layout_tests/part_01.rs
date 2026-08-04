@@ -275,6 +275,7 @@
             load_text: String::new(),
             disk_items: Vec::new(),
             processes: Vec::new(),
+            zombie_processes: Vec::new(),
             process_stats: super::monitor::ProcessStats::default(),
             net_interfaces: Vec::new(),
             preferred_net_interface: None,
