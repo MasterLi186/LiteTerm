@@ -9,6 +9,7 @@ use crate::adb_history::AdbHistoryIdentity;
 pub const MAX_CANDIDATES: usize = 5;
 pub const MAX_HISTORY_ITEMS: usize = 5_000;
 pub const MAX_HISTORY_BYTES: u64 = 2 * 1024 * 1024;
+pub const MIN_COMPLETION_PREFIX_CHARS: usize = 2;
 const HISTORY_DISABLED_REASON: &str = "当前会话未启用历史记录补全";
 const HISTORY_ERROR_REASON: &str = "历史记录加载失败";
 
@@ -181,7 +182,7 @@ pub fn parse_bash_history(bytes: &[u8]) -> Vec<String> {
 }
 
 pub fn rank_candidates(history: &[String], prefix: &str) -> Vec<String> {
-    if prefix.is_empty() {
+    if prefix.chars().take(MIN_COMPLETION_PREFIX_CHARS).count() < MIN_COMPLETION_PREFIX_CHARS {
         return Vec::new();
     }
     let mut seen = HashSet::new();

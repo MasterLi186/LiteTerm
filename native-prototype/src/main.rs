@@ -69,7 +69,6 @@ use app_monitor::*;
 use app_resources::*;
 use app_settings::*;
 use app_zmodem::*;
-use atlas::is_word_char;
 use renderer::{GpuState, PaneRenderRect, Renderer};
 use sidebar::Sidebar;
 use smart_completion::{AdbHistoryLoadRequest, CompletionSessionKey, HistoryLoadRequest};

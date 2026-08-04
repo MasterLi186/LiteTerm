@@ -85,13 +85,35 @@ pub(super) fn terminal_grid_bounds(
     (right, grid_bottom.min(layout_bottom))
 }
 
-pub(super) fn drag_selection_range(
-    anchor: Option<SelectionPoint>,
-    current: SelectionPoint,
-) -> Option<(SelectionPoint, SelectionPoint)> {
-    anchor
-        .filter(|start| *start != current)
-        .map(|start| (start, current))
+pub(super) fn selection_auto_scroll_lines(
+    pointer_y: f32,
+    pane_top: f32,
+    pane_bottom: f32,
+    cell_height: f32,
+) -> i32 {
+    if !pointer_y.is_finite()
+        || !pane_top.is_finite()
+        || !pane_bottom.is_finite()
+        || !cell_height.is_finite()
+        || pane_bottom <= pane_top
+        || cell_height <= 0.0
+    {
+        return 0;
+    }
+
+    let distance = if pointer_y < pane_top {
+        pane_top - pointer_y
+    } else if pointer_y >= pane_bottom {
+        pointer_y - pane_bottom + 1.0
+    } else {
+        return 0;
+    };
+    let magnitude = (distance / cell_height).ceil().clamp(1.0, 8.0) as i32;
+    if pointer_y < pane_top {
+        magnitude
+    } else {
+        -magnitude
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,14 +144,8 @@ pub(super) fn terminal_report_release_cell(
     }
 }
 
-pub(super) fn should_copy_left_selection(
-    gesture: Option<LeftMouseGesture>,
-    selection_start: Option<SelectionPoint>,
-    selection_end: Option<SelectionPoint>,
-) -> bool {
+pub(super) fn should_copy_left_selection(gesture: Option<LeftMouseGesture>) -> bool {
     matches!(gesture, Some(LeftMouseGesture::LocalSelection))
-        && selection_start.is_some()
-        && selection_end.is_some()
 }
 
 pub(super) fn should_process_left_release(in_terminal: bool, has_active_gesture: bool) -> bool {
@@ -147,35 +163,19 @@ pub(super) fn should_clear_selection_on_focus_loss(gesture: Option<LeftMouseGest
     matches!(gesture, Some(LeftMouseGesture::LocalSelection))
 }
 
-pub(super) fn clear_selection_state(
-    selection_start: &mut Option<SelectionPoint>,
-    selection_end: &mut Option<SelectionPoint>,
-    selection_drag_anchor: &mut Option<SelectionPoint>,
-) {
-    *selection_start = None;
-    *selection_end = None;
-    *selection_drag_anchor = None;
-}
-
 pub(super) fn take_left_mouse_gesture_state(
     gesture: &mut Option<LeftMouseGesture>,
-    selection_drag_anchor: &mut Option<SelectionPoint>,
 ) -> Option<(usize, usize)> {
     let gesture = gesture.take();
-    *selection_drag_anchor = None;
     terminal_report_release_cell(gesture, None)
 }
 
 pub(super) fn prepare_for_active_tab_change_state(
     gesture: &mut Option<LeftMouseGesture>,
-    selection_start: &mut Option<SelectionPoint>,
-    selection_end: &mut Option<SelectionPoint>,
-    selection_drag_anchor: &mut Option<SelectionPoint>,
     click_sequence: (&mut ClickState, &mut Instant, &mut (usize, usize)),
     now: Instant,
 ) -> Option<(usize, usize)> {
-    let release_cell = take_left_mouse_gesture_state(gesture, selection_drag_anchor);
-    clear_selection_state(selection_start, selection_end, selection_drag_anchor);
+    let release_cell = take_left_mouse_gesture_state(gesture);
     let (click_state, last_click_time, last_click_pos) = click_sequence;
     reset_click_sequence_state(click_state, last_click_time, last_click_pos, now);
     release_cell

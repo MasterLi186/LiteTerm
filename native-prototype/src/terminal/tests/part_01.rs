@@ -1,43 +1,57 @@
+    fn native_selection_text(
+        output: &str,
+        start: (usize, usize),
+        end: (usize, usize),
+    ) -> String {
+        let mut terminal = selection_fixture(output);
+        let start = terminal.visual_point_to_grid_point(start).unwrap();
+        let end = terminal.visual_point_to_grid_point(end).unwrap();
+        let kind = if start == end {
+            TerminalSelectionKind::Semantic
+        } else {
+            TerminalSelectionKind::Simple
+        };
+        terminal.begin_selection(start, kind);
+        if start != end {
+            terminal.update_selection(end);
+        }
+        terminal.current_selection_text()
+    }
+
     #[test]
     fn selection_text_keeps_adjacent_cjk_without_spacer_spaces() {
-        let terminal = selection_fixture("中文");
-
-        assert_eq!(terminal.selection_text((0, 1), (3, 1)), "中文");
+        assert_eq!(native_selection_text("中文", (0, 1), (3, 1)), "中文");
     }
 
     #[test]
     fn selection_text_keeps_mixed_ascii_and_cjk_compact() {
-        let terminal = selection_fixture("A中B");
-
-        assert_eq!(terminal.selection_text((usize::MAX, 1), (0, 1)), "A中B");
+        assert_eq!(
+            native_selection_text("A中B", (usize::MAX, 1), (0, 1)),
+            "A中B"
+        );
     }
 
     #[test]
     fn selection_text_preserves_real_internal_space() {
-        let terminal = selection_fixture("中 文");
-
-        assert_eq!(terminal.selection_text((0, 1), (4, 1)), "中 文");
+        assert_eq!(native_selection_text("中 文", (0, 1), (4, 1)), "中 文");
     }
 
     #[test]
     fn selection_text_keeps_emoji_without_spacer_space() {
-        let terminal = selection_fixture("A😀B");
-
-        assert_eq!(terminal.selection_text((0, 1), (3, 1)), "A😀B");
+        assert_eq!(native_selection_text("A😀B", (0, 1), (3, 1)), "A😀B");
     }
 
     #[test]
     fn selection_text_preserves_zero_width_combining_character() {
-        let terminal = selection_fixture("e\u{301}");
-
-        assert_eq!(terminal.selection_text((0, 1), (0, 1)), "e\u{301}");
+        assert_eq!(
+            native_selection_text("e\u{301}", (0, 1), (0, 1)),
+            "e\u{301}"
+        );
     }
 
     #[test]
     fn selection_text_starting_at_wide_spacer_includes_primary_character() {
-        let terminal = selection_fixture("中");
-
-        assert_eq!(terminal.selection_text((1, 1), (1, 1)), "中");
+        assert_eq!(native_selection_text("中", (1, 1), (1, 1)), "中");
     }
 
     #[test]
@@ -51,7 +65,9 @@
         let end = terminal
             .visual_point_to_grid_point((3, 1))
             .expect("visible end must map into scrollback");
-        let selected = terminal.selection_text_grid(start, end);
+        terminal.begin_selection(start, TerminalSelectionKind::Simple);
+        terminal.update_selection(end);
+        let selected = terminal.current_selection_text();
         assert!(!selected.is_empty());
 
         terminal
@@ -60,7 +76,7 @@
             .scroll_display(Scroll::Delta(2));
 
         assert_ne!(terminal.visual_point_to_grid_point((0, 1)), Some(start));
-        assert_eq!(terminal.selection_text_grid(start, end), selected);
+        assert_eq!(terminal.current_selection_text(), selected);
     }
 
     #[test]
@@ -86,7 +102,163 @@
             anchor.1.abs_diff(current.1) > u32::from(terminal.rows()),
             "wheel-assisted drag should span more lines than the visible viewport"
         );
-        assert!(terminal.selection_text_grid(anchor, current).lines().count() > 4);
+        terminal.begin_selection(anchor, TerminalSelectionKind::Simple);
+        terminal.update_selection(current);
+        assert!(terminal.current_selection_text().lines().count() > 4);
+    }
+
+    #[test]
+    fn shift_click_without_visible_selection_uses_live_cursor_not_stale_mouse_anchor() {
+        use alacritty_terminal::grid::Scroll;
+
+        let output = (0..340)
+            .map(|line| format!("line-{line:03}\r\n"))
+            .collect::<String>();
+        let mut terminal = selection_fixture(&output);
+        terminal.term_mut().unwrap().scroll_display(Scroll::Top);
+        let stale_mouse_anchor = terminal.visual_point_to_grid_point((0, 1)).unwrap();
+        let clicked = terminal.visual_point_to_grid_point((7, 2)).unwrap();
+        let live_cursor = terminal.term().unwrap().grid().cursor.point;
+
+        assert!(terminal.begin_selection(stale_mouse_anchor, TerminalSelectionKind::Simple));
+        assert!(terminal.has_selection_anchor());
+        assert!(terminal.selection_range().is_none());
+        assert!(terminal.current_selection_text().is_empty());
+
+        assert!(terminal.shift_extend_selection(clicked));
+
+        let range = terminal.selection_range().expect("Shift extension must become visible");
+        assert!(range.start.line.0.abs_diff(range.end.line.0) >= 300);
+        assert!(terminal.current_selection_text().lines().count() >= 300);
+        assert!(range.contains(live_cursor));
+    }
+
+    #[test]
+    fn shift_click_extends_an_existing_visible_selection_instead_of_live_cursor() {
+        let mut terminal = selection_fixture("alpha beta\r\ntail");
+        let alpha = terminal.visual_point_to_grid_point((2, 1)).unwrap();
+        let beta = terminal.visual_point_to_grid_point((8, 1)).unwrap();
+        terminal.begin_selection(alpha, TerminalSelectionKind::Semantic);
+        assert_eq!(terminal.current_selection_text(), "alpha");
+
+        assert!(terminal.shift_extend_selection(beta));
+        assert_eq!(terminal.current_selection_text(), "alpha beta");
+    }
+
+    #[test]
+    fn same_cell_pointer_jitter_keeps_a_plain_click_anchor_invisible() {
+        let mut terminal = selection_fixture("alpha");
+        let point = terminal.visual_point_to_grid_point((2, 1)).unwrap();
+        terminal.begin_selection(point, TerminalSelectionKind::Simple);
+
+        assert!(!terminal.update_selection(point));
+        assert!(terminal.has_selection_anchor());
+        assert!(terminal.selection_range().is_none());
+        assert!(terminal.current_selection_text().is_empty());
+    }
+
+    #[test]
+    fn semantic_and_line_selections_keep_their_mode_while_dragging() {
+        let mut terminal = selection_fixture("alpha beta\r\ngamma delta");
+        let alpha = terminal.visual_point_to_grid_point((2, 1)).unwrap();
+        let beta = terminal.visual_point_to_grid_point((8, 1)).unwrap();
+        terminal.begin_selection(alpha, TerminalSelectionKind::Semantic);
+        assert_eq!(terminal.current_selection_text(), "alpha");
+        terminal.update_selection(beta);
+        assert_eq!(terminal.current_selection_text(), "alpha beta");
+
+        let first_line = terminal.visual_point_to_grid_point((2, 1)).unwrap();
+        let second_line = terminal.visual_point_to_grid_point((2, 2)).unwrap();
+        terminal.begin_selection(first_line, TerminalSelectionKind::Lines);
+        terminal.update_selection(second_line);
+        let selected = terminal.current_selection_text();
+        assert!(selected.contains("alpha beta"));
+        assert!(selected.contains("gamma delta"));
+    }
+
+    #[test]
+    fn block_selection_extracts_only_the_selected_columns() {
+        let mut terminal = selection_fixture("abcd\r\nefgh\r\nijkl");
+        let start = terminal.visual_point_to_grid_point((1, 1)).unwrap();
+        let end = terminal.visual_point_to_grid_point((3, 2)).unwrap();
+        terminal.begin_selection(start, TerminalSelectionKind::Block);
+        terminal.update_selection(end);
+
+        assert_eq!(terminal.current_selection_text(), "bcd\nfgh");
+        assert!(terminal.selection_range().unwrap().is_block);
+    }
+
+    #[test]
+    fn native_selection_tracks_output_scroll_and_clears_on_column_reflow() {
+        let mut terminal = selection_fixture("anchor word\r\nsecond\r\nthird");
+        let start = terminal.visual_point_to_grid_point((0, 1)).unwrap();
+        terminal.begin_selection(start, TerminalSelectionKind::Semantic);
+        assert_eq!(terminal.current_selection_text(), "anchor");
+
+        let mut parser = TestProcessor::new();
+        terminal.process_pty_output(&mut parser, b"\r\nfourth\r\nfifth");
+        assert_eq!(terminal.current_selection_text(), "anchor");
+
+        terminal.resize(30, 4);
+        assert!(!terminal.has_selection_anchor());
+        assert!(terminal.current_selection_text().is_empty());
+    }
+
+    #[test]
+    fn history_eviction_drops_even_an_invisible_single_click_anchor() {
+        use alacritty_terminal::grid::Scroll;
+
+        let mut terminal = selection_fixture("");
+        let mut config = TermConfig::default();
+        config.scrolling_history = 8;
+        config.semantic_escape_chars = SEMANTIC_SELECTION_DELIMITERS.to_owned();
+        terminal.term_mut().unwrap().set_options(config);
+        let mut parser = TestProcessor::new();
+        let initial = (0..12)
+            .map(|line| format!("old-{line}\r\n"))
+            .collect::<String>();
+        terminal.process_pty_output(&mut parser, initial.as_bytes());
+        terminal.term_mut().unwrap().scroll_display(Scroll::Top);
+        let anchor = terminal.visual_point_to_grid_point((0, 1)).unwrap();
+        terminal.begin_selection(anchor, TerminalSelectionKind::Simple);
+        assert!(terminal.has_selection_anchor());
+
+        terminal.term_mut().unwrap().scroll_display(Scroll::Bottom);
+        let replacement = (0..20)
+            .map(|line| format!("new-{line}\r\n"))
+            .collect::<String>();
+        terminal.process_pty_output(&mut parser, replacement.as_bytes());
+
+        assert!(!terminal.has_selection_anchor());
+    }
+
+    #[test]
+    fn alternate_screen_and_clear_scrollback_invalidate_native_selection() {
+        let mut terminal = selection_fixture("anchor word");
+        let point = terminal.visual_point_to_grid_point((0, 1)).unwrap();
+        terminal.begin_selection(point, TerminalSelectionKind::Semantic);
+        let mut parser = TestProcessor::new();
+
+        terminal.process_pty_output(&mut parser, b"\x1b[?1049h");
+        assert!(!terminal.has_selection_anchor());
+
+        terminal.process_pty_output(&mut parser, b"\x1b[?1049lmore");
+        let point = terminal.visual_point_to_grid_point((0, 1)).unwrap();
+        terminal.begin_selection(point, TerminalSelectionKind::Simple);
+        terminal.update_selection(point);
+        terminal.clear_display(true);
+        assert!(!terminal.has_selection_anchor());
+    }
+
+    #[test]
+    fn native_selection_of_a_wide_spacer_copies_the_primary_cjk_glyph() {
+        let mut terminal = selection_fixture("中");
+        let primary = terminal.visual_point_to_grid_point((0, 1)).unwrap();
+        let spacer = terminal.visual_point_to_grid_point((1, 1)).unwrap();
+        terminal.begin_selection(primary, TerminalSelectionKind::Simple);
+        terminal.update_selection(spacer);
+
+        assert_eq!(terminal.current_selection_text(), "中");
     }
 
     fn install_local_snapshot_runtime(
@@ -455,6 +627,92 @@
             std::thread::sleep(Duration::from_millis(10));
         };
         assert!(!process_exists, "shutdown 应 kill 并 reap 本地 Bash");
+    }
+
+    #[test]
+    fn real_bash_large_transcript_terminal_queries_do_not_pollute_next_command() {
+        let terminal = Arc::new(Mutex::new(TerminalState::new()));
+        let session = completion_session();
+        {
+            terminal
+                .lock()
+                .unwrap()
+                .spawn_shell_with_path("/bin/bash", 212, 48, session.clone());
+        }
+        let probe = terminal
+            .lock()
+            .unwrap()
+            .local_bash_runtime
+            .as_ref()
+            .unwrap()
+            .temp_dir()
+            .join("terminal-reply-probe");
+        let mut reader = terminal.lock().unwrap().take_reader().unwrap();
+        let (output_tx, output_rx) = mpsc::channel();
+        let reader_thread = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 8192];
+            while let Ok(length) = reader.read(&mut buffer) {
+                if length == 0 || output_tx.send(buffer[..length].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut marker_decoder = MarkerDecoder::new(session);
+        let mut parser = TestProcessor::new();
+        let mut prompts = 0;
+        let mut observed = Vec::new();
+        let mut transcript_sent = false;
+        let mut probe_sent = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+
+        while prompts < 3 && std::time::Instant::now() < deadline {
+            let Ok(bytes) = output_rx.recv_timeout(Duration::from_millis(250)) else {
+                continue;
+            };
+            observed.extend_from_slice(&bytes);
+            if observed.len() > 4096 {
+                observed.drain(..observed.len() - 4096);
+            }
+            prompts += marker_decoder
+                .scan(&bytes)
+                .iter()
+                .filter(|boundary| boundary.kind == MarkerKind::Prompt)
+                .count();
+            terminal
+                .lock()
+                .unwrap()
+                .process_pty_output(&mut parser, &bytes);
+
+            if prompts == 1 && !transcript_sent {
+                transcript_sent = true;
+                let mut terminal = terminal.lock().unwrap();
+                terminal.take_bash_submission();
+                terminal.write_input(
+                    "bash --noprofile --norc -c \"stty raw -echo; head -c 131072 /dev/zero | tr '\\0' x; printf '\\033[c\\033[c\\033[c\\033[c\\033[1;212H\\033[6n'; sleep 0.05; stty sane\"\r",
+                );
+            } else if prompts == 2 && !probe_sent {
+                probe_sent = true;
+                let probe = probe.to_string_lossy();
+                assert!(!probe.contains('\''));
+                let mut terminal = terminal.lock().unwrap();
+                terminal.take_bash_submission();
+                terminal.write_input(&format!("printf __TERMINAL_REPLY_OK__ > '{probe}'\r"));
+            }
+        }
+
+        assert_eq!(prompts, 3, "真实 Bash PTY 应完成测试命令并返回提示符");
+        assert_eq!(
+            std::fs::read_to_string(&probe).unwrap_or_else(|error| {
+                panic!(
+                    "探针命令未执行（{error}），PTY 输出：{}",
+                    String::from_utf8_lossy(&observed).escape_debug()
+                )
+            }),
+            "__TERMINAL_REPLY_OK__",
+            "raw 子会话日志中的 DA/DSR 应答不得残留并污染下一条 Bash 命令"
+        );
+        terminal.lock().unwrap().shutdown();
+        reader_thread.join().unwrap();
     }
 
     #[test]

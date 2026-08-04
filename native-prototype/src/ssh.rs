@@ -508,6 +508,7 @@ struct PendingChannelWrite {
     bytes: Vec<u8>,
     offset: usize,
     protocol: Option<crate::zmodem::runtime::ProtocolWriteRequest>,
+    terminal_reply: Option<crate::zmodem::runtime::TerminalReplyRequest>,
     normal_epoch: Option<u64>,
     started: bool,
 }
@@ -519,6 +520,7 @@ impl PendingChannelWrite {
                 bytes,
                 offset: 0,
                 protocol: None,
+                terminal_reply: None,
                 normal_epoch: Some(epoch),
                 started: true,
             },
@@ -526,6 +528,15 @@ impl PendingChannelWrite {
                 bytes: protocol.bytes().to_vec(),
                 offset: 0,
                 protocol: Some(protocol),
+                terminal_reply: None,
+                normal_epoch: None,
+                started: false,
+            },
+            crate::zmodem::runtime::TransportWrite::TerminalReply(terminal_reply) => Self {
+                bytes: terminal_reply.bytes().to_vec(),
+                offset: 0,
+                protocol: None,
+                terminal_reply: Some(terminal_reply),
                 normal_epoch: None,
                 started: false,
             },
@@ -539,7 +550,11 @@ impl PendingChannelWrite {
         self.started = self
             .protocol
             .as_ref()
-            .is_some_and(|request| request.begin());
+            .is_some_and(|request| request.begin())
+            || self
+                .terminal_reply
+                .as_ref()
+                .is_some_and(|request| request.begin());
         self.started
     }
 
@@ -547,12 +562,22 @@ impl PendingChannelWrite {
         self.protocol
             .as_ref()
             .is_none_or(|request| request.may_continue())
+            && self
+                .terminal_reply
+                .as_ref()
+                .is_none_or(|request| request.may_continue())
     }
 
     fn complete(self, result: std::io::Result<()>) {
         if let Some(protocol) = self.protocol {
             protocol.complete(result);
+        } else if let Some(terminal_reply) = self.terminal_reply {
+            terminal_reply.complete(result);
         }
+    }
+
+    fn is_normal(&self) -> bool {
+        self.normal_epoch.is_some()
     }
 }
 
@@ -683,7 +708,7 @@ pub fn connect(
             }
 
             if let Some(pending) = writes.front_mut() {
-                if pending.protocol.is_none()
+                if pending.is_normal()
                     && (protocol_active.is_active()
                         || pending.normal_epoch != Some(protocol_active.epoch()))
                 {

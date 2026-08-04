@@ -552,25 +552,27 @@
     }
 
     #[test]
-    fn listener_ignores_a_disconnected_event_receiver() {
-        let (pty_write_tx, pty_write_rx) = mpsc::channel();
-        drop(pty_write_rx);
-        let listener = Listener { pty_write_tx };
+    fn listener_buffers_terminal_reply_until_a_transport_is_installed() {
+        let terminal_reply_sink = Arc::new(Mutex::new(TerminalReplySink::default()));
+        let listener = Listener {
+            terminal_reply_sink: Arc::clone(&terminal_reply_sink),
+        };
 
         listener.send_event(Event::PtyWrite("reply".to_owned()));
+
+        assert_eq!(terminal_reply_sink.lock().unwrap().pending, ["reply"]);
     }
 
     #[test]
     fn listener_discards_non_pty_write_events_at_the_boundary() {
-        let (pty_write_tx, pty_write_rx) = mpsc::channel();
-        let listener = Listener { pty_write_tx };
+        let terminal_reply_sink = Arc::new(Mutex::new(TerminalReplySink::default()));
+        let listener = Listener {
+            terminal_reply_sink: Arc::clone(&terminal_reply_sink),
+        };
 
         listener.send_event(Event::Bell);
 
-        assert!(matches!(
-            pty_write_rx.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
+        assert!(terminal_reply_sink.lock().unwrap().pending.is_empty());
     }
 
     #[test]
@@ -579,7 +581,7 @@
         let (completed_tx, completed_rx) = mpsc::channel();
         let mut terminal = TerminalState::new();
         terminal.init_term(180, 48);
-        terminal.writer = Some(spawn_writer_worker(Box::new(SharedWriter {
+        terminal.install_transport_writer(spawn_writer_worker(Box::new(SharedWriter {
             captured: Arc::clone(&captured),
             completed_tx,
         })));
@@ -600,7 +602,7 @@
         let (completed_tx, completed_rx) = mpsc::channel();
         let mut local = TerminalState::new();
         local.init_term(180, 48);
-        local.writer = Some(spawn_writer_worker(Box::new(SharedWriter {
+        local.install_transport_writer(spawn_writer_worker(Box::new(SharedWriter {
             captured: Arc::clone(&captured),
             completed_tx,
         })));
@@ -609,7 +611,7 @@
         let (write_tx, write_rx) = test_transport_capture();
         let mut ssh = TerminalState::new();
         ssh.init_term(180, 48);
-        ssh.writer = Some(write_tx);
+        ssh.install_transport_writer(write_tx);
         let mut ssh_parser = TestProcessor::new();
 
         local.process_pty_output(&mut local_parser, b"\x1b[?1049h\x1b[18t");
@@ -621,25 +623,18 @@
     }
 
     #[test]
-    fn primary_screen_queries_from_cat_do_not_reach_shell_input() {
+    fn transport_without_local_termios_suppresses_queries_from_large_primary_transcript() {
         let (write_tx, write_rx) = test_transport_capture();
         let mut terminal = TerminalState::new();
         terminal.init_term(212, 48);
-        terminal.writer = Some(write_tx);
+        terminal.install_transport_writer(write_tx);
         let mut parser = TestProcessor::new();
 
-        terminal.process_pty_output(
-            &mut parser,
-            &vec![b'x'; MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES + 1],
-        );
+        terminal.process_pty_output(&mut parser, &vec![b'x'; 128 * 1024]);
         terminal.process_pty_output(&mut parser, b"\x1b[c\x1b[c\x1b[c\x1b[c");
         terminal.process_pty_output(&mut parser, b"\x1b[1;212H\x1b[6n");
 
-        assert!(matches!(
-            write_rx.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-        assert!(terminal.take_pty_write_events().is_empty());
+        assert!(matches!(write_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
     }
 
     #[test]
@@ -647,13 +642,9 @@
         let (write_tx, write_rx) = test_transport_capture();
         let mut terminal = TerminalState::new();
         terminal.init_term(212, 48);
-        terminal.writer = Some(write_tx);
+        terminal.install_transport_writer(write_tx);
         let mut parser = TestProcessor::new();
 
-        terminal.process_pty_output(
-            &mut parser,
-            &vec![b'x'; MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES + 1],
-        );
         terminal.write_input("resize\r");
         assert_eq!(write_rx.try_recv().unwrap(), b"resize\r");
         terminal.process_pty_output(&mut parser, b"resize\r\n\x1b[c");
@@ -666,13 +657,9 @@
         let (write_tx, write_rx) = test_transport_capture();
         let mut terminal = TerminalState::new();
         terminal.init_term(212, 48);
-        terminal.writer = Some(write_tx);
+        terminal.install_transport_writer(write_tx);
         let mut parser = TestProcessor::new();
 
-        terminal.process_pty_output(
-            &mut parser,
-            &vec![b'x'; MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES + 1],
-        );
         terminal.process_pty_output(
             &mut parser,
             b"\x1b[?1049h\x1b[c\x1b[1;212H\x1b[6n",
@@ -688,7 +675,7 @@
         let (dropped_tx, dropped_rx) = mpsc::channel();
         let mut terminal = TerminalState::new();
         terminal.init_term(180, 48);
-        terminal.writer = Some(spawn_writer_worker(Box::new(FailingWriter {
+        terminal.install_transport_writer(spawn_writer_worker(Box::new(FailingWriter {
             attempt_tx,
             dropped_tx,
         })));
@@ -702,21 +689,29 @@
     }
 
     #[test]
-    fn local_writer_worker_keeps_protocol_processing_nonblocking() {
+    fn parser_waits_until_local_terminal_reply_is_flushed() {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let mut terminal = TerminalState::new();
         terminal.init_term(180, 48);
-        terminal.writer = Some(spawn_writer_worker(Box::new(BlockingWriter {
+        terminal.install_transport_writer(spawn_writer_worker(Box::new(BlockingWriter {
             entered_tx,
             release_rx,
         })));
-        let mut parser = TestProcessor::new();
-
-        terminal.process_pty_output(&mut parser, b"\x1b[?1049h\x1b[18t");
+        let (completed_tx, completed_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut parser = TestProcessor::new();
+            terminal.process_pty_output(&mut parser, b"\x1b[?1049h\x1b[18t");
+            let _ = completed_tx.send(());
+        });
 
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            completed_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
         release_tx.send(()).unwrap();
+        completed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     }
 
     #[test]

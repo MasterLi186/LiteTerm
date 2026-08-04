@@ -729,25 +729,12 @@
     }
 
     #[test]
-    fn plain_click_anchor_is_not_a_visible_selection() {
-        assert_eq!(drag_selection_range(Some((4, 2)), (4, 2)), None);
-    }
-
-    #[test]
-    fn dragging_across_cells_creates_a_visible_selection() {
-        assert_eq!(
-            drag_selection_range(Some((4, 2)), (7, 2)),
-            Some(((4, 2), (7, 2)))
-        );
-        assert_eq!(
-            drag_selection_range(Some((7, 2)), (4, 2)),
-            Some(((7, 2), (4, 2)))
-        );
-    }
-
-    #[test]
-    fn moving_without_a_pressed_anchor_does_not_create_selection() {
-        assert_eq!(drag_selection_range(None, (7, 2)), None);
+    fn selection_auto_scroll_is_zero_inside_and_points_toward_each_edge() {
+        assert_eq!(selection_auto_scroll_lines(50.0, 10.0, 100.0, 20.0), 0);
+        assert_eq!(selection_auto_scroll_lines(9.0, 10.0, 100.0, 20.0), 1);
+        assert_eq!(selection_auto_scroll_lines(101.0, 10.0, 100.0, 20.0), -1);
+        assert_eq!(selection_auto_scroll_lines(-500.0, 10.0, 100.0, 20.0), 8);
+        assert_eq!(selection_auto_scroll_lines(500.0, 10.0, 100.0, 20.0), -8);
     }
 
     #[test]

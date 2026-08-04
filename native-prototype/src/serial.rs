@@ -1,5 +1,5 @@
 use std::io::{self, Read, Write};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -71,7 +71,7 @@ pub enum SerialExit {
 pub struct SerialHandle {
     opened_device: String,
     reader: Option<Box<dyn Read + Send>>,
-    write_tx: Option<mpsc::Sender<Vec<u8>>>,
+    write_tx: Option<crate::zmodem::runtime::TransportWriter>,
     shutdown_tx: Option<mpsc::Sender<()>>,
     io_done_rx: Option<mpsc::Receiver<SerialExit>>,
     join: Option<thread::JoinHandle<()>>,
@@ -79,7 +79,7 @@ pub struct SerialHandle {
 
 pub struct SerialParts {
     pub reader: Box<dyn Read + Send>,
-    pub write_tx: mpsc::Sender<Vec<u8>>,
+    pub write_tx: crate::zmodem::runtime::TransportWriter,
     pub shutdown_tx: mpsc::Sender<()>,
     pub io_done_rx: mpsc::Receiver<SerialExit>,
     pub join: Option<thread::JoinHandle<()>>,
@@ -258,7 +258,8 @@ fn spawn_worker(
 ) -> Result<SerialHandle, String> {
     let (reader, mut writer) =
         os_pipe::pipe().map_err(|error| format!("创建串口输出管道失败：{error}"))?;
-    let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+    let protocol_gate = Arc::new(crate::zmodem::runtime::ProtocolGate::new());
+    let (write_tx, write_rx) = crate::zmodem::runtime::transport_write_channel(protocol_gate);
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     let (io_done_tx, io_done_rx) = mpsc::channel::<SerialExit>();
 
@@ -320,13 +321,66 @@ enum WriteDrain {
 
 fn drain_writes(
     writer: &mut dyn Write,
-    receiver: &mpsc::Receiver<Vec<u8>>,
+    receiver: &mpsc::Receiver<crate::zmodem::runtime::TransportWrite>,
 ) -> io::Result<WriteDrain> {
     loop {
         match receiver.try_recv() {
-            Ok(bytes) => {
-                writer.write_all(&bytes)?;
-                writer.flush()?;
+            Ok(crate::zmodem::runtime::TransportWrite::Normal { bytes, .. }) => {
+                writer.write_all(&bytes).and_then(|_| writer.flush())?;
+            }
+            Ok(crate::zmodem::runtime::TransportWrite::Protocol(request)) => {
+                request.complete(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "串口不支持 ZMODEM 协议写入",
+                )));
+            }
+            Ok(crate::zmodem::runtime::TransportWrite::TerminalReply(request)) => {
+                if !request.begin() {
+                    request.complete(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "终端应答在串口写入前已取消或超时",
+                    )));
+                    continue;
+                }
+                let mut offset = 0;
+                let mut result = Ok(());
+                while offset < request.bytes().len() {
+                    if !request.may_continue() {
+                        result = Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "串口终端应答写入已取消或超时",
+                        ));
+                        break;
+                    }
+                    match writer.write(&request.bytes()[offset..]) {
+                        Ok(0) => {
+                            result = Err(io::Error::new(
+                                io::ErrorKind::WriteZero,
+                                "串口 writer 返回零长度写入",
+                            ));
+                            break;
+                        }
+                        Ok(written) => offset += written,
+                        Err(error) => {
+                            result = Err(error);
+                            break;
+                        }
+                    }
+                }
+                if result.is_ok() && request.may_continue() {
+                    result = writer.flush();
+                }
+                let failed = result.is_err()
+                    && result
+                        .as_ref()
+                        .is_err_and(|error| error.kind() != io::ErrorKind::TimedOut);
+                request.complete(result);
+                if failed {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "串口终端应答写入失败",
+                    ));
+                }
             }
             Err(mpsc::TryRecvError::Empty) => return Ok(WriteDrain::Continue),
             Err(mpsc::TryRecvError::Disconnected) => return Ok(WriteDrain::Disconnected),
@@ -394,9 +448,10 @@ mod tests {
 
     #[test]
     fn write_drain_preserves_message_order_and_bytes() {
-        let (sender, receiver) = mpsc::channel();
-        sender.send(vec![0, 1, 2]).unwrap();
-        sender.send("终端".as_bytes().to_vec()).unwrap();
+        let gate = Arc::new(crate::zmodem::runtime::ProtocolGate::new());
+        let (sender, receiver) = crate::zmodem::runtime::transport_write_channel(gate);
+        sender.try_send_normal(vec![0, 1, 2]).unwrap();
+        sender.try_send_normal("终端".as_bytes().to_vec()).unwrap();
         let mut writer = RecordingWriter::default();
 
         assert_eq!(
@@ -414,13 +469,39 @@ mod tests {
 
     #[test]
     fn disconnected_input_channel_stops_the_worker_side() {
-        let (sender, receiver) = mpsc::channel::<Vec<u8>>();
+        let gate = Arc::new(crate::zmodem::runtime::ProtocolGate::new());
+        let (sender, receiver) = crate::zmodem::runtime::transport_write_channel(gate);
         drop(sender);
         let mut writer = RecordingWriter::default();
         assert_eq!(
             drain_writes(&mut writer, &receiver).unwrap(),
             WriteDrain::Disconnected
         );
+    }
+
+    #[test]
+    fn serial_terminal_reply_ack_follows_device_write_and_flush() {
+        let gate = Arc::new(crate::zmodem::runtime::ProtocolGate::new());
+        let (transport, receiver) = crate::zmodem::runtime::transport_write_channel(gate);
+        let reply_writer =
+            crate::zmodem::runtime::TerminalReplyWriter::from_transport_writer(transport);
+        let reply = std::thread::spawn(move || {
+            reply_writer.write_and_flush(b"\x1b[?6c", Duration::from_secs(1))
+        });
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let mut writer = RecordingWriter(Arc::clone(&output));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+
+        while output.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            assert_eq!(
+                drain_writes(&mut writer, &receiver).unwrap(),
+                WriteDrain::Continue
+            );
+            std::thread::yield_now();
+        }
+
+        reply.join().unwrap().unwrap();
+        assert_eq!(&*output.lock().unwrap(), b"\x1b[?6c");
     }
 
     #[test]

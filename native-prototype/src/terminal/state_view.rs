@@ -1,6 +1,110 @@
 use super::*;
 
 impl TerminalState {
+    pub fn begin_selection(&mut self, point: (usize, i32), kind: TerminalSelectionKind) -> bool {
+        let Some(term) = self.term.as_mut() else {
+            return false;
+        };
+        let point = Point::new(Line(point.1), Column(point.0));
+        term.selection = Some(Selection::new(kind.into(), point, Side::Left));
+        self.mark_render_dirty();
+        true
+    }
+
+    pub fn update_selection(&mut self, point: (usize, i32)) -> bool {
+        let Some(term) = self.term.as_mut() else {
+            return false;
+        };
+        let Some(selection) = term.selection.as_ref() else {
+            return false;
+        };
+        let was_empty = selection.is_empty();
+        let mut updated = selection.clone();
+        updated.update(Point::new(Line(point.1), Column(point.0)), Side::Right);
+        updated.include_all();
+        let same_cell_jitter = was_empty
+            && updated
+                .to_range(term)
+                .is_some_and(|range| range.start == range.end);
+        if same_cell_jitter {
+            return false;
+        }
+        term.selection = Some(updated);
+        self.mark_render_dirty();
+        true
+    }
+
+    /// Extend a visible selection, or start a new selection at the live terminal cursor.
+    ///
+    /// A plain click leaves an empty selection behind so a subsequent drag can start without
+    /// losing its press position. That empty mouse anchor must not become the anchor of a later
+    /// Shift+click: without visible selected text, users expect Shift+click to select between the
+    /// live terminal cursor and the clicked scrollback cell.
+    pub fn shift_extend_selection(&mut self, point: (usize, i32)) -> bool {
+        let Some(term) = self.term.as_mut() else {
+            return false;
+        };
+        let has_visible_selection = term
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(term))
+            .is_some();
+        if !has_visible_selection {
+            let cursor = term.grid().cursor.point;
+            term.selection = Some(Selection::new(SelectionType::Simple, cursor, Side::Left));
+            self.mark_render_dirty();
+        }
+
+        // Reaching this point means the Shift+click was handled even when the click is exactly on
+        // the cursor and therefore produces no visible range yet.
+        let _ = self.update_selection(point);
+        true
+    }
+
+    pub fn clear_selection(&mut self) {
+        let Some(term) = self.term.as_mut() else {
+            return;
+        };
+        if term.selection.take().is_some() {
+            self.mark_render_dirty();
+        }
+    }
+
+    pub fn has_selection_anchor(&self) -> bool {
+        self.term
+            .as_ref()
+            .is_some_and(|term| term.selection.is_some())
+    }
+
+    pub fn selection_range(&self) -> Option<SelectionRange> {
+        let term = self.term.as_ref()?;
+        term.selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(term))
+    }
+
+    pub fn current_selection_text(&self) -> String {
+        self.term
+            .as_ref()
+            .and_then(Term::selection_to_string)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn prune_invalid_selection(&mut self) {
+        let Some(term) = self.term.as_mut() else {
+            return;
+        };
+        let invalid = term.selection.as_ref().is_some_and(|selection| {
+            let mut probe = selection.clone();
+            probe.include_all();
+            probe.to_range(term).is_none()
+        });
+        if invalid {
+            term.selection = None;
+            self.mark_render_dirty();
+        }
+    }
+
     /// Snapshot all grid lines (history + screen) as search cells.
     /// Spacers are marked `is_spacer` and never contribute haystack text.
     pub fn search_lines(&self) -> Vec<crate::terminal_search::SearchLine> {
@@ -60,40 +164,6 @@ impl TerminalState {
         let last_column = grid.columns().saturating_sub(1);
         let line = self.visual_row_to_grid_line(point.1)?;
         Some((point.0.min(last_column), line.0))
-    }
-
-    pub fn selection_text(&self, start: (usize, usize), end: (usize, usize)) -> String {
-        let Some(start) = self.visual_point_to_grid_point(start) else {
-            return String::new();
-        };
-        let Some(end) = self.visual_point_to_grid_point(end) else {
-            return String::new();
-        };
-        self.selection_text_grid(start, end)
-    }
-
-    pub fn selection_text_grid(&self, start: (usize, i32), end: (usize, i32)) -> String {
-        let (start, end) = if (start.1, start.0) <= (end.1, end.0) {
-            (start, end)
-        } else {
-            (end, start)
-        };
-        let Some(term) = self.term.as_ref() else {
-            return String::new();
-        };
-        let grid = term.grid();
-        if start.1 < grid.topmost_line().0
-            || start.1 > grid.bottommost_line().0
-            || end.1 < grid.topmost_line().0
-            || end.1 > grid.bottommost_line().0
-        {
-            return String::new();
-        }
-        let last_column = grid.columns().saturating_sub(1);
-        let start = Point::new(Line(start.1), Column(start.0.min(last_column)));
-        let end = Point::new(Line(end.1), Column(end.0.min(last_column)));
-
-        term.bounds_to_string(start, end)
     }
 
     pub fn link_at_visual(
@@ -225,33 +295,73 @@ impl TerminalState {
         self.zmodem_input_gate.is_active()
     }
 
-    pub(super) fn take_pty_write_events(&mut self) -> Vec<String> {
-        let mut writes = Vec::new();
-        if let Some(pty_write_rx) = &self.pty_write_rx {
-            while let Ok(text) = pty_write_rx.try_recv() {
-                writes.push(text);
-            }
+    pub(super) fn install_transport_writer(
+        &mut self,
+        writer: crate::zmodem::runtime::TransportWriter,
+    ) {
+        if let Some(sink) = &self.terminal_reply_sink {
+            sink.lock().unwrap().writer = Some(
+                crate::zmodem::runtime::TerminalReplyWriter::from_transport_writer(writer.clone()),
+            );
         }
-        writes
+        self.writer = Some(writer);
     }
 
-    pub(super) fn flush_pty_write_events(&mut self) {
-        let writes = self.take_pty_write_events();
-        // A large transcript printed by `cat` can contain recorded DA/DSR
-        // queries. Replying to those injects bytes into the shell input queue,
-        // where readline exposes tails like `6c1;212R` after the command exits.
-        // Keep short, live primary-screen probes (for example `resize`) working,
-        // and always support full-screen terminal applications.
-        let replies_allowed = self
+    pub(super) fn refresh_terminal_reply_policy(&self) {
+        // A canonical PTY consumer (for example `cat`) cannot be waiting for a
+        // terminal report. Writing DA/DSR replies there only leaves control
+        // bytes for the next shell prompt. Interactive programs switch the PTY
+        // to raw mode; shell integration additionally closes the short race in
+        // which Bash has regained the foreground but has not emitted PS1 yet.
+        // Nested adb/SSH shells keep the outer PTY raw, so primary-screen bulk
+        // output is bounded as a second signal; alternate-screen TUIs remain
+        // unrestricted.
+        let alternate_screen = self
             .term
             .as_ref()
-            .is_some_and(|term| term.mode().contains(TermMode::ALT_SCREEN))
-            || self.output_bytes_since_user_input <= MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES;
-        if !replies_allowed {
-            return;
+            .is_some_and(|term| term.mode().contains(TermMode::ALT_SCREEN));
+        let bounded_primary_output =
+            self.output_bytes_since_user_input <= MAX_COMPAT_PRIMARY_REPLY_OUTPUT_BYTES;
+        #[cfg(unix)]
+        let interactive_local = self
+            .pty_master
+            .as_ref()
+            .and_then(|master| {
+                let fd = master.as_raw_fd()?;
+                let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+                if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+                    return None;
+                }
+                let attributes = unsafe { attributes.assume_init() };
+                let raw_mode = attributes.c_lflag & libc::ICANON == 0;
+                let Some(shell_pid) = self
+                    .local_child
+                    .as_ref()
+                    .and_then(|child| child.process_id())
+                    .map(|pid| pid as libc::pid_t)
+                else {
+                    return Some(raw_mode);
+                };
+                let Some(prompt) = self.prompt_tracking.as_ref() else {
+                    return Some(raw_mode);
+                };
+                let foreground_is_shell = master.process_group_leader() == Some(shell_pid);
+                Some(raw_mode && (prompt.active || !foreground_is_shell))
+            })
+            .unwrap_or(true);
+        #[cfg(not(unix))]
+        let interactive_local = true;
+        let allowed = alternate_screen || (bounded_primary_output && interactive_local);
+
+        if let Some(sink) = &self.terminal_reply_sink {
+            sink.lock().unwrap().allowed = allowed;
         }
-        for text in writes {
-            self.enqueue_writer_bytes(text.into_bytes());
-        }
+    }
+
+    pub(super) fn take_pty_write_events(&mut self) -> Vec<String> {
+        let Some(sink) = &self.terminal_reply_sink else {
+            return Vec::new();
+        };
+        std::mem::take(&mut sink.lock().unwrap().pending)
     }
 }

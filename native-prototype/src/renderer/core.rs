@@ -402,32 +402,22 @@ impl Renderer {
     pub fn is_selected(
         col: usize,
         line: i32,
-        sel_start: Option<(usize, i32)>,
-        sel_end: Option<(usize, i32)>,
+        is_wide: bool,
+        selection: Option<SelectionRange>,
     ) -> bool {
-        let (start, end) = match (sel_start, sel_end) {
-            (Some(s), Some(e)) => {
-                if (s.1, s.0) <= (e.1, e.0) {
-                    (s, e)
-                } else {
-                    (e, s)
-                }
-            }
-            _ => return false,
-        };
-        if line < start.1 || line > end.1 {
+        let Some(selection) = selection else {
             return false;
-        }
-        if line == start.1 && line == end.1 {
-            return col >= start.0 && col <= end.0;
-        }
-        if line == start.1 {
-            return col >= start.0;
-        }
-        if line == end.1 {
-            return col <= end.0;
-        }
-        true
+        };
+        let point = alacritty_terminal::index::Point::new(
+            alacritty_terminal::index::Line(line),
+            alacritty_terminal::index::Column(col),
+        );
+        selection.contains(point)
+            || (is_wide
+                && selection.contains(alacritty_terminal::index::Point::new(
+                    point.line,
+                    point.column + 1,
+                )))
     }
 
     pub fn is_mouse_mode(terminal: &TerminalState) -> bool {
@@ -457,8 +447,7 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         terminal: &TerminalState,
         cursor_visible: bool,
-        sel_start: Option<(usize, i32)>,
-        sel_end: Option<(usize, i32)>,
+        selection: Option<SelectionRange>,
         search_highlights: Option<SearchHighlights<'_>>,
     ) {
         self.begin_pane_frame();
@@ -473,8 +462,7 @@ impl Renderer {
             ),
             terminal,
             cursor_visible,
-            sel_start,
-            sel_end,
+            selection,
             search_highlights,
         );
         self.render_prepared_panes(gpu, view, encoder);
@@ -496,8 +484,7 @@ impl Renderer {
         pane: PaneRenderRect,
         terminal: &TerminalState,
         cursor_visible: bool,
-        sel_start: Option<(usize, i32)>,
-        sel_end: Option<(usize, i32)>,
+        selection: Option<SelectionRange>,
         search_highlights: Option<SearchHighlights<'_>>,
     ) {
         self.begin_pane_frame();
@@ -507,8 +494,7 @@ impl Renderer {
             pane,
             terminal,
             cursor_visible,
-            sel_start,
-            sel_end,
+            selection,
             search_highlights,
         );
         self.render_prepared_panes(gpu, view, encoder);
@@ -527,8 +513,7 @@ impl Renderer {
         pane: PaneRenderRect,
         terminal: &TerminalState,
         cursor_visible: bool,
-        sel_start: Option<(usize, i32)>,
-        sel_end: Option<(usize, i32)>,
+        selection: Option<SelectionRange>,
         search_highlights: Option<SearchHighlights<'_>>,
     ) {
         let pane = match clamp_pane_render_rect(pane, gpu.width, gpu.height) {
@@ -543,8 +528,7 @@ impl Renderer {
             terminal_revision: terminal.render_revision(),
             style_revision: self.style_revision,
             cursor_visible,
-            selection_start: sel_start,
-            selection_end: sel_end,
+            selection,
             search_fingerprint: search_highlights_fingerprint(search_highlights),
         };
         let uniforms = Uniforms {
@@ -626,7 +610,12 @@ impl Renderer {
                 fg[2] *= 0.5;
             }
 
-            let selected = Self::is_selected(col_idx, abs_line, sel_start, sel_end);
+            let selected = Self::is_selected(
+                col_idx,
+                abs_line,
+                flags.contains(CellFlags::WIDE_CHAR),
+                selection,
+            );
             let search_kind = search_highlights
                 .as_ref()
                 .map(|h| search_highlight_kind(abs_line, col_idx, h))

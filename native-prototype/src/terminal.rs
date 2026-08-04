@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::{Term, TermMode};
@@ -19,6 +20,27 @@ use crate::bash_integration::{
 use crate::smart_completion::CompletionSessionKey;
 
 type Processor = alacritty_terminal::vte::ansi::Processor<StdSyncHandler>;
+
+const SEMANTIC_SELECTION_DELIMITERS: &str = ",;│`|:&\"' ()[]{}<>\t（）【】「」『』《》〈〉，。；：";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalSelectionKind {
+    Simple,
+    Block,
+    Semantic,
+    Lines,
+}
+
+impl From<TerminalSelectionKind> for SelectionType {
+    fn from(kind: TerminalSelectionKind) -> Self {
+        match kind {
+            TerminalSelectionKind::Simple => Self::Simple,
+            TerminalSelectionKind::Block => Self::Block,
+            TerminalSelectionKind::Semantic => Self::Semantic,
+            TerminalSelectionKind::Lines => Self::Lines,
+        }
+    }
+}
 
 pub(crate) fn default_shell_path() -> String {
     #[cfg(windows)]
@@ -54,13 +76,46 @@ impl Dimensions for TermDimensions {
 
 #[derive(Clone)]
 pub struct Listener {
-    pty_write_tx: mpsc::Sender<String>,
+    terminal_reply_sink: Arc<Mutex<TerminalReplySink>>,
+}
+
+struct TerminalReplySink {
+    writer: Option<crate::zmodem::runtime::TerminalReplyWriter>,
+    pending: Vec<String>,
+    allowed: bool,
+}
+
+impl Default for TerminalReplySink {
+    fn default() -> Self {
+        Self {
+            writer: None,
+            pending: Vec::new(),
+            allowed: true,
+        }
+    }
 }
 
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
         if let Event::PtyWrite(text) = event {
-            let _ = self.pty_write_tx.send(text);
+            let writer = {
+                let mut sink = self.terminal_reply_sink.lock().unwrap();
+                if !sink.allowed {
+                    log::debug!("忽略 canonical PTY 输出中的终端协议查询");
+                    return;
+                }
+                let Some(writer) = sink.writer.clone() else {
+                    sink.pending.push(text);
+                    return;
+                };
+                writer
+            };
+            if let Err(error) = writer.write_and_flush(
+                text.as_bytes(),
+                crate::zmodem::runtime::DEFAULT_TERMINAL_REPLY_WRITE_TIMEOUT,
+            ) {
+                log::warn!("终端协议应答写回失败: {error}");
+            }
         }
     }
 }
@@ -139,6 +194,51 @@ fn spawn_writer_worker_with_protocol(
                         break;
                     }
                 }
+                crate::zmodem::runtime::TransportWrite::TerminalReply(request) => {
+                    if !request.begin() {
+                        request.complete(Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "终端应答在开始写入前已取消或超时",
+                        )));
+                        continue;
+                    }
+                    let mut offset = 0;
+                    let mut result = Ok(());
+                    while offset < request.bytes().len() {
+                        if !request.may_continue() {
+                            result = Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "终端应答写入已取消或超时",
+                            ));
+                            break;
+                        }
+                        match writer.write(&request.bytes()[offset..]) {
+                            Ok(0) => {
+                                result = Err(std::io::Error::new(
+                                    std::io::ErrorKind::WriteZero,
+                                    "终端 writer 返回零长度写入",
+                                ));
+                                break;
+                            }
+                            Ok(written) => offset += written,
+                            Err(error) => {
+                                result = Err(error);
+                                break;
+                            }
+                        }
+                    }
+                    if result.is_ok() && request.may_continue() {
+                        result = writer.flush();
+                    }
+                    let failed = result.is_err()
+                        && result
+                            .as_ref()
+                            .is_err_and(|error| error.kind() != std::io::ErrorKind::TimedOut);
+                    request.complete(result);
+                    if failed {
+                        break;
+                    }
+                }
             }
         }
     });
@@ -155,22 +255,16 @@ fn spawn_writer_worker(writer: Box<dyn Write + Send>) -> crate::zmodem::runtime:
 
 #[cfg(test)]
 pub(crate) struct TestTransportCapture {
-    receiver: mpsc::Receiver<crate::zmodem::runtime::TransportWrite>,
+    receiver: mpsc::Receiver<Vec<u8>>,
 }
 
 #[cfg(test)]
 impl TestTransportCapture {
     pub(crate) fn try_recv(&self) -> Result<Vec<u8>, mpsc::TryRecvError> {
-        loop {
-            match self.receiver.try_recv()? {
-                crate::zmodem::runtime::TransportWrite::Normal { bytes, .. } => return Ok(bytes),
-                crate::zmodem::runtime::TransportWrite::Protocol(request) => {
-                    request.complete(Err(std::io::Error::new(
-                        std::io::ErrorKind::Unsupported,
-                        "测试 capture 不处理协议写",
-                    )));
-                }
-            }
+        match self.receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(bytes) => Ok(bytes),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(mpsc::TryRecvError::Empty),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::TryRecvError::Disconnected),
         }
     }
 
@@ -178,19 +272,7 @@ impl TestTransportCapture {
         &self,
         timeout: Duration,
     ) -> Result<Vec<u8>, mpsc::RecvTimeoutError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match self.receiver.recv_timeout(remaining)? {
-                crate::zmodem::runtime::TransportWrite::Normal { bytes, .. } => return Ok(bytes),
-                crate::zmodem::runtime::TransportWrite::Protocol(request) => {
-                    request.complete(Err(std::io::Error::new(
-                        std::io::ErrorKind::Unsupported,
-                        "测试 capture 不处理协议写",
-                    )));
-                }
-            }
-        }
+        self.receiver.recv_timeout(timeout)
     }
 }
 
@@ -201,7 +283,45 @@ fn test_transport_capture() -> (
 ) {
     let gate = Arc::new(crate::zmodem::runtime::ProtocolGate::new());
     let (writer, receiver) = crate::zmodem::runtime::transport_write_channel(gate);
-    (writer, TestTransportCapture { receiver })
+    let (capture_tx, capture_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(message) = receiver.recv() {
+            match message {
+                crate::zmodem::runtime::TransportWrite::Normal { bytes, .. } => {
+                    let _ = capture_tx.send(bytes);
+                }
+                crate::zmodem::runtime::TransportWrite::Protocol(request) => {
+                    request.complete(Err(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "测试 capture 不处理 ZMODEM 协议写",
+                    )));
+                }
+                crate::zmodem::runtime::TransportWrite::TerminalReply(request) => {
+                    if !request.begin() {
+                        request.complete(Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "测试终端应答写入已取消",
+                        )));
+                        continue;
+                    }
+                    let bytes = request.bytes().to_vec();
+                    let result = capture_tx.send(bytes).map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "测试终端应答 capture 已关闭",
+                        )
+                    });
+                    request.complete(result);
+                }
+            }
+        }
+    });
+    (
+        writer,
+        TestTransportCapture {
+            receiver: capture_rx,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -413,8 +533,7 @@ pub struct PromptTracking {
 }
 
 const SNAPSHOT_RETRY_TIMEOUT: Duration = Duration::from_millis(250);
-const MAX_TRUSTED_PRIMARY_REPLY_OUTPUT_BYTES: usize = 64 * 1024;
-
+const MAX_COMPAT_PRIMARY_REPLY_OUTPUT_BYTES: usize = 64 * 1024;
 #[derive(Debug, PartialEq, Eq)]
 pub enum CandidateWriteTarget {
     Local(std::path::PathBuf),
@@ -442,7 +561,7 @@ pub struct TerminalState {
     serial_shutdown_tx: Option<mpsc::Sender<()>>,
     serial_io_done_rx: Option<mpsc::Receiver<crate::serial::SerialExit>>,
     serial_join: Option<JoinHandle<()>>,
-    pty_write_rx: Option<mpsc::Receiver<String>>,
+    terminal_reply_sink: Option<Arc<Mutex<TerminalReplySink>>>,
     cols: u16,
     rows: u16,
     pub scroll_offset: i32,

@@ -469,6 +469,7 @@ fn ssh_nonblocking_writer_preserves_partial_progress_and_yields() {
         bytes: b"abcdef".to_vec(),
         offset: 0,
         protocol: None,
+        terminal_reply: None,
         normal_epoch: Some(0),
         started: true,
     };
@@ -478,6 +479,32 @@ fn ssh_nonblocking_writer_preserves_partial_progress_and_yields() {
     while !write_channel_once(&mut writer, &mut pending).unwrap() {}
     assert_eq!(writer.output, b"abcdef");
     assert!(writer.calls >= 4);
+}
+
+#[test]
+fn ssh_terminal_reply_ack_follows_channel_write_and_flush() {
+    let gate = std::sync::Arc::new(crate::zmodem::runtime::ProtocolGate::new());
+    let (transport, receiver) = crate::zmodem::runtime::transport_write_channel(gate);
+    let reply_writer =
+        crate::zmodem::runtime::TerminalReplyWriter::from_transport_writer(transport);
+    let reply = std::thread::spawn(move || {
+        reply_writer.write_and_flush(b"\x1b[1;212R", std::time::Duration::from_secs(1))
+    });
+    let message = receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    let mut pending = PendingChannelWrite::from_transport(message);
+    let mut writer = NonblockingPartialWriter {
+        output: Vec::new(),
+        calls: 0,
+    };
+
+    assert!(pending.begin());
+    while !write_channel_once(&mut writer, &mut pending).unwrap() {}
+    pending.complete(Ok(()));
+
+    reply.join().unwrap().unwrap();
+    assert_eq!(writer.output, b"\x1b[1;212R");
 }
 
 #[test]

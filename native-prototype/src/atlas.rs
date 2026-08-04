@@ -28,46 +28,6 @@ pub fn is_wide_char(c: char) -> bool {
     unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) >= 2
 }
 
-pub fn is_word_char(c: char) -> bool {
-    !matches!(
-        c,
-        ' ' | '\t'
-            | '\0'
-            | '('
-            | ')'
-            | '['
-            | ']'
-            | '{'
-            | '}'
-            | '\''
-            | '"'
-            | '`'
-            | ','
-            | ';'
-            | ':'
-            | '<'
-            | '>'
-            | '|'
-            | '&'
-            | '（'
-            | '）'
-            | '【'
-            | '】'
-            | '「'
-            | '」'
-            | '『'
-            | '』'
-            | '《'
-            | '》'
-            | '〈'
-            | '〉'
-            | '，'
-            | '。'
-            | '；'
-            | '：'
-    )
-}
-
 fn shape_once(
     font_system: &mut FontSystem,
     metrics: Metrics,

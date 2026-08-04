@@ -69,6 +69,40 @@ impl Drop for ProtocolWriteRequest {
 pub enum TransportWrite {
     Normal { bytes: Vec<u8>, epoch: u64 },
     Protocol(ProtocolWriteRequest),
+    TerminalReply(TerminalReplyRequest),
+}
+
+pub struct TerminalReplyRequest {
+    bytes: Vec<u8>,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+    completion: mpsc::Sender<WriteAck>,
+}
+
+impl TerminalReplyRequest {
+    pub(crate) fn begin(&self) -> bool {
+        if self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline {
+            return false;
+        }
+        self.started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn may_continue(&self) -> bool {
+        !self.cancelled.load(Ordering::Acquire) && Instant::now() < self.deadline
+    }
+
+    pub(crate) fn complete(self, result: io::Result<()>) {
+        let _ = self
+            .completion
+            .send(result.map_err(|error| error.to_string()));
+    }
 }
 
 pub struct ProtocolGate {
@@ -211,6 +245,76 @@ impl ProtocolWriter {
                 Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!("等待底层 write+flush ACK 超时（{state}）: {error}"),
+                ))
+            }
+        }
+    }
+}
+
+/// Acknowledged terminal-emulator reply writer.
+///
+/// Unlike `ProtocolWriter`, this path does not activate the ZMODEM exclusivity
+/// gate. It exists for immediate DA/DSR/mode-report replies generated while
+/// parsing PTY output, and acknowledges only after the transport has completed
+/// `write + flush`.
+#[derive(Clone)]
+pub struct TerminalReplyWriter {
+    transport: TransportWriter,
+}
+
+impl TerminalReplyWriter {
+    pub fn from_transport_writer(transport: TransportWriter) -> Self {
+        Self { transport }
+    }
+
+    pub fn write_and_flush(&self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
+        let (completion, completed) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "终端应答写超时无效"))?;
+        let mut message = TransportWrite::TerminalReply(TerminalReplyRequest {
+            bytes: bytes.to_vec(),
+            deadline,
+            cancelled: Arc::clone(&cancelled),
+            started: Arc::clone(&started),
+            completion,
+        });
+        loop {
+            match self.transport.sender.try_send(message) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(returned)) => {
+                    if Instant::now() >= deadline {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "等待终端应答写队列空位超时",
+                        ));
+                    }
+                    message = returned;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "终端应答写队列已断开",
+                    ));
+                }
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match completed.recv_timeout(remaining) {
+            Ok(result) => result.map_err(io::Error::other),
+            Err(error) => {
+                cancelled.store(true, Ordering::Release);
+                let state = if started.load(Ordering::Acquire) {
+                    "底层写入已开始并已请求停止"
+                } else {
+                    "排队请求已取消且不会写入"
+                };
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("等待终端应答 write+flush ACK 超时（{state}）: {error}"),
                 ))
             }
         }

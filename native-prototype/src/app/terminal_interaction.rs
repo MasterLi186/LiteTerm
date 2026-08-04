@@ -13,16 +13,12 @@ impl App {
     }
 
     pub(super) fn get_selection_text(&self) -> String {
-        let (start, end) = match (self.selection_start, self.selection_end) {
-            (Some(start), Some(end)) => (start, end),
-            _ => return String::new(),
-        };
         let terminal = match self.active_terminal() {
             Some(t) => t,
             None => return String::new(),
         };
         let terminal = terminal.lock().unwrap();
-        terminal.selection_text_grid(start, end)
+        terminal.current_selection_text()
     }
 
     pub(super) fn visual_cell_to_selection_point_for_pane(
@@ -38,85 +34,59 @@ impl App {
         point
     }
 
-    pub(super) fn select_word(&mut self, col: usize, row: usize) {
-        let terminal = match self.active_terminal() {
-            Some(t) => t,
-            None => return,
+    pub(super) fn begin_selection_for_pane(
+        &mut self,
+        pane_id: &str,
+        cell: (usize, usize),
+        kind: terminal::TerminalSelectionKind,
+    ) -> bool {
+        let Some(point) = self.visual_cell_to_selection_point_for_pane(pane_id, cell) else {
+            return false;
         };
-        let term = terminal.lock().unwrap();
-        let t = match term.term() {
-            Some(t) => t,
-            None => return,
+        let Some(terminal) = self.terminal_for_pane(pane_id) else {
+            return false;
         };
-        let grid = t.grid();
-        use alacritty_terminal::grid::Dimensions;
-        let cols = grid.columns();
-        let Some(line) = term.visual_row_to_grid_line(row) else {
-            return;
-        };
-        use alacritty_terminal::term::cell::Flags as CellFlags;
-        let center_cell = &grid[line][alacritty_terminal::index::Column(col)];
-        let center_char = center_cell.c;
-        // 宽字符 spacer 视为词内字符
-        let is_spacer = center_cell.flags.contains(CellFlags::WIDE_CHAR_SPACER);
-        if !is_word_char(center_char) && !is_spacer && center_char != ' ' {
-            self.selection_start = Some((col, line.0));
-            self.selection_end = Some((col, line.0));
-            return;
-        }
-        let mut start = col;
-        while start > 0 {
-            let cell = &grid[line][alacritty_terminal::index::Column(start - 1)];
-            if cell.flags.contains(CellFlags::WIDE_CHAR_SPACER)
-                || cell.flags.contains(CellFlags::WIDE_CHAR)
-            {
-                start -= 1;
-                continue;
-            }
-            if !is_word_char(cell.c) {
-                break;
-            }
-            start -= 1;
-        }
-        let mut end = col;
-        while end + 1 < cols {
-            let cell = &grid[line][alacritty_terminal::index::Column(end + 1)];
-            if cell.flags.contains(CellFlags::WIDE_CHAR_SPACER)
-                || cell.flags.contains(CellFlags::WIDE_CHAR)
-            {
-                end += 1;
-                continue;
-            }
-            if !is_word_char(cell.c) {
-                break;
-            }
-            end += 1;
-        }
-        drop(term);
-        drop(terminal);
-        self.selection_start = Some((start, line.0));
-        self.selection_end = Some((end, line.0));
+        let updated = terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_selection(point, kind);
+        updated
     }
 
-    pub(super) fn select_line(&mut self, row: usize) {
-        let terminal = match self.active_terminal() {
-            Some(t) => t,
-            None => return,
+    pub(super) fn update_selection_for_pane(
+        &mut self,
+        pane_id: &str,
+        cell: (usize, usize),
+    ) -> bool {
+        let Some(point) = self.visual_cell_to_selection_point_for_pane(pane_id, cell) else {
+            return false;
         };
-        let term = terminal.lock().unwrap();
-        let t = match term.term() {
-            Some(t) => t,
-            None => return,
+        let Some(terminal) = self.terminal_for_pane(pane_id) else {
+            return false;
         };
-        use alacritty_terminal::grid::Dimensions;
-        let cols = t.grid().columns();
-        let Some(line) = term.visual_row_to_grid_line(row) else {
-            return;
+        let updated = terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .update_selection(point);
+        updated
+    }
+
+    pub(super) fn shift_extend_selection_for_pane(
+        &mut self,
+        pane_id: &str,
+        cell: (usize, usize),
+    ) -> bool {
+        let Some(point) = self.visual_cell_to_selection_point_for_pane(pane_id, cell) else {
+            return false;
         };
-        drop(term);
-        drop(terminal);
-        self.selection_start = Some((0, line.0));
-        self.selection_end = Some((cols.saturating_sub(1), line.0));
+        let Some(terminal) = self.terminal_for_pane(pane_id) else {
+            return false;
+        };
+        let handled = terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shift_extend_selection(point);
+        handled
     }
 
     pub(super) fn copy_selection(&mut self) {

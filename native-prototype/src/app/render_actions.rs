@@ -157,9 +157,12 @@ impl App {
                             .active()
                             .map(|tab| tab.active_pane_id().to_string());
                         if let Some(pane_id) = pane_id {
-                            self.selection_start =
-                                self.visual_cell_to_selection_point_for_pane(&pane_id, (0, 0));
-                            self.selection_end = self.visual_cell_to_selection_point_for_pane(
+                            self.begin_selection_for_pane(
+                                &pane_id,
+                                (0, 0),
+                                terminal::TerminalSelectionKind::Simple,
+                            );
+                            self.update_selection_for_pane(
                                 &pane_id,
                                 (cols as usize - 1, rows as usize - 1),
                             );

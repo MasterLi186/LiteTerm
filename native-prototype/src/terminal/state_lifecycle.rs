@@ -16,7 +16,7 @@ impl TerminalState {
             serial_shutdown_tx: None,
             serial_io_done_rx: None,
             serial_join: None,
-            pty_write_rx: None,
+            terminal_reply_sink: None,
             cols: 80,
             rows: 24,
             scroll_offset: 0,
@@ -78,14 +78,21 @@ impl TerminalState {
     pub(super) fn init_term(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
-        let config = TermConfig::default();
+        let mut config = TermConfig::default();
+        config.semantic_escape_chars = SEMANTIC_SELECTION_DELIMITERS.to_owned();
         let dims = TermDimensions {
             cols: cols as usize,
             rows: rows as usize,
         };
-        let (pty_write_tx, pty_write_rx) = mpsc::channel();
-        self.term = Some(Term::new(config, &dims, Listener { pty_write_tx }));
-        self.pty_write_rx = Some(pty_write_rx);
+        let terminal_reply_sink = Arc::new(Mutex::new(TerminalReplySink::default()));
+        self.term = Some(Term::new(
+            config,
+            &dims,
+            Listener {
+                terminal_reply_sink: Arc::clone(&terminal_reply_sink),
+            },
+        ));
+        self.terminal_reply_sink = Some(terminal_reply_sink);
         self.replay_parser = None;
         self.output_bytes_since_user_input = 0;
     }
@@ -198,7 +205,7 @@ impl TerminalState {
         self.pty_reader = Some(reader);
         let (writer, protocol_writer) =
             spawn_writer_worker_with_protocol(writer, Arc::clone(&self.zmodem_input_gate));
-        self.writer = Some(writer);
+        self.install_transport_writer(writer);
         self.zmodem_protocol_writer = Some(protocol_writer);
         self.pty_master = Some(pty_pair.master);
         self.local_child = Some(child);
@@ -222,7 +229,7 @@ impl TerminalState {
         let protocol_writer =
             crate::zmodem::runtime::ProtocolWriter::from_transport_writer(write_tx.clone());
         self.pty_reader = Some(reader);
-        self.writer = Some(write_tx);
+        self.install_transport_writer(write_tx);
         self.zmodem_protocol_writer = Some(protocol_writer);
         self.ssh_resize_tx = Some(resize_tx);
         self.ssh_shutdown_tx = Some(shutdown_tx);
@@ -253,26 +260,8 @@ impl TerminalState {
         self.init_term(cols, rows);
         let mut parts = handle.into_parts();
         self.pty_reader = Some(parts.reader);
-        let (writer, receiver) =
-            crate::zmodem::runtime::transport_write_channel(Arc::clone(&self.zmodem_input_gate));
-        std::thread::spawn(move || {
-            while let Ok(request) = receiver.recv() {
-                match request {
-                    crate::zmodem::runtime::TransportWrite::Normal { bytes, .. } => {
-                        if parts.write_tx.send(bytes).is_err() {
-                            break;
-                        }
-                    }
-                    crate::zmodem::runtime::TransportWrite::Protocol(request) => {
-                        request.complete(Err(std::io::Error::new(
-                            std::io::ErrorKind::Unsupported,
-                            "串口不支持 ZMODEM 协议写入",
-                        )));
-                    }
-                }
-            }
-        });
-        self.writer = Some(writer);
+        self.zmodem_input_gate = parts.write_tx.protocol_active_gate();
+        self.install_transport_writer(parts.write_tx);
         self.zmodem_protocol_writer = None;
         self.serial_shutdown_tx = Some(parts.shutdown_tx);
         self.serial_io_done_rx = Some(parts.io_done_rx);

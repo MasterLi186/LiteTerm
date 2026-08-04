@@ -38,25 +38,12 @@
     }
 
     #[test]
-    fn release_copies_only_complete_local_selection() {
+    fn release_attempts_copy_only_for_local_selection() {
         let terminal_report = Some(LeftMouseGesture::TerminalReport { last_cell: (4, 2) });
         let local_selection = Some(LeftMouseGesture::LocalSelection);
 
-        assert!(!should_copy_left_selection(
-            terminal_report,
-            Some((1, 1)),
-            Some((3, 1))
-        ));
-        assert!(!should_copy_left_selection(
-            local_selection,
-            Some((1, 1)),
-            None
-        ));
-        assert!(should_copy_left_selection(
-            local_selection,
-            Some((1, 1)),
-            Some((3, 1))
-        ));
+        assert!(!should_copy_left_selection(terminal_report));
+        assert!(should_copy_left_selection(local_selection));
     }
 
     #[test]
@@ -85,22 +72,8 @@
     }
 
     #[test]
-    fn selection_state_clear_removes_both_endpoints_and_anchor() {
-        let mut start = Some((1, 1));
-        let mut end = Some((3, 1));
-        let mut anchor = Some((1, 1));
-
-        clear_selection_state(&mut start, &mut end, &mut anchor);
-
-        assert_eq!((start, end, anchor), (None, None, None));
-    }
-
-    #[test]
-    fn active_tab_change_preparation_releases_report_and_clears_selection() {
+    fn active_tab_change_preparation_releases_report_and_resets_click_sequence() {
         let mut gesture = Some(LeftMouseGesture::TerminalReport { last_cell: (4, 2) });
-        let mut start = Some((1, 1));
-        let mut end = Some((3, 1));
-        let mut anchor = Some((1, 1));
         let mut click_state = ClickState::Single;
         let now = Instant::now();
         let mut last_click_time = now;
@@ -108,23 +81,17 @@
 
         let release_cell = prepare_for_active_tab_change_state(
             &mut gesture,
-            &mut start,
-            &mut end,
-            &mut anchor,
             (&mut click_state, &mut last_click_time, &mut last_click_pos),
             now,
         );
 
         assert_eq!(release_cell, Some((4, 2)));
-        assert_eq!((gesture, start, end, anchor), (None, None, None, None));
+        assert_eq!(gesture, None);
         assert_eq!(click_state, ClickState::None);
 
         click_state = ClickState::Double;
         prepare_for_active_tab_change_state(
             &mut gesture,
-            &mut start,
-            &mut end,
-            &mut anchor,
             (&mut click_state, &mut last_click_time, &mut last_click_pos),
             now,
         );

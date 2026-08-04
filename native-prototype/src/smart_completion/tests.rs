@@ -71,6 +71,27 @@ fn ranking_is_strict_prefix_recent_first_deduplicated_and_capped_at_five() {
 }
 
 #[test]
+fn single_character_prefix_does_not_open_completion() {
+    let history = vec!["ls -al".into(), "less README.md".into()];
+
+    assert!(rank_candidates(&history, "l").is_empty());
+    assert_eq!(rank_candidates(&history, "ls"), ["ls -al"]);
+}
+
+#[test]
+fn returning_to_one_character_closes_an_existing_popup() {
+    let mut state = CompletionState::new(CompletionSessionKey::new_for_test(1, "min-prefix"));
+    state.replace_history(vec!["ls -al".into()]);
+
+    state.refresh("ls");
+    assert!(state.is_popup_visible());
+    state.refresh("l");
+
+    assert!(state.candidates().is_empty());
+    assert!(!state.is_popup_visible());
+}
+
+#[test]
 fn exact_prefix_is_excluded_and_results_are_capped() {
     let history = (0..20)
         .map(|index| format!("echo {index}"))

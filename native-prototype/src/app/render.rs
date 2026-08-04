@@ -924,14 +924,14 @@ impl App {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     term.resize(cols, rows);
+                    let selection = is_active.then(|| term.selection_range()).flatten();
                     renderer.prepare_pane_draw(
                         gpu,
                         &_pane_id,
                         pane_rect,
                         &term,
                         self.cursor_visible && is_active,
-                        is_active.then_some(self.selection_start).flatten(),
-                        is_active.then_some(self.selection_end).flatten(),
+                        selection,
                         search_hl,
                     );
                 } // Release the terminal mutex before encoding the shared GPU pass.

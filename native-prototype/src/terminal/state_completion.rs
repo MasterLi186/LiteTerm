@@ -225,6 +225,9 @@ impl TerminalState {
             let _ = shutdown_tx.send(());
         }
         self.writer = None;
+        if let Some(sink) = &self.terminal_reply_sink {
+            sink.lock().unwrap().writer = None;
+        }
         self.zmodem_protocol_writer = None;
         self.zmodem_input_gate.deactivate();
         self.pty_reader = None;
@@ -288,13 +291,14 @@ impl TerminalState {
                 .output_bytes_since_user_input
                 .saturating_add(data.len());
         }
+        self.refresh_terminal_reply_policy();
         let boundaries = match &mut self.prompt_tracking {
             Some(tracking) => tracking.decoder.scan(data),
             None => {
                 if let Some(term) = &mut self.term {
                     parser.advance(term, data);
                 }
-                self.flush_pty_write_events();
+                self.prune_invalid_selection();
                 return Vec::new();
             }
         };
@@ -355,7 +359,7 @@ impl TerminalState {
         if let Some(term) = &mut self.term {
             parser.advance(term, &data[start..]);
         }
-        self.flush_pty_write_events();
+        self.prune_invalid_selection();
         self.invalidate_ambiguous_prompt();
         events
     }

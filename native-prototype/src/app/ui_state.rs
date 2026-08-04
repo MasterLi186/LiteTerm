@@ -519,10 +519,8 @@ impl App {
 
     pub(super) fn cancel_left_mouse_gesture(&mut self) {
         let pane_id = self.left_mouse_pane_id.take();
-        if let Some(cell) = take_left_mouse_gesture_state(
-            &mut self.left_mouse_gesture,
-            &mut self.selection_drag_anchor,
-        ) {
+        self.selection_auto_scroll_lines = 0;
+        if let Some(cell) = take_left_mouse_gesture_state(&mut self.left_mouse_gesture) {
             if let Some(pane_id) = pane_id {
                 self.send_mouse_event_to_pane(&pane_id, 0, cell.0, cell.1, false);
             }
@@ -530,11 +528,12 @@ impl App {
     }
 
     pub(super) fn clear_selection(&mut self) {
-        clear_selection_state(
-            &mut self.selection_start,
-            &mut self.selection_end,
-            &mut self.selection_drag_anchor,
-        );
+        if let Some(terminal) = self.active_terminal() {
+            terminal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear_selection();
+        }
     }
 
     pub(super) fn reset_click_sequence(&mut self) {
@@ -550,6 +549,7 @@ impl App {
         self.invalidate_completion_popup_snapshot();
         self.show_terminal_menu = false;
         self.pending_terminal_link = None;
+        self.clear_selection();
         // Drop in-progress composition without committing when the active tab changes.
         self.clear_terminal_ime_composition();
         self.dragged_split = None;
@@ -557,9 +557,6 @@ impl App {
         cancel_pending_fill_for_tab(&mut self.tab_manager, active_idx);
         let release_cell = prepare_for_active_tab_change_state(
             &mut self.left_mouse_gesture,
-            &mut self.selection_start,
-            &mut self.selection_end,
-            &mut self.selection_drag_anchor,
             (
                 &mut self.click_state,
                 &mut self.last_click_time,

@@ -12,16 +12,24 @@ impl ApplicationHandler<UserEvent> for App {
                 window.request_redraw();
             }
         }
-        if self
+        let now = Instant::now();
+        let selection_scrolled = self.tick_selection_auto_scroll(now);
+        let selection_auto_scroll_active = self.selection_auto_scroll_lines != 0;
+        if selection_scrolled {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+        let playback_active = self
             .recording_playbacks
             .values()
-            .any(recording::PlaybackState::is_playing)
-        {
+            .any(recording::PlaybackState::is_playing);
+        if playback_active || selection_auto_scroll_active {
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
             event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(16),
+                now + Duration::from_millis(if playback_active { 16 } else { 32 }),
             ));
         } else {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);

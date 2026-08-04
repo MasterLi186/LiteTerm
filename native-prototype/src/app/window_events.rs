@@ -536,12 +536,8 @@ impl App {
                         )
                     });
                     let terminal_release_cell = terminal_report_release_cell(gesture, current_cell);
-                    let copy_selection = should_copy_left_selection(
-                        gesture,
-                        self.selection_start,
-                        self.selection_end,
-                    );
-                    self.selection_drag_anchor = None;
+                    let copy_selection = should_copy_left_selection(gesture);
+                    self.selection_auto_scroll_lines = 0;
 
                     if let Some(cell) = terminal_release_cell {
                         if let Some(pane_id) = gesture_pane_id.as_deref() {
@@ -559,6 +555,7 @@ impl App {
                 }
 
                 let shift = self.modifiers.state().shift_key();
+                let block = self.modifiers.state().alt_key();
                 let pane_id = hovered_pane_id.expect("terminal hit must identify a pane");
                 let cell = self
                     .pixel_to_cell_for_pane(&pane_id, self.mouse_position.0, self.mouse_position.1)
@@ -574,16 +571,23 @@ impl App {
                         }
                         self.cancel_left_mouse_gesture();
                         self.left_mouse_pane_id = Some(pane_id.clone());
-                        let gesture = left_mouse_gesture(mouse_mode, shift, cell);
+                        let gesture = left_mouse_gesture(mouse_mode, shift || block, cell);
                         self.left_mouse_gesture = Some(gesture);
                         if matches!(gesture, LeftMouseGesture::TerminalReport { .. }) {
-                            self.selection_drag_anchor = None;
                             self.send_mouse_event_to_pane(&pane_id, 0, cell.0, cell.1, true);
                             return;
                         }
 
-                        self.selection_start = None;
-                        self.selection_end = None;
+                        if shift && self.shift_extend_selection_for_pane(&pane_id, cell) {
+                            // A visible native selection keeps its original anchor. Without one,
+                            // Shift+click starts at the live terminal cursor instead of reusing an
+                            // invisible stale mouse press.
+                            self.reset_click_sequence();
+                            self.click_state = ClickState::Single;
+                            self.do_render();
+                            return;
+                        }
+
                         let now = Instant::now();
                         let elapsed = now.duration_since(self.last_click_time).as_millis();
                         let same_pos = cell == self.last_click_pos;
@@ -591,18 +595,26 @@ impl App {
                             click_state_after_press(self.click_state, elapsed, same_pos);
                         match self.click_state {
                             ClickState::Double => {
-                                self.selection_drag_anchor = None;
-                                self.select_word(cell.0, cell.1);
+                                self.begin_selection_for_pane(
+                                    &pane_id,
+                                    cell,
+                                    terminal::TerminalSelectionKind::Semantic,
+                                );
                             }
                             ClickState::Triple => {
-                                self.selection_drag_anchor = None;
-                                self.select_line(cell.1);
+                                self.begin_selection_for_pane(
+                                    &pane_id,
+                                    cell,
+                                    terminal::TerminalSelectionKind::Lines,
+                                );
                             }
                             _ => {
-                                self.selection_start = None;
-                                self.selection_end = None;
-                                self.selection_drag_anchor =
-                                    self.visual_cell_to_selection_point_for_pane(&pane_id, cell);
+                                let kind = if block {
+                                    terminal::TerminalSelectionKind::Block
+                                } else {
+                                    terminal::TerminalSelectionKind::Simple
+                                };
+                                self.begin_selection_for_pane(&pane_id, cell, kind);
                             }
                         }
                         self.last_click_time = now;
@@ -706,7 +718,6 @@ impl App {
                         self.mouse_position.0,
                         self.mouse_position.1,
                     );
-                    let mut selection_point = None;
                     if let Some(t) = term.term_mut() {
                         use alacritty_terminal::grid::Scroll;
                         let before = t.grid().display_offset();
@@ -728,18 +739,11 @@ impl App {
                     }
                     if changed {
                         term.mark_render_dirty();
-                        if local_selection_active {
-                            selection_point =
-                                current_cell.and_then(|cell| term.visual_point_to_grid_point(cell));
-                        }
                     }
                     drop(term);
-                    if let Some(point) = selection_point {
-                        if let Some((start, end)) =
-                            drag_selection_range(self.selection_drag_anchor, point)
-                        {
-                            self.selection_start = Some(start);
-                            self.selection_end = Some(end);
+                    if local_selection_active {
+                        if let Some(cell) = current_cell {
+                            self.update_selection_for_pane(&pane_id, cell);
                         }
                     }
                 }

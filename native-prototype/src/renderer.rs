@@ -8,6 +8,7 @@ use winit::window::Window;
 use crate::atlas::GlyphAtlas;
 use crate::terminal::TerminalState;
 use crate::terminal_search::SearchMatch;
+use alacritty_terminal::selection::SelectionRange;
 
 const BOOTSTRAP_FONT_SIZE: f32 = crate::settings::DEFAULT_TERMINAL_FONT_SIZE;
 
@@ -158,8 +159,7 @@ struct PaneContentSignature {
     terminal_revision: u64,
     style_revision: u64,
     cursor_visible: bool,
-    selection_start: Option<(usize, i32)>,
-    selection_end: Option<(usize, i32)>,
+    selection: Option<SelectionRange>,
     search_fingerprint: u64,
 }
 
@@ -837,13 +837,53 @@ mod tests {
 
     #[test]
     fn absolute_grid_selection_is_independent_of_viewport_scroll() {
-        let selection = (Some((7, -12)), Some((2, -9)));
+        use alacritty_terminal::index::{Column, Line, Point};
+        use alacritty_terminal::selection::SelectionRange;
 
-        assert!(Renderer::is_selected(7, -12, selection.0, selection.1));
-        assert!(Renderer::is_selected(0, -10, selection.0, selection.1));
-        assert!(Renderer::is_selected(2, -9, selection.0, selection.1));
-        assert!(!Renderer::is_selected(6, -12, selection.0, selection.1));
-        assert!(!Renderer::is_selected(3, -9, selection.0, selection.1));
+        let selection = Some(SelectionRange::new(
+            Point::new(Line(-12), Column(7)),
+            Point::new(Line(-9), Column(2)),
+            false,
+        ));
+
+        assert!(Renderer::is_selected(7, -12, false, selection));
+        assert!(Renderer::is_selected(0, -10, false, selection));
+        assert!(Renderer::is_selected(2, -9, false, selection));
+        assert!(!Renderer::is_selected(6, -12, false, selection));
+        assert!(!Renderer::is_selected(3, -9, false, selection));
+    }
+
+    #[test]
+    fn block_selection_highlights_only_its_column_rectangle() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        use alacritty_terminal::selection::SelectionRange;
+
+        let selection = Some(SelectionRange::new(
+            Point::new(Line(-3), Column(2)),
+            Point::new(Line(-1), Column(4)),
+            true,
+        ));
+
+        assert!(Renderer::is_selected(2, -3, false, selection));
+        assert!(Renderer::is_selected(3, -2, false, selection));
+        assert!(Renderer::is_selected(4, -1, false, selection));
+        assert!(!Renderer::is_selected(1, -2, false, selection));
+        assert!(!Renderer::is_selected(5, -2, false, selection));
+    }
+
+    #[test]
+    fn selecting_a_wide_spacer_highlights_its_primary_glyph() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        use alacritty_terminal::selection::SelectionRange;
+
+        let selection = Some(SelectionRange::new(
+            Point::new(Line(0), Column(1)),
+            Point::new(Line(0), Column(1)),
+            false,
+        ));
+
+        assert!(Renderer::is_selected(0, 0, true, selection));
+        assert!(!Renderer::is_selected(0, 0, false, selection));
     }
 
     fn assert_rgba_f32_near(actual: [f32; 4], expected: [f32; 4]) {

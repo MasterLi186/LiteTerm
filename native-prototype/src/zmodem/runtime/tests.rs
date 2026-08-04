@@ -31,7 +31,7 @@ impl Write for PartialWriter {
     }
 }
 
-fn writer_pair(writer: PartialWriter) -> (TransportWriter, ProtocolWriter) {
+fn writer_pair(writer: PartialWriter) -> (TransportWriter, ProtocolWriter, TerminalReplyWriter) {
     let gate = Arc::new(ProtocolGate::new());
     let (transport, receiver) = transport_write_channel(gate);
     std::thread::spawn(move || {
@@ -51,15 +51,81 @@ fn writer_pair(writer: PartialWriter) -> (TransportWriter, ProtocolWriter) {
                         .and_then(|_| writer.flush());
                     request.complete(result);
                 }
+                TransportWrite::TerminalReply(request) => {
+                    if !request.begin() {
+                        request.complete(Err(io::Error::new(io::ErrorKind::TimedOut, "expired")));
+                        continue;
+                    }
+                    let result = writer
+                        .write_all(request.bytes())
+                        .and_then(|_| writer.flush());
+                    request.complete(result);
+                }
             }
         }
     });
     let protocol = ProtocolWriter::from_transport_writer(transport.clone());
-    (transport, protocol)
+    let terminal_reply = TerminalReplyWriter::from_transport_writer(transport.clone());
+    (transport, protocol, terminal_reply)
 }
 
 fn writer_worker(writer: PartialWriter) -> ProtocolWriter {
     writer_pair(writer).1
+}
+
+#[test]
+fn terminal_reply_acks_only_after_partial_write_and_flush() {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let (_, _, writer) = writer_pair(PartialWriter {
+        output: Arc::clone(&output),
+        fail: false,
+    });
+
+    writer
+        .write_and_flush(b"\x1b[1;212R", Duration::from_secs(1))
+        .unwrap();
+
+    assert_eq!(*output.lock().unwrap(), b"\x1b[1;212R");
+}
+
+#[test]
+fn terminal_reply_does_not_activate_or_obey_zmodem_exclusivity_gate() {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let (transport, _, writer) = writer_pair(PartialWriter {
+        output: Arc::clone(&output),
+        fail: false,
+    });
+    let gate = transport.protocol_active_gate();
+    gate.activate();
+
+    writer
+        .write_and_flush(b"\x1b[?6c", Duration::from_secs(1))
+        .unwrap();
+
+    assert!(gate.is_active());
+    assert_eq!(*output.lock().unwrap(), b"\x1b[?6c");
+    gate.deactivate();
+}
+
+#[test]
+fn queued_terminal_reply_that_times_out_never_starts() {
+    let gate = Arc::new(ProtocolGate::new());
+    let (transport, receiver) = transport_write_channel(gate);
+    let writer = TerminalReplyWriter::from_transport_writer(transport);
+
+    let error = writer
+        .write_and_flush(b"must-not-write", Duration::from_millis(5))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+
+    let request = receiver.try_recv().unwrap();
+    let TransportWrite::TerminalReply(request) = request else {
+        panic!("expected typed terminal reply request");
+    };
+    assert!(
+        !request.begin(),
+        "timed-out queued terminal reply must stay cancelled"
+    );
 }
 
 #[test]

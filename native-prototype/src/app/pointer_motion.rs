@@ -15,7 +15,7 @@ impl App {
                     self.left_mouse_gesture = None;
                     self.left_mouse_pane_id = None;
                     self.dragged_split = None;
-                    self.selection_drag_anchor = None;
+                    self.selection_auto_scroll_lines = 0;
                     false
                 }
             };
@@ -101,20 +101,27 @@ impl App {
                         Some(LeftMouseGesture::TerminalReport { last_cell: cell });
                     self.send_mouse_event_to_pane(pane_id, 32, cell.0, cell.1, true);
                 }
-                (Some(LeftMouseGesture::LocalSelection), _, Some(cell))
-                    if self.click_state == ClickState::Single =>
-                {
-                    let selection_point = target_pane_id.as_deref().and_then(|pane_id| {
-                        self.visual_cell_to_selection_point_for_pane(pane_id, cell)
-                    });
-                    if let Some((start, end)) = selection_point
-                        .and_then(|point| drag_selection_range(self.selection_drag_anchor, point))
+                (Some(LeftMouseGesture::LocalSelection), Some(pane_id), Some(cell)) => {
+                    self.update_selection_for_pane(pane_id, cell);
+                    if let (Some(renderer), Some(rect)) =
+                        (self.renderer.as_ref(), self.pane_rect(pane_id))
                     {
-                        self.selection_start = Some(start);
-                        self.selection_end = Some(end);
+                        let (_, cell_height) = renderer.cell_size();
+                        let rect = logical_to_physical_pane_rect(rect, self.pixels_per_point());
+                        let auto_scroll_lines = selection_auto_scroll_lines(
+                            position.y as f32,
+                            rect.y,
+                            rect.y + rect.height,
+                            cell_height,
+                        );
+                        if auto_scroll_lines != self.selection_auto_scroll_lines {
+                            self.selection_auto_scroll_at = Instant::now()
+                                .checked_sub(Duration::from_millis(32))
+                                .unwrap_or_else(Instant::now);
+                        }
+                        self.selection_auto_scroll_lines = auto_scroll_lines;
                     } else {
-                        self.selection_start = None;
-                        self.selection_end = None;
+                        self.selection_auto_scroll_lines = 0;
                     }
                 }
                 _ => {}
@@ -130,5 +137,50 @@ impl App {
             LAST_RENDER.store(now_ms, std::sync::atomic::Ordering::Relaxed);
             self.do_render();
         }
+    }
+
+    pub(super) fn tick_selection_auto_scroll(&mut self, now: Instant) -> bool {
+        if self.selection_auto_scroll_lines == 0
+            || !matches!(
+                self.left_mouse_gesture,
+                Some(LeftMouseGesture::LocalSelection)
+            )
+            || now.duration_since(self.selection_auto_scroll_at) < Duration::from_millis(32)
+        {
+            return false;
+        }
+        let Some(pane_id) = self.left_mouse_pane_id.clone() else {
+            self.selection_auto_scroll_lines = 0;
+            return false;
+        };
+        let Some(cell) =
+            self.pixel_to_cell_for_pane(&pane_id, self.mouse_position.0, self.mouse_position.1)
+        else {
+            self.selection_auto_scroll_lines = 0;
+            return false;
+        };
+        let Some(terminal) = self.terminal_for_pane(&pane_id) else {
+            self.selection_auto_scroll_lines = 0;
+            return false;
+        };
+
+        let mut terminal = terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut changed = false;
+        if let Some(term) = terminal.term_mut() {
+            use alacritty_terminal::grid::Scroll;
+            let before = term.grid().display_offset();
+            term.scroll_display(Scroll::Delta(self.selection_auto_scroll_lines));
+            changed = before != term.grid().display_offset();
+        }
+        if changed {
+            terminal.mark_render_dirty();
+            if let Some(point) = terminal.visual_point_to_grid_point(cell) {
+                terminal.update_selection(point);
+            }
+        }
+        self.selection_auto_scroll_at = now;
+        changed
     }
 }
