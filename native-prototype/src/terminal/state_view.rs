@@ -55,7 +55,24 @@ impl TerminalState {
         (line >= grid.topmost_line().0 && line <= grid.bottommost_line().0).then_some(Line(line))
     }
 
+    pub fn visual_point_to_grid_point(&self, point: (usize, usize)) -> Option<(usize, i32)> {
+        let grid = self.term.as_ref()?.grid();
+        let last_column = grid.columns().saturating_sub(1);
+        let line = self.visual_row_to_grid_line(point.1)?;
+        Some((point.0.min(last_column), line.0))
+    }
+
     pub fn selection_text(&self, start: (usize, usize), end: (usize, usize)) -> String {
+        let Some(start) = self.visual_point_to_grid_point(start) else {
+            return String::new();
+        };
+        let Some(end) = self.visual_point_to_grid_point(end) else {
+            return String::new();
+        };
+        self.selection_text_grid(start, end)
+    }
+
+    pub fn selection_text_grid(&self, start: (usize, i32), end: (usize, i32)) -> String {
         let (start, end) = if (start.1, start.0) <= (end.1, end.0) {
             (start, end)
         } else {
@@ -64,15 +81,17 @@ impl TerminalState {
         let Some(term) = self.term.as_ref() else {
             return String::new();
         };
-        let last_column = term.grid().columns().saturating_sub(1);
-        let Some(start_line) = self.visual_row_to_grid_line(start.1) else {
+        let grid = term.grid();
+        if start.1 < grid.topmost_line().0
+            || start.1 > grid.bottommost_line().0
+            || end.1 < grid.topmost_line().0
+            || end.1 > grid.bottommost_line().0
+        {
             return String::new();
-        };
-        let Some(end_line) = self.visual_row_to_grid_line(end.1) else {
-            return String::new();
-        };
-        let start = Point::new(start_line, Column(start.0.min(last_column)));
-        let end = Point::new(end_line, Column(end.0.min(last_column)));
+        }
+        let last_column = grid.columns().saturating_sub(1);
+        let start = Point::new(Line(start.1), Column(start.0.min(last_column)));
+        let end = Point::new(Line(end.1), Column(end.0.min(last_column)));
 
         term.bounds_to_string(start, end)
     }

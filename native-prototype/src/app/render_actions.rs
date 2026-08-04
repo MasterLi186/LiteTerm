@@ -152,8 +152,18 @@ impl App {
                     if let Some(r) = &self.renderer {
                         let (cols, rows) = r.calculate_grid_size();
                         self.cancel_left_mouse_gesture();
-                        self.selection_start = Some((0, 0));
-                        self.selection_end = Some((cols as usize - 1, rows as usize - 1));
+                        let pane_id = self
+                            .tab_manager
+                            .active()
+                            .map(|tab| tab.active_pane_id().to_string());
+                        if let Some(pane_id) = pane_id {
+                            self.selection_start =
+                                self.visual_cell_to_selection_point_for_pane(&pane_id, (0, 0));
+                            self.selection_end = self.visual_cell_to_selection_point_for_pane(
+                                &pane_id,
+                                (cols as usize - 1, rows as usize - 1),
+                            );
+                        }
                     }
                 }
                 "clear" => {

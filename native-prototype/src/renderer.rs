@@ -158,8 +158,8 @@ struct PaneContentSignature {
     terminal_revision: u64,
     style_revision: u64,
     cursor_visible: bool,
-    selection_start: Option<(usize, usize)>,
-    selection_end: Option<(usize, usize)>,
+    selection_start: Option<(usize, i32)>,
+    selection_end: Option<(usize, i32)>,
     search_fingerprint: u64,
 }
 
@@ -829,11 +829,22 @@ mod geometry_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{search_highlights_fingerprint, SearchHighlights, TerminalPalette};
+    use super::{search_highlights_fingerprint, Renderer, SearchHighlights, TerminalPalette};
     use crate::terminal_search::SearchMatch;
     use crate::themes::theme_by_name;
 
     const F32_EPS: f32 = 1e-6;
+
+    #[test]
+    fn absolute_grid_selection_is_independent_of_viewport_scroll() {
+        let selection = (Some((7, -12)), Some((2, -9)));
+
+        assert!(Renderer::is_selected(7, -12, selection.0, selection.1));
+        assert!(Renderer::is_selected(0, -10, selection.0, selection.1));
+        assert!(Renderer::is_selected(2, -9, selection.0, selection.1));
+        assert!(!Renderer::is_selected(6, -12, selection.0, selection.1));
+        assert!(!Renderer::is_selected(3, -9, selection.0, selection.1));
+    }
 
     fn assert_rgba_f32_near(actual: [f32; 4], expected: [f32; 4]) {
         for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {

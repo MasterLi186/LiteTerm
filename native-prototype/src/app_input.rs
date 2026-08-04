@@ -1,6 +1,8 @@
 use super::*;
 use winit::event::MouseScrollDelta;
 
+pub(super) type SelectionPoint = (usize, i32);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClickState {
     None,
@@ -84,9 +86,9 @@ pub(super) fn terminal_grid_bounds(
 }
 
 pub(super) fn drag_selection_range(
-    anchor: Option<(usize, usize)>,
-    current: (usize, usize),
-) -> Option<((usize, usize), (usize, usize))> {
+    anchor: Option<SelectionPoint>,
+    current: SelectionPoint,
+) -> Option<(SelectionPoint, SelectionPoint)> {
     anchor
         .filter(|start| *start != current)
         .map(|start| (start, current))
@@ -122,8 +124,8 @@ pub(super) fn terminal_report_release_cell(
 
 pub(super) fn should_copy_left_selection(
     gesture: Option<LeftMouseGesture>,
-    selection_start: Option<(usize, usize)>,
-    selection_end: Option<(usize, usize)>,
+    selection_start: Option<SelectionPoint>,
+    selection_end: Option<SelectionPoint>,
 ) -> bool {
     matches!(gesture, Some(LeftMouseGesture::LocalSelection))
         && selection_start.is_some()
@@ -146,9 +148,9 @@ pub(super) fn should_clear_selection_on_focus_loss(gesture: Option<LeftMouseGest
 }
 
 pub(super) fn clear_selection_state(
-    selection_start: &mut Option<(usize, usize)>,
-    selection_end: &mut Option<(usize, usize)>,
-    selection_drag_anchor: &mut Option<(usize, usize)>,
+    selection_start: &mut Option<SelectionPoint>,
+    selection_end: &mut Option<SelectionPoint>,
+    selection_drag_anchor: &mut Option<SelectionPoint>,
 ) {
     *selection_start = None;
     *selection_end = None;
@@ -157,7 +159,7 @@ pub(super) fn clear_selection_state(
 
 pub(super) fn take_left_mouse_gesture_state(
     gesture: &mut Option<LeftMouseGesture>,
-    selection_drag_anchor: &mut Option<(usize, usize)>,
+    selection_drag_anchor: &mut Option<SelectionPoint>,
 ) -> Option<(usize, usize)> {
     let gesture = gesture.take();
     *selection_drag_anchor = None;
@@ -166,9 +168,9 @@ pub(super) fn take_left_mouse_gesture_state(
 
 pub(super) fn prepare_for_active_tab_change_state(
     gesture: &mut Option<LeftMouseGesture>,
-    selection_start: &mut Option<(usize, usize)>,
-    selection_end: &mut Option<(usize, usize)>,
-    selection_drag_anchor: &mut Option<(usize, usize)>,
+    selection_start: &mut Option<SelectionPoint>,
+    selection_end: &mut Option<SelectionPoint>,
+    selection_drag_anchor: &mut Option<SelectionPoint>,
     click_sequence: (&mut ClickState, &mut Instant, &mut (usize, usize)),
     now: Instant,
 ) -> Option<(usize, usize)> {
@@ -192,6 +194,19 @@ pub(super) fn keyboard_input_route(state: ElementState, is_synthetic: bool) -> K
         (ElementState::Pressed, false) => KeyboardInputRoute::App,
         (ElementState::Released, _) => KeyboardInputRoute::EguiOnly,
     }
+}
+
+pub(super) fn is_modifier_only_key(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::AltGraph
+        )
+    )
 }
 
 pub(super) fn terminal_backspace_sequence(alt: bool) -> &'static str {

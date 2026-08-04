@@ -401,9 +401,9 @@ impl Renderer {
 
     pub fn is_selected(
         col: usize,
-        row: usize,
-        sel_start: Option<(usize, usize)>,
-        sel_end: Option<(usize, usize)>,
+        line: i32,
+        sel_start: Option<(usize, i32)>,
+        sel_end: Option<(usize, i32)>,
     ) -> bool {
         let (start, end) = match (sel_start, sel_end) {
             (Some(s), Some(e)) => {
@@ -415,16 +415,16 @@ impl Renderer {
             }
             _ => return false,
         };
-        if row < start.1 || row > end.1 {
+        if line < start.1 || line > end.1 {
             return false;
         }
-        if row == start.1 && row == end.1 {
+        if line == start.1 && line == end.1 {
             return col >= start.0 && col <= end.0;
         }
-        if row == start.1 {
+        if line == start.1 {
             return col >= start.0;
         }
-        if row == end.1 {
+        if line == end.1 {
             return col <= end.0;
         }
         true
@@ -457,8 +457,8 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         terminal: &TerminalState,
         cursor_visible: bool,
-        sel_start: Option<(usize, usize)>,
-        sel_end: Option<(usize, usize)>,
+        sel_start: Option<(usize, i32)>,
+        sel_end: Option<(usize, i32)>,
         search_highlights: Option<SearchHighlights<'_>>,
     ) {
         self.begin_pane_frame();
@@ -496,8 +496,8 @@ impl Renderer {
         pane: PaneRenderRect,
         terminal: &TerminalState,
         cursor_visible: bool,
-        sel_start: Option<(usize, usize)>,
-        sel_end: Option<(usize, usize)>,
+        sel_start: Option<(usize, i32)>,
+        sel_end: Option<(usize, i32)>,
         search_highlights: Option<SearchHighlights<'_>>,
     ) {
         self.begin_pane_frame();
@@ -527,8 +527,8 @@ impl Renderer {
         pane: PaneRenderRect,
         terminal: &TerminalState,
         cursor_visible: bool,
-        sel_start: Option<(usize, usize)>,
-        sel_end: Option<(usize, usize)>,
+        sel_start: Option<(usize, i32)>,
+        sel_end: Option<(usize, i32)>,
         search_highlights: Option<SearchHighlights<'_>>,
     ) {
         let pane = match clamp_pane_render_rect(pane, gpu.width, gpu.height) {
@@ -626,7 +626,7 @@ impl Renderer {
                 fg[2] *= 0.5;
             }
 
-            let selected = Self::is_selected(col_idx, visual_row as usize, sel_start, sel_end);
+            let selected = Self::is_selected(col_idx, abs_line, sel_start, sel_end);
             let search_kind = search_highlights
                 .as_ref()
                 .map(|h| search_highlight_kind(abs_line, col_idx, h))

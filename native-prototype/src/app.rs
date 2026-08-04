@@ -73,9 +73,9 @@ pub(super) struct App {
     mouse_position: (f64, f64),
     terminal_wheel_accumulator: TerminalWheelAccumulator,
     terminal_wheel_pane_id: Option<PaneId>,
-    selection_start: Option<(usize, usize)>,
-    selection_end: Option<(usize, usize)>,
-    selection_drag_anchor: Option<(usize, usize)>,
+    selection_start: Option<SelectionPoint>,
+    selection_end: Option<SelectionPoint>,
+    selection_drag_anchor: Option<SelectionPoint>,
     pending_terminal_link: Option<(String, terminal_links::TerminalLink)>,
     clipboard: Option<arboard::Clipboard>,
     // Click detection

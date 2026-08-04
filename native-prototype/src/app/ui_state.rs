@@ -161,6 +161,16 @@ impl App {
         }
     }
 
+    /// Prepare only when a key/IME action will actually write to the PTY.
+    /// Modifier-only keys such as Shift must preserve both scrollback and selection.
+    pub(super) fn prepare_for_terminal_user_input(&mut self) {
+        self.cancel_left_mouse_gesture();
+        self.scroll_active_terminal_to_bottom();
+        self.clear_selection();
+        self.cursor_visible = true;
+        self.cursor_timer = Instant::now();
+    }
+
     /// Mutable access to the active tab (TabManager has no active_mut).
     pub(super) fn active_tab_mut(&mut self) -> Option<&mut Tab> {
         let idx = self.tab_manager.active_idx;

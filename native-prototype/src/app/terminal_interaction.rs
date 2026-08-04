@@ -22,7 +22,20 @@ impl App {
             None => return String::new(),
         };
         let terminal = terminal.lock().unwrap();
-        terminal.selection_text(start, end)
+        terminal.selection_text_grid(start, end)
+    }
+
+    pub(super) fn visual_cell_to_selection_point_for_pane(
+        &self,
+        pane_id: &str,
+        cell: (usize, usize),
+    ) -> Option<SelectionPoint> {
+        let terminal = self.terminal_for_pane(pane_id)?;
+        let point = terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .visual_point_to_grid_point(cell);
+        point
     }
 
     pub(super) fn select_word(&mut self, col: usize, row: usize) {
@@ -47,8 +60,8 @@ impl App {
         // 宽字符 spacer 视为词内字符
         let is_spacer = center_cell.flags.contains(CellFlags::WIDE_CHAR_SPACER);
         if !is_word_char(center_char) && !is_spacer && center_char != ' ' {
-            self.selection_start = Some((col, row));
-            self.selection_end = Some((col, row));
+            self.selection_start = Some((col, line.0));
+            self.selection_end = Some((col, line.0));
             return;
         }
         let mut start = col;
@@ -81,8 +94,8 @@ impl App {
         }
         drop(term);
         drop(terminal);
-        self.selection_start = Some((start, row));
-        self.selection_end = Some((end, row));
+        self.selection_start = Some((start, line.0));
+        self.selection_end = Some((end, line.0));
     }
 
     pub(super) fn select_line(&mut self, row: usize) {
@@ -97,10 +110,13 @@ impl App {
         };
         use alacritty_terminal::grid::Dimensions;
         let cols = t.grid().columns();
+        let Some(line) = term.visual_row_to_grid_line(row) else {
+            return;
+        };
         drop(term);
         drop(terminal);
-        self.selection_start = Some((0, row));
-        self.selection_end = Some((cols.saturating_sub(1), row));
+        self.selection_start = Some((0, line.0));
+        self.selection_end = Some((cols.saturating_sub(1), line.0));
     }
 
     pub(super) fn copy_selection(&mut self) {

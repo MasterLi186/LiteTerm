@@ -7,6 +7,14 @@
     }
 
     #[test]
+    fn shift_is_a_modifier_only_key_and_must_not_prepare_terminal_input() {
+        assert!(is_modifier_only_key(&Key::Named(NamedKey::Shift)));
+        assert!(is_modifier_only_key(&Key::Named(NamedKey::Control)));
+        assert!(!is_modifier_only_key(&Key::Named(NamedKey::Enter)));
+        assert!(!is_modifier_only_key(&Key::Character("a".into())));
+    }
+
+    #[test]
     fn non_mouse_mode_starts_local_selection_gesture() {
         assert_eq!(
             left_mouse_gesture(false, false, (4, 2)),

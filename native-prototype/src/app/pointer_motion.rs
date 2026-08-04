@@ -104,8 +104,11 @@ impl App {
                 (Some(LeftMouseGesture::LocalSelection), _, Some(cell))
                     if self.click_state == ClickState::Single =>
                 {
-                    if let Some((start, end)) =
-                        drag_selection_range(self.selection_drag_anchor, cell)
+                    let selection_point = target_pane_id.as_deref().and_then(|pane_id| {
+                        self.visual_cell_to_selection_point_for_pane(pane_id, cell)
+                    });
+                    if let Some((start, end)) = selection_point
+                        .and_then(|point| drag_selection_range(self.selection_drag_anchor, point))
                     {
                         self.selection_start = Some(start);
                         self.selection_end = Some(end);

@@ -601,7 +601,8 @@ impl App {
                             _ => {
                                 self.selection_start = None;
                                 self.selection_end = None;
-                                self.selection_drag_anchor = Some(cell);
+                                self.selection_drag_anchor =
+                                    self.visual_cell_to_selection_point_for_pane(&pane_id, cell);
                             }
                         }
                         self.last_click_time = now;
@@ -679,8 +680,13 @@ impl App {
                 if lines == 0 {
                     return;
                 }
+                let local_selection_active = matches!(
+                    self.left_mouse_gesture,
+                    Some(LeftMouseGesture::LocalSelection)
+                ) && self.left_mouse_pane_id.as_ref()
+                    == Some(&pane_id);
                 let mouse_mode = self.is_mouse_mode_for_pane(&pane_id);
-                if mouse_mode {
+                if mouse_mode && !local_selection_active {
                     let cell = self
                         .pixel_to_cell_for_pane(
                             &pane_id,
@@ -695,6 +701,12 @@ impl App {
                 } else if let Some(terminal) = self.terminal_for_pane(&pane_id) {
                     let mut term = terminal.lock().unwrap();
                     let mut changed = false;
+                    let current_cell = self.pixel_to_cell_for_pane(
+                        &pane_id,
+                        self.mouse_position.0,
+                        self.mouse_position.1,
+                    );
+                    let mut selection_point = None;
                     if let Some(t) = term.term_mut() {
                         use alacritty_terminal::grid::Scroll;
                         let before = t.grid().display_offset();
@@ -716,6 +728,19 @@ impl App {
                     }
                     if changed {
                         term.mark_render_dirty();
+                        if local_selection_active {
+                            selection_point =
+                                current_cell.and_then(|cell| term.visual_point_to_grid_point(cell));
+                        }
+                    }
+                    drop(term);
+                    if let Some(point) = selection_point {
+                        if let Some((start, end)) =
+                            drag_selection_range(self.selection_drag_anchor, point)
+                        {
+                            self.selection_start = Some(start);
+                            self.selection_end = Some(end);
+                        }
                     }
                 }
                 if let Some(window) = &self.window {
@@ -727,10 +752,6 @@ impl App {
                 if keyboard_route != Some(KeyboardInputRoute::App) {
                     return;
                 }
-                self.cancel_left_mouse_gesture();
-                self.cursor_visible = true;
-                self.cursor_timer = Instant::now();
-
                 // NOTE: Do NOT scroll-to-bottom here. Search open/nav/typing and
                 // shortcuts must not yank the viewport. Only terminal-directed
                 // keyboard input (below the pass gate) scrolls to bottom.
@@ -858,10 +879,11 @@ impl App {
                     return;
                 }
 
-                // Only terminal-directed keyboard input scrolls to bottom.
-                self.scroll_active_terminal_to_bottom();
-
-                self.clear_selection();
+                // Modifier presses alter subsequent keys only. They must not cancel a mouse
+                // selection or yank a scrollback viewport back to the live prompt.
+                if is_modifier_only_key(&event.logical_key) {
+                    return;
+                }
 
                 // Ctrl+letter → control character
                 if ctrl && !shift {
@@ -896,6 +918,7 @@ impl App {
                             _ => 0u8,
                         };
                         if ctrl_byte > 0 {
+                            self.prepare_for_terminal_user_input();
                             match ctrl_terminal_input_action(ctrl_byte) {
                                 CtrlTerminalInputAction::Submit => {
                                     self.submit_active_bash_line();
@@ -911,6 +934,7 @@ impl App {
                 }
 
                 if matches!(event.logical_key, Key::Named(NamedKey::Enter)) {
+                    self.prepare_for_terminal_user_input();
                     self.submit_active_bash_line();
                     self.do_render();
                     return;
@@ -947,6 +971,7 @@ impl App {
                 };
 
                 if let Some(seq) = esc {
+                    self.prepare_for_terminal_user_input();
                     self.write_active_user_input(seq);
                 } else if let Some(text) = &event.text {
                     // Filter only raw text through IME echo/preedit suppression.
@@ -954,6 +979,7 @@ impl App {
                     if !text.as_str().is_empty() {
                         if let Some(filtered) = self.ime.filter_keyboard_text(text.as_str()) {
                             if !filtered.is_empty() {
+                                self.prepare_for_terminal_user_input();
                                 self.write_active_user_input(&filtered);
                             }
                         }

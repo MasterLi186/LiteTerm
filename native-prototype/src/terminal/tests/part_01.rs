@@ -40,6 +40,55 @@
         assert_eq!(terminal.selection_text((1, 1), (1, 1)), "中");
     }
 
+    #[test]
+    fn absolute_selection_keeps_the_same_text_after_viewport_scroll() {
+        use alacritty_terminal::grid::Scroll;
+
+        let mut terminal = selection_fixture("one\r\ntwo\r\nthree\r\nfour\r\nfive");
+        let start = terminal
+            .visual_point_to_grid_point((0, 1))
+            .expect("visible start must map into scrollback");
+        let end = terminal
+            .visual_point_to_grid_point((3, 1))
+            .expect("visible end must map into scrollback");
+        let selected = terminal.selection_text_grid(start, end);
+        assert!(!selected.is_empty());
+
+        terminal
+            .term_mut()
+            .expect("fixture must initialize term")
+            .scroll_display(Scroll::Delta(2));
+
+        assert_ne!(terminal.visual_point_to_grid_point((0, 1)), Some(start));
+        assert_eq!(terminal.selection_text_grid(start, end), selected);
+    }
+
+    #[test]
+    fn wheel_scrolling_during_drag_can_extend_selection_beyond_one_viewport() {
+        use alacritty_terminal::grid::Scroll;
+
+        let mut terminal = selection_fixture(
+            "line-00\r\nline-01\r\nline-02\r\nline-03\r\nline-04\r\nline-05\r\nline-06\r\nline-07\r\nline-08\r\nline-09",
+        );
+        let anchor = terminal
+            .visual_point_to_grid_point((7, 3))
+            .expect("drag anchor must be visible");
+
+        terminal
+            .term_mut()
+            .expect("fixture must initialize term")
+            .scroll_display(Scroll::Top);
+        let current = terminal
+            .visual_point_to_grid_point((0, 1))
+            .expect("scrolled drag point must map into history");
+
+        assert!(
+            anchor.1.abs_diff(current.1) > u32::from(terminal.rows()),
+            "wheel-assisted drag should span more lines than the visible viewport"
+        );
+        assert!(terminal.selection_text_grid(anchor, current).lines().count() > 4);
+    }
+
     fn install_local_snapshot_runtime(
         terminal: &mut TerminalState,
     ) -> (TestTransportCapture, Vec<u8>) {
