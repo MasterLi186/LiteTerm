@@ -1,6 +1,6 @@
 [package]
 name = "liteterm-native"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "LiteTerm 的轻量级原生终端、SSH、串口和文件管理客户端"
 
@@ -35,7 +35,7 @@ main = true
 
 [package.metadata.packager.nsis]
 installer-icon = "../src-tauri/icons/icon.ico"
-install-mode = "currentUser"
+installer-mode = "currentUser"
 languages = ["SimpChinese"]
 
 [dependencies]
