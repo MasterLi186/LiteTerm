@@ -1,7 +1,8 @@
 [package]
 name = "liteterm-native"
-version = "0.1.0-memory.3"
+version = "0.1.4"
 edition = "2021"
+description = "LiteTerm 的轻量级原生终端、SSH、串口和文件管理客户端"
 
 [[bin]]
 name = "liteterm-native"
@@ -10,6 +11,32 @@ path = "src/main.rs"
 [lib]
 name = "liteterm_native_api"
 path = "src/api.rs"
+
+[package.metadata.packager]
+product-name = "LiteTerm Native"
+identifier = "com.liteterm.native"
+category = "Utility"
+description = "轻量级跨平台终端、SSH 与串口客户端"
+long-description = "LiteTerm Native 是 LiteTerm 的原生客户端，支持本地终端、SSH、串口、文件管理和系统监控。"
+homepage = "https://github.com/MasterLi186/LiteTerm"
+icons = [
+    "../src-tauri/icons/32x32.png",
+    "../src-tauri/icons/128x128.png",
+    "../src-tauri/icons/128x128@2x.png",
+    "../src-tauri/icons/icon.icns",
+    "../src-tauri/icons/icon.ico",
+]
+out-dir = "dist/installers"
+binaries-dir = "target/release"
+
+[[package.metadata.packager.binaries]]
+path = "liteterm-native"
+main = true
+
+[package.metadata.packager.nsis]
+installer-icon = "../src-tauri/icons/icon.ico"
+install-mode = "currentUser"
+languages = ["SimpChinese"]
 
 [dependencies]
 winit = "0.30"

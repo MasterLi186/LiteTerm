@@ -90,19 +90,25 @@ jobs:
           - display: Linux x86_64
             runner: ubuntu-22.04
             slug: linux-x86_64
-            archive: liteterm-native-linux-x86_64.tar.gz
+            formats: deb
+            artifact: LiteTerm-Native-Linux
           - display: Windows x86_64
             runner: windows-2022
             slug: windows-x86_64
-            archive: liteterm-native-windows-x86_64.zip
+            formats: nsis,wix
+            artifact: LiteTerm-Native-Windows
           - display: macOS Intel
             runner: macos-15-intel
             slug: macos-x86_64
-            archive: liteterm-native-macos-x86_64.tar.gz
+            formats: dmg
+            artifact: LiteTerm-Native-macOS-Intel
+            package_arch: x64
           - display: macOS Apple Silicon
             runner: macos-15
             slug: macos-aarch64
-            archive: liteterm-native-macos-aarch64.tar.gz
+            formats: dmg
+            artifact: LiteTerm-Native-macOS-Apple-Silicon
+            package_arch: aarch64
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -129,44 +135,68 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/setup-nasm@v1
 
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Package Unix binary
-        if: runner.os != 'Windows'
+      - name: Build Linux installer
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          mkdir -p dist/package
-          cp target/release/liteterm-native dist/package/liteterm-native
-          chmod +x dist/package/liteterm-native
-          {
-            echo "LiteTerm Native $BUILD_VERSION"
-            echo "Platform: ${{ matrix.display }}"
-            echo "Commit: $GITHUB_SHA"
-            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          } > dist/package/BUILD-INFO.txt
-          ARCHIVE_PATH="$PWD/dist/${{ matrix.archive }}"
-          tar -C dist/package -czf "$ARCHIVE_PATH" .
+          rm -rf dist/installers
+          cargo packager --release --formats "${{ matrix.formats }}" --verbose
+          PACKAGE=$(find dist/installers -maxdepth 1 -type f -name '*.deb' -print -quit)
+          if [ -z "$PACKAGE" ]; then
+            echo "::error::cargo-packager 未生成 .deb 安装包"
+            exit 1
+          fi
+          mv "$PACKAGE" "dist/installers/LiteTerm-Native_${BUILD_VERSION}_amd64.deb"
 
-      - name: Package Windows binary
+      - name: Build Windows installers
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist/package | Out-Null
-          Copy-Item target/release/liteterm-native.exe dist/package/liteterm-native.exe
-          @(
-            "LiteTerm Native $env:BUILD_VERSION"
-            "Platform: ${{ matrix.display }}"
-            "Commit: $env:GITHUB_SHA"
-            "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-          ) | Set-Content -Encoding utf8 dist/package/BUILD-INFO.txt
-          Compress-Archive -Path dist/package/* -DestinationPath "dist/${{ matrix.archive }}" -Force
+          if (Test-Path dist/installers) {
+            Remove-Item -Recurse -Force dist/installers
+          }
+          cargo packager --release --formats "${{ matrix.formats }}" --verbose
+          $exe = Get-ChildItem -Path dist/installers -Filter *.exe -File | Select-Object -First 1
+          $msi = Get-ChildItem -Path dist/installers -Filter *.msi -File | Select-Object -First 1
+          if (-not $exe) { throw "cargo-packager 未生成 NSIS .exe 安装包" }
+          if (-not $msi) { throw "cargo-packager 未生成 WiX .msi 安装包" }
+          Move-Item $exe.FullName "dist/installers/LiteTerm-Native_${env:BUILD_VERSION}_x64-setup.exe"
+          Move-Item $msi.FullName "dist/installers/LiteTerm-Native_${env:BUILD_VERSION}_x64.msi"
+
+      - name: Build macOS installer
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          rm -rf dist/installers
+          cargo packager --release --formats "${{ matrix.formats }}" --verbose
+          PACKAGE=$(find dist/installers -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          if [ -z "$PACKAGE" ]; then
+            echo "::error::cargo-packager 未生成 .dmg 安装包"
+            exit 1
+          fi
+          mv "$PACKAGE" "dist/installers/LiteTerm-Native_${BUILD_VERSION}_${{ matrix.package_arch }}.dmg"
+
+      - name: Verify installer output
+        shell: bash
+        run: |
+          echo "Generated installers for ${{ matrix.display }}:"
+          find dist/installers -maxdepth 1 -type f -print
 
       - name: Upload downloadable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LiteTerm-Native-${{ matrix.slug }}-v${{ needs.prepare.outputs.version }}
-          path: native-prototype/dist/${{ matrix.archive }}
+          name: ${{ matrix.artifact }}-v${{ needs.prepare.outputs.version }}
+          path: |
+            native-prototype/dist/installers/*.exe
+            native-prototype/dist/installers/*.msi
+            native-prototype/dist/installers/*.deb
+            native-prototype/dist/installers/*.dmg
           if-no-files-found: error
           retention-days: 30
 
@@ -199,12 +229,12 @@ jobs:
               echo
               echo "在当前 Actions 运行页面向下滚动到 **Artifacts**，下载以下目录："
               echo
-              echo "- \`LiteTerm-Native-linux-x86_64-v$VERSION\`"
-              echo "- \`LiteTerm-Native-windows-x86_64-v$VERSION\`"
-              echo "- \`LiteTerm-Native-macos-x86_64-v$VERSION\`"
-              echo "- \`LiteTerm-Native-macos-aarch64-v$VERSION\`"
+              echo "- \`LiteTerm-Native-Windows-v$VERSION\`：NSIS \`.exe\` 与 WiX \`.msi\`"
+              echo "- \`LiteTerm-Native-Linux-v$VERSION\`：Debian/Ubuntu \`.deb\`"
+              echo "- \`LiteTerm-Native-macOS-Intel-v$VERSION\`：Intel \`.dmg\`"
+              echo "- \`LiteTerm-Native-macOS-Apple-Silicon-v$VERSION\`：Apple Silicon \`.dmg\`"
               echo
-              echo "产物保留 30 天，每个目录中包含压缩包及构建信息。"
+              echo "产物保留 30 天，每个目录中直接包含对应平台的安装包。"
             else
               echo "构建未全部通过，因此可能没有完整的可下载产物；请先检查失败的 job。"
             fi
