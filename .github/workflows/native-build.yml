@@ -95,7 +95,7 @@ jobs:
           - display: Windows x86_64
             runner: windows-2022
             slug: windows-x86_64
-            formats: nsis,wix
+            formats: nsis
             artifact: LiteTerm-Native-Windows
           - display: macOS Intel
             runner: macos-15-intel
@@ -154,7 +154,7 @@ jobs:
           fi
           mv "$PACKAGE" "dist/installers/LiteTerm-Native_${BUILD_VERSION}_amd64.deb"
 
-      - name: Build Windows installers
+      - name: Build Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -163,11 +163,8 @@ jobs:
           }
           cargo packager --release --formats "${{ matrix.formats }}" --verbose
           $exe = Get-ChildItem -Path dist/installers -Filter *.exe -File | Select-Object -First 1
-          $msi = Get-ChildItem -Path dist/installers -Filter *.msi -File | Select-Object -First 1
           if (-not $exe) { throw "cargo-packager 未生成 NSIS .exe 安装包" }
-          if (-not $msi) { throw "cargo-packager 未生成 WiX .msi 安装包" }
           Move-Item $exe.FullName "dist/installers/LiteTerm-Native_${env:BUILD_VERSION}_x64-setup.exe"
-          Move-Item $msi.FullName "dist/installers/LiteTerm-Native_${env:BUILD_VERSION}_x64.msi"
 
       - name: Build macOS installer
         if: runner.os == 'macOS'
@@ -194,7 +191,6 @@ jobs:
           name: ${{ matrix.artifact }}-v${{ needs.prepare.outputs.version }}
           path: |
             native-prototype/dist/installers/*.exe
-            native-prototype/dist/installers/*.msi
             native-prototype/dist/installers/*.deb
             native-prototype/dist/installers/*.dmg
           if-no-files-found: error
@@ -229,7 +225,7 @@ jobs:
               echo
               echo "在当前 Actions 运行页面向下滚动到 **Artifacts**，下载以下目录："
               echo
-              echo "- \`LiteTerm-Native-Windows-v$VERSION\`：NSIS \`.exe\` 与 WiX \`.msi\`"
+              echo "- \`LiteTerm-Native-Windows-v$VERSION\`：简体中文 NSIS \`.exe\`"
               echo "- \`LiteTerm-Native-Linux-v$VERSION\`：Debian/Ubuntu \`.deb\`"
               echo "- \`LiteTerm-Native-macOS-Intel-v$VERSION\`：Intel \`.dmg\`"
               echo "- \`LiteTerm-Native-macOS-Apple-Silicon-v$VERSION\`：Apple Silicon \`.dmg\`"
@@ -239,3 +235,41 @@ jobs:
               echo "构建未全部通过，因此可能没有完整的可下载产物；请先检查失败的 job。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'native-v')
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download platform installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish direct-download installers
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: LiteTerm Native v${{ needs.prepare.outputs.version }}
+          body: |
+            ## LiteTerm Native v${{ needs.prepare.outputs.version }}
+
+            下载对应平台的安装包：
+
+            - **Windows x86_64**：简体中文 NSIS `.exe`
+            - **Linux x86_64**：Debian/Ubuntu `.deb`
+            - **macOS Intel**：x86_64 `.dmg`
+            - **macOS Apple Silicon**：aarch64 `.dmg`
+
+            安装包尚未进行商业代码签名，Windows 和 macOS 可能显示安全提示。
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
