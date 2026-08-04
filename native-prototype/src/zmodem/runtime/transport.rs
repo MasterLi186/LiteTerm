@@ -77,6 +77,7 @@ pub struct TerminalReplyRequest {
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
     started: Arc<AtomicBool>,
+    progressed: Arc<AtomicBool>,
     completion: mpsc::Sender<WriteAck>,
 }
 
@@ -95,7 +96,12 @@ impl TerminalReplyRequest {
     }
 
     pub(crate) fn may_continue(&self) -> bool {
-        !self.cancelled.load(Ordering::Acquire) && Instant::now() < self.deadline
+        self.progressed.load(Ordering::Acquire)
+            || (!self.cancelled.load(Ordering::Acquire) && Instant::now() < self.deadline)
+    }
+
+    pub(crate) fn mark_progress(&self) {
+        self.progressed.store(true, Ordering::Release);
     }
 
     pub(crate) fn complete(self, result: io::Result<()>) {
@@ -267,10 +273,37 @@ impl TerminalReplyWriter {
         Self { transport }
     }
 
+    /// Queue a terminal-emulator reply without waiting under the terminal parser lock.
+    pub fn try_enqueue(&self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
+        let (completion, _completed) = mpsc::channel();
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "终端应答写超时无效"))?;
+        self.transport
+            .sender
+            .try_send(TransportWrite::TerminalReply(TerminalReplyRequest {
+                bytes: bytes.to_vec(),
+                deadline,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                started: Arc::new(AtomicBool::new(false)),
+                progressed: Arc::new(AtomicBool::new(false)),
+                completion,
+            }))
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => {
+                    io::Error::new(io::ErrorKind::WouldBlock, "终端应答写队列已满")
+                }
+                mpsc::TrySendError::Disconnected(_) => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "终端应答写队列已断开")
+                }
+            })
+    }
+
     pub fn write_and_flush(&self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
         let (completion, completed) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         let started = Arc::new(AtomicBool::new(false));
+        let progressed = Arc::new(AtomicBool::new(false));
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "终端应答写超时无效"))?;
@@ -279,6 +312,7 @@ impl TerminalReplyWriter {
             deadline,
             cancelled: Arc::clone(&cancelled),
             started: Arc::clone(&started),
+            progressed,
             completion,
         });
         loop {

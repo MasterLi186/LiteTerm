@@ -129,6 +129,34 @@ fn queued_terminal_reply_that_times_out_never_starts() {
 }
 
 #[test]
+fn terminal_reply_may_expire_before_write_but_finishes_after_partial_progress() {
+    let gate = Arc::new(ProtocolGate::new());
+    let (transport, receiver) = transport_write_channel(gate);
+    let writer = TerminalReplyWriter::from_transport_writer(transport);
+
+    writer
+        .try_enqueue(b"before-progress", Duration::from_millis(5))
+        .unwrap();
+    let TransportWrite::TerminalReply(before_progress) = receiver.try_recv().unwrap() else {
+        panic!("expected typed terminal reply request");
+    };
+    assert!(before_progress.begin());
+    std::thread::sleep(Duration::from_millis(10));
+    assert!(!before_progress.may_continue());
+
+    writer
+        .try_enqueue(b"after-progress", Duration::from_millis(5))
+        .unwrap();
+    let TransportWrite::TerminalReply(after_progress) = receiver.try_recv().unwrap() else {
+        panic!("expected typed terminal reply request");
+    };
+    assert!(after_progress.begin());
+    after_progress.mark_progress();
+    std::thread::sleep(Duration::from_millis(10));
+    assert!(after_progress.may_continue());
+}
+
+#[test]
 fn bounded_writer_acks_only_after_partial_write_and_flush() {
     let output = Arc::new(Mutex::new(Vec::new()));
     let writer = writer_worker(PartialWriter {
@@ -206,6 +234,24 @@ fn normal_transport_ingress_is_bounded_and_reports_full() {
         transport.try_send_normal(vec![index as u8]).unwrap();
     }
     let error = transport.try_send_normal(vec![0xff]).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+}
+
+#[test]
+fn terminal_reply_ingress_is_bounded_and_reports_full_without_waiting() {
+    let gate = Arc::new(ProtocolGate::new());
+    let (transport, _receiver) = transport_write_channel(gate);
+    let writer = TerminalReplyWriter::from_transport_writer(transport);
+    for _ in 0..TRANSPORT_WRITE_QUEUE_CAPACITY {
+        writer
+            .try_enqueue(b"reply", Duration::from_secs(1))
+            .unwrap();
+    }
+
+    let error = writer
+        .try_enqueue(b"overflow", Duration::from_secs(1))
+        .unwrap_err();
+
     assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
 }
 

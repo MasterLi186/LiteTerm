@@ -564,6 +564,38 @@
     }
 
     #[test]
+    fn listener_bounds_terminal_replies_before_transport_installation() {
+        let terminal_reply_sink = Arc::new(Mutex::new(TerminalReplySink::default()));
+        let listener = Listener {
+            terminal_reply_sink: Arc::clone(&terminal_reply_sink),
+        };
+
+        for _ in 0..MAX_PENDING_TERMINAL_REPLIES + 8 {
+            listener.send_event(Event::PtyWrite("reply".to_owned()));
+        }
+        listener.send_event(Event::PtyWrite("x".repeat(MAX_PENDING_TERMINAL_REPLY_BYTES)));
+
+        let sink = terminal_reply_sink.lock().unwrap();
+        assert_eq!(sink.pending.len(), MAX_PENDING_TERMINAL_REPLIES);
+        assert_eq!(sink.pending_bytes, MAX_PENDING_TERMINAL_REPLIES * 5);
+    }
+
+    #[test]
+    fn installing_transport_discards_stale_buffered_terminal_replies() {
+        let mut terminal = TerminalState::new();
+        terminal.init_term(80, 24);
+        let sink = terminal.terminal_reply_sink.as_ref().unwrap().clone();
+        sink.lock().unwrap().push_pending("stale".to_owned());
+        let (writer, _writes) = test_transport_capture();
+
+        terminal.install_transport_writer(writer);
+
+        let sink = sink.lock().unwrap();
+        assert!(sink.pending.is_empty());
+        assert_eq!(sink.pending_bytes, 0);
+    }
+
+    #[test]
     fn listener_discards_non_pty_write_events_at_the_boundary() {
         let terminal_reply_sink = Arc::new(Mutex::new(TerminalReplySink::default()));
         let listener = Listener {
@@ -689,7 +721,7 @@
     }
 
     #[test]
-    fn parser_waits_until_local_terminal_reply_is_flushed() {
+    fn parser_does_not_wait_for_local_terminal_reply_flush() {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let mut terminal = TerminalState::new();
@@ -706,12 +738,8 @@
         });
 
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(matches!(
-            completed_rx.recv_timeout(Duration::from_millis(50)),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ));
-        release_tx.send(()).unwrap();
         completed_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        release_tx.send(()).unwrap();
     }
 
     #[test]

@@ -593,30 +593,8 @@ impl App {
                         let same_pos = cell == self.last_click_pos;
                         self.click_state =
                             click_state_after_press(self.click_state, elapsed, same_pos);
-                        match self.click_state {
-                            ClickState::Double => {
-                                self.begin_selection_for_pane(
-                                    &pane_id,
-                                    cell,
-                                    terminal::TerminalSelectionKind::Semantic,
-                                );
-                            }
-                            ClickState::Triple => {
-                                self.begin_selection_for_pane(
-                                    &pane_id,
-                                    cell,
-                                    terminal::TerminalSelectionKind::Lines,
-                                );
-                            }
-                            _ => {
-                                let kind = if block {
-                                    terminal::TerminalSelectionKind::Block
-                                } else {
-                                    terminal::TerminalSelectionKind::Simple
-                                };
-                                self.begin_selection_for_pane(&pane_id, cell, kind);
-                            }
-                        }
+                        let kind = selection_kind_for_press(self.click_state, block);
+                        self.begin_selection_for_pane(&pane_id, cell, kind);
                         self.last_click_time = now;
                         self.last_click_pos = cell;
                         self.do_render();

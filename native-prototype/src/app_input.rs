@@ -27,6 +27,20 @@ pub(super) fn click_state_after_press(
     }
 }
 
+pub(super) fn selection_kind_for_press(
+    click_state: ClickState,
+    block_modifier: bool,
+) -> terminal::TerminalSelectionKind {
+    if block_modifier {
+        return terminal::TerminalSelectionKind::Block;
+    }
+    match click_state {
+        ClickState::Double => terminal::TerminalSelectionKind::Semantic,
+        ClickState::Triple => terminal::TerminalSelectionKind::Lines,
+        _ => terminal::TerminalSelectionKind::Simple,
+    }
+}
+
 pub(super) fn reset_click_sequence_state(
     click_state: &mut ClickState,
     last_click_time: &mut Instant,

@@ -79,9 +79,13 @@ pub struct Listener {
     terminal_reply_sink: Arc<Mutex<TerminalReplySink>>,
 }
 
+const MAX_PENDING_TERMINAL_REPLIES: usize = 32;
+const MAX_PENDING_TERMINAL_REPLY_BYTES: usize = 4 * 1024;
+
 struct TerminalReplySink {
     writer: Option<crate::zmodem::runtime::TerminalReplyWriter>,
     pending: Vec<String>,
+    pending_bytes: usize,
     allowed: bool,
 }
 
@@ -90,8 +94,31 @@ impl Default for TerminalReplySink {
         Self {
             writer: None,
             pending: Vec::new(),
+            pending_bytes: 0,
             allowed: true,
         }
+    }
+}
+
+impl TerminalReplySink {
+    fn push_pending(&mut self, text: String) {
+        if self.pending.len() >= MAX_PENDING_TERMINAL_REPLIES
+            || self.pending_bytes.saturating_add(text.len()) > MAX_PENDING_TERMINAL_REPLY_BYTES
+        {
+            return;
+        }
+        self.pending_bytes += text.len();
+        self.pending.push(text);
+    }
+
+    fn discard_pending(&mut self) {
+        self.pending.clear();
+        self.pending_bytes = 0;
+    }
+
+    fn take_pending(&mut self) -> Vec<String> {
+        self.pending_bytes = 0;
+        std::mem::take(&mut self.pending)
     }
 }
 
@@ -105,16 +132,20 @@ impl EventListener for Listener {
                     return;
                 }
                 let Some(writer) = sink.writer.clone() else {
-                    sink.pending.push(text);
+                    sink.push_pending(text);
                     return;
                 };
                 writer
             };
-            if let Err(error) = writer.write_and_flush(
+            if let Err(error) = writer.try_enqueue(
                 text.as_bytes(),
                 crate::zmodem::runtime::DEFAULT_TERMINAL_REPLY_WRITE_TIMEOUT,
             ) {
-                log::warn!("终端协议应答写回失败: {error}");
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    log::debug!("终端协议应答队列已满，丢弃过载应答");
+                } else {
+                    log::warn!("终端协议应答写回失败: {error}");
+                }
             }
         }
     }
@@ -220,7 +251,10 @@ fn spawn_writer_worker_with_protocol(
                                 ));
                                 break;
                             }
-                            Ok(written) => offset += written,
+                            Ok(written) => {
+                                request.mark_progress();
+                                offset += written;
+                            }
                             Err(error) => {
                                 result = Err(error);
                                 break;

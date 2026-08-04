@@ -300,7 +300,11 @@ impl TerminalState {
         writer: crate::zmodem::runtime::TransportWriter,
     ) {
         if let Some(sink) = &self.terminal_reply_sink {
-            sink.lock().unwrap().writer = Some(
+            let mut sink = sink.lock().unwrap();
+            // Replies generated before the transport existed are no longer timely. Sending them
+            // after attachment would inject stale control bytes into the new session.
+            sink.discard_pending();
+            sink.writer = Some(
                 crate::zmodem::runtime::TerminalReplyWriter::from_transport_writer(writer.clone()),
             );
         }
@@ -362,6 +366,6 @@ impl TerminalState {
         let Some(sink) = &self.terminal_reply_sink else {
             return Vec::new();
         };
-        std::mem::take(&mut sink.lock().unwrap().pending)
+        sink.lock().unwrap().take_pending()
     }
 }

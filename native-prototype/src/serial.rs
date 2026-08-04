@@ -360,7 +360,10 @@ fn drain_writes(
                             ));
                             break;
                         }
-                        Ok(written) => offset += written,
+                        Ok(written) => {
+                            request.mark_progress();
+                            offset += written;
+                        }
                         Err(error) => {
                             result = Err(error);
                             break;

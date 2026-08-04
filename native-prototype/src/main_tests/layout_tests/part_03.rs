@@ -738,6 +738,22 @@
     }
 
     #[test]
+    fn alt_modifier_forces_block_selection_even_inside_multi_click_window() {
+        assert_eq!(
+            selection_kind_for_press(ClickState::Double, true),
+            super::terminal::TerminalSelectionKind::Block
+        );
+        assert_eq!(
+            selection_kind_for_press(ClickState::Triple, true),
+            super::terminal::TerminalSelectionKind::Block
+        );
+        assert_eq!(
+            selection_kind_for_press(ClickState::Double, false),
+            super::terminal::TerminalSelectionKind::Semantic
+        );
+    }
+
+    #[test]
     fn mouse_mode_without_shift_starts_terminal_report_gesture() {
         assert_eq!(
             left_mouse_gesture(true, false, (4, 2)),

@@ -568,6 +568,12 @@ impl PendingChannelWrite {
                 .is_none_or(|request| request.may_continue())
     }
 
+    fn mark_progress(&self) {
+        if let Some(terminal_reply) = &self.terminal_reply {
+            terminal_reply.mark_progress();
+        }
+    }
+
     fn complete(self, result: std::io::Result<()>) {
         if let Some(protocol) = self.protocol {
             protocol.complete(result);
@@ -594,6 +600,7 @@ fn write_channel_once(
                 ));
             }
             Ok(written) => {
+                pending.mark_progress();
                 pending.offset += written;
                 if pending.offset < pending.bytes.len() {
                     return Ok(false);
