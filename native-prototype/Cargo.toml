@@ -3,6 +3,7 @@ name = "liteterm-native"
 version = "0.1.5"
 edition = "2021"
 description = "LiteTerm 的轻量级原生终端、SSH、串口和文件管理客户端"
+authors = ["LiteTerm Contributors"]
 
 [[bin]]
 name = "liteterm-native"
