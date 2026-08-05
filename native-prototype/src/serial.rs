@@ -500,6 +500,11 @@ mod tests {
     fn serial_terminal_reply_ack_follows_device_write_and_flush() {
         let gate = Arc::new(crate::zmodem::runtime::ProtocolGate::new());
         let (transport, receiver) = crate::zmodem::runtime::transport_write_channel(gate);
+        // Keep one sender alive while the test drains the worker queue.  Without
+        // this, a loaded CI runner can let the reply thread time out and drop
+        // its only sender before the queued request is observed, making the
+        // test report `Disconnected` instead of exercising the ACK path.
+        let _transport_keepalive = transport.clone();
         let reply_writer =
             crate::zmodem::runtime::TerminalReplyWriter::from_transport_writer(transport);
         let reply = std::thread::spawn(move || {
