@@ -1,0 +1,102 @@
+name: Native Version Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Native SemVer 自动递增级别
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+concurrency:
+  group: native-version-release
+  cancel-in-progress: false
+
+jobs:
+  bump-and-tag:
+    name: Bump Native version and create tag
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out branch history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Calculate next version
+        id: version
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" != "branch" ]; then
+            echo "::error::版本发布必须从分支运行，当前 ref 类型为 ${GITHUB_REF_TYPE}"
+            exit 1
+          fi
+
+          CURRENT=$(sed -n 's/^version = "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' native-prototype/Cargo.toml | head -1)
+          if [ -z "$CURRENT" ]; then
+            echo "::error::无法从 native-prototype/Cargo.toml 读取版本号"
+            exit 1
+          fi
+
+          LATEST_TAG=$(git tag --list 'native-v*' --sort=-v:refname | head -1 || true)
+          if [ -n "$LATEST_TAG" ] && [ "${LATEST_TAG#native-v}" != "$CURRENT" ]; then
+            echo "::error::Cargo.toml 版本 $CURRENT 与最新 Native 标签 ${LATEST_TAG#native-v} 不一致"
+            exit 1
+          fi
+
+          echo "当前版本: $CURRENT"
+          echo "递增级别: $BUMP"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+      - name: Bump Cargo metadata and lockfile
+        id: bump
+        shell: bash
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 native-prototype/scripts/bump_version.py "$BUMP")
+          cargo metadata --manifest-path native-prototype/Cargo.toml --locked --no-deps >/dev/null
+          cargo fmt --manifest-path native-prototype/Cargo.toml --all -- --check
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Native 新版本: $VERSION"
+
+      - name: Commit version and create tag
+        shell: bash
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          git add native-prototype/Cargo.toml native-prototype/Cargo.lock
+          git diff --cached --check
+          git commit -m "chore: bump native version to ${VERSION}"
+          git tag -a "native-v${VERSION}" -m "LiteTerm Native v${VERSION}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "native-v${VERSION}"
+
+      - name: Write release summary
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          {
+            echo "## LiteTerm Native 版本已递增"
+            echo
+            echo "- 新版本：\`${VERSION}\`"
+            echo "- 标签：\`native-v${VERSION}\`"
+            echo "- 后续构建：Native Multi-platform Build 将由新标签自动触发"
+          } >> "$GITHUB_STEP_SUMMARY"
