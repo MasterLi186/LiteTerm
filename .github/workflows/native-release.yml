@@ -54,9 +54,14 @@ jobs:
           fi
 
           LATEST_TAG=$(git tag --list 'native-v*' --sort=-v:refname | head -1 || true)
-          if [ -n "$LATEST_TAG" ] && [ "${LATEST_TAG#native-v}" != "$CURRENT" ]; then
-            echo "::error::Cargo.toml 版本 $CURRENT 与最新 Native 标签 ${LATEST_TAG#native-v} 不一致"
-            exit 1
+          if [ -n "$LATEST_TAG" ]; then
+            LATEST_VERSION=${LATEST_TAG#native-v}
+            OLDER_VERSION=$(printf '%s\n' "$CURRENT" "$LATEST_VERSION" | sort -V | head -1)
+            if [ "$OLDER_VERSION" != "$LATEST_VERSION" ]; then
+              echo "::error::Cargo.toml 版本 $CURRENT 落后于最新 Native 标签 $LATEST_VERSION"
+              exit 1
+            fi
+            echo "最新标签版本: $LATEST_VERSION（当前 Cargo 版本可继续递增）"
           fi
 
           echo "当前版本: $CURRENT"
