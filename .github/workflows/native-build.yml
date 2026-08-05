@@ -171,13 +171,29 @@ jobs:
         shell: bash
         run: |
           rm -rf dist/installers
-          cargo packager --release --formats "${{ matrix.formats }}" --verbose
-          PACKAGE=$(find dist/installers -maxdepth 1 -type f -name '*.dmg' -print -quit)
-          if [ -z "$PACKAGE" ]; then
-            echo "::error::cargo-packager 未生成 .dmg 安装包"
+          # cargo-packager's create-dmg helper mounts and ejects a temporary
+          # image.  GitHub's macOS Intel runner can intermittently keep that
+          # image busy, leaving an otherwise valid build marked as failed.
+          # Build the .app with cargo-packager and create the DMG directly via
+          # hdiutil instead; this avoids mounting an intermediate image.
+          cargo packager --release --formats app --verbose
+          APP=$(find dist/installers -maxdepth 1 -type d -name '*.app' -print -quit)
+          if [ -z "$APP" ]; then
+            echo "::error::cargo-packager 未生成 macOS .app 应用包"
             exit 1
           fi
-          mv "$PACKAGE" "dist/installers/LiteTerm-Native_${BUILD_VERSION}_${{ matrix.package_arch }}.dmg"
+          STAGING=$(mktemp -d)
+          trap 'rm -rf "$STAGING"' EXIT
+          cp -R "$APP" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          PACKAGE="dist/installers/LiteTerm-Native_${BUILD_VERSION}_${{ matrix.package_arch }}.dmg"
+          hdiutil create \
+            -volname "LiteTerm Native" \
+            -srcfolder "$STAGING" \
+            -ov \
+            -format UDZO \
+            "$PACKAGE"
+          test -f "$PACKAGE"
 
       - name: Verify installer output
         shell: bash
