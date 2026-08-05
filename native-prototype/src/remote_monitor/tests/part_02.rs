@@ -80,13 +80,34 @@
 
     #[test]
     fn adjacent_refresh_requests_are_coalesced() {
+        struct BlockingRefreshSource {
+            collects: Arc<AtomicUsize>,
+            second_collect_started: mpsc::Sender<()>,
+            release_second_collect: mpsc::Receiver<()>,
+        }
+
+        impl SnapshotSource for BlockingRefreshSource {
+            fn collect(&mut self) -> Result<String, String> {
+                let collect_number = self.collects.fetch_add(1, Ordering::SeqCst) + 1;
+                if collect_number == 2 {
+                    self.second_collect_started
+                        .send(())
+                        .map_err(|_| "二次刷新通知接收端已关闭".to_string())?;
+                    self.release_second_collect
+                        .recv()
+                        .map_err(|_| "二次刷新释放通知发送端已关闭".to_string())?;
+                }
+                Ok(SAMPLE.to_string())
+            }
+        }
+
         let collects = Arc::new(AtomicUsize::new(0));
-        let detail_requests = Arc::new(Mutex::new(Vec::new()));
-        let mut source = Some(DetailSource {
-            snapshots: VecDeque::from([Ok(SAMPLE.to_string()), Ok(SAMPLE.to_string())]),
+        let (second_collect_started, second_collect_started_rx) = mpsc::channel();
+        let (release_second_collect, release_second_collect_rx) = mpsc::channel();
+        let mut source = Some(BlockingRefreshSource {
             collects: Arc::clone(&collects),
-            detail_requests,
-            network_requests: Arc::new(AtomicUsize::new(0)),
+            second_collect_started,
+            release_second_collect: release_second_collect_rx,
         });
         let (events_tx, events_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
@@ -105,8 +126,14 @@
             RemoteMonitorEvent::Update { .. }
         ));
         handle.refresh();
+        second_collect_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("第二次刷新应进入受控 collect");
         handle.refresh();
         handle.refresh();
+        release_second_collect
+            .send(())
+            .expect("应能释放第二次刷新");
         assert!(matches!(
             events_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             RemoteMonitorEvent::Update { .. }
