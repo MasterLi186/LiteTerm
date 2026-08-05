@@ -29,6 +29,7 @@ mod completion_popup;
 mod connections;
 mod drag_upload;
 mod file_browser;
+mod font_support;
 mod ime;
 mod keyring;
 mod monitor;

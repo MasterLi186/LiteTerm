@@ -670,6 +670,60 @@
     }
 
     #[test]
+    fn large_primary_transcript_defers_same_chunk_replies_until_alt_screen_is_entered() {
+        let (write_tx, write_rx) = test_transport_capture();
+        let mut terminal = TerminalState::new();
+        terminal.init_term(212, 48);
+        terminal.install_transport_writer(write_tx);
+        let mut parser = TestProcessor::new();
+
+        terminal.process_pty_output(&mut parser, &vec![b'x'; 128 * 1024]);
+        terminal.process_pty_output(
+            &mut parser,
+            b"\x1b[?1049h\x1b[c\x1b[1;212H\x1b[6n",
+        );
+
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[?6c");
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[1;212R");
+        assert!(matches!(write_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn deferred_reply_survives_alt_screen_enter_and_exit_in_one_chunk() {
+        let (write_tx, write_rx) = test_transport_capture();
+        let mut terminal = TerminalState::new();
+        terminal.init_term(212, 48);
+        terminal.install_transport_writer(write_tx);
+        let mut parser = TestProcessor::new();
+
+        terminal.process_pty_output(&mut parser, &vec![b'x'; 128 * 1024]);
+        terminal.process_pty_output(
+            &mut parser,
+            b"\x1b[?1049h\x1b[c\x1b[1;212H\x1b[6n\x1b[?1049l",
+        );
+
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[?6c");
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[1;212R");
+        assert!(matches!(write_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn deferred_reply_detects_an_alt_screen_sequence_split_across_chunks() {
+        let (write_tx, write_rx) = test_transport_capture();
+        let mut terminal = TerminalState::new();
+        terminal.init_term(212, 48);
+        terminal.install_transport_writer(write_tx);
+        let mut parser = TestProcessor::new();
+
+        terminal.process_pty_output(&mut parser, &vec![b'x'; 128 * 1024]);
+        terminal.process_pty_output(&mut parser, b"\x1b[?1049");
+        terminal.process_pty_output(&mut parser, b"h\x1b[c\x1b[?1049l");
+
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[?6c");
+        assert!(matches!(write_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    }
+
+    #[test]
     fn short_primary_screen_probe_still_supports_resize() {
         let (write_tx, write_rx) = test_transport_capture();
         let mut terminal = TerminalState::new();

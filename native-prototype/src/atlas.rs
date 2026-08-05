@@ -68,42 +68,49 @@ fn shape_glyph_with_italic_fallback(
     font_system: &mut FontSystem,
     request: GlyphShapeRequest<'_>,
 ) -> Option<PhysicalGlyph> {
-    let metrics = Metrics::new(request.font_size, request.cell_height);
-    let mut attrs = Attrs::new().family(cosmic_text::Family::Name(request.family));
-    if request.bold {
-        attrs = attrs.weight(Weight::BOLD);
-    }
+    let mut families = Vec::with_capacity(1 + crate::font_support::cjk_fallback_families().len());
+    families.push(request.family);
+    families.extend(
+        crate::font_support::cjk_fallback_families()
+            .iter()
+            .copied()
+            .filter(|family| *family != request.family),
+    );
 
-    if request.italic {
-        let real_italic = shape_once(
-            font_system,
-            metrics,
-            request.char_width * 2.0,
-            request.cell_height * 2.0,
-            request.ch,
-            attrs.style(Style::Italic),
-        );
-        if real_italic
-            .as_ref()
-            .is_some_and(|glyph| glyph.cache_key.glyph_id != 0)
-        {
-            return real_italic;
+    for family in families {
+        let mut attrs = Attrs::new().family(cosmic_text::Family::Name(family));
+        if request.bold {
+            attrs = attrs.weight(Weight::BOLD);
         }
+        let metrics = Metrics::new(request.font_size, request.cell_height);
+        let mut shape = |attrs| {
+            shape_once(
+                font_system,
+                metrics,
+                request.char_width * 2.0,
+                request.cell_height * 2.0,
+                request.ch,
+                attrs,
+            )
+            .filter(|glyph| glyph.cache_key.glyph_id != 0)
+        };
 
-        // Some fallback families (notably Noto CJK) have no Italic face.
-        // Shape with their real upright glyph, then let swash synthesize the slant.
-        attrs = attrs.cache_key_flags(CacheKeyFlags::FAKE_ITALIC);
+        if request.italic {
+            if let Some(glyph) = shape(attrs.style(Style::Italic)) {
+                return Some(glyph);
+            }
+
+            // Some fallback families (notably Noto CJK) have no Italic face.
+            // Shape with their real upright glyph, then let swash synthesize the slant.
+            if let Some(glyph) = shape(attrs.cache_key_flags(CacheKeyFlags::FAKE_ITALIC)) {
+                return Some(glyph);
+            }
+        } else if let Some(glyph) = shape(attrs) {
+            return Some(glyph);
+        }
     }
 
-    shape_once(
-        font_system,
-        metrics,
-        request.char_width * 2.0,
-        request.cell_height * 2.0,
-        request.ch,
-        attrs,
-    )
-    .filter(|glyph| glyph.cache_key.glyph_id != 0)
+    None
 }
 
 /// CPU 侧的字形纹理图集

@@ -75,6 +75,7 @@ pub enum TransportWrite {
 pub struct TerminalReplyRequest {
     bytes: Vec<u8>,
     deadline: Instant,
+    hard_deadline: Instant,
     cancelled: Arc<AtomicBool>,
     started: Arc<AtomicBool>,
     progressed: Arc<AtomicBool>,
@@ -83,7 +84,11 @@ pub struct TerminalReplyRequest {
 
 impl TerminalReplyRequest {
     pub(crate) fn begin(&self) -> bool {
-        if self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline {
+        self.begin_at(Instant::now())
+    }
+
+    pub(crate) fn begin_at(&self, now: Instant) -> bool {
+        if self.cancelled.load(Ordering::Acquire) || now >= self.deadline {
             return false;
         }
         self.started
@@ -96,8 +101,27 @@ impl TerminalReplyRequest {
     }
 
     pub(crate) fn may_continue(&self) -> bool {
-        self.progressed.load(Ordering::Acquire)
-            || (!self.cancelled.load(Ordering::Acquire) && Instant::now() < self.deadline)
+        self.may_continue_at(Instant::now())
+    }
+
+    pub(crate) fn may_continue_at(&self, now: Instant) -> bool {
+        if self.progressed.load(Ordering::Acquire) {
+            now < self.hard_deadline
+        } else {
+            !self.cancelled.load(Ordering::Acquire) && now < self.deadline
+        }
+    }
+
+    pub(crate) fn hard_deadline_expired_at(&self, now: Instant) -> bool {
+        self.progressed.load(Ordering::Acquire) && now >= self.hard_deadline
+    }
+
+    pub(crate) fn requires_transport_shutdown(&self) -> bool {
+        self.requires_transport_shutdown_at(Instant::now())
+    }
+
+    pub(crate) fn requires_transport_shutdown_at(&self, now: Instant) -> bool {
+        self.hard_deadline_expired_at(now)
     }
 
     pub(crate) fn mark_progress(&self) {
@@ -108,6 +132,45 @@ impl TerminalReplyRequest {
         let _ = self
             .completion
             .send(result.map_err(|error| error.to_string()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_deadlines_for_test(
+        bytes: &[u8],
+        deadline: Instant,
+        hard_deadline: Instant,
+    ) -> Self {
+        let (completion, _completed) = mpsc::channel();
+        Self {
+            bytes: bytes.to_vec(),
+            deadline,
+            hard_deadline,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            started: Arc::new(AtomicBool::new(false)),
+            progressed: Arc::new(AtomicBool::new(false)),
+            completion,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_deadlines_and_completion_for_test(
+        bytes: &[u8],
+        deadline: Instant,
+        hard_deadline: Instant,
+    ) -> (Self, mpsc::Receiver<WriteAck>) {
+        let (completion, completed) = mpsc::channel();
+        (
+            Self {
+                bytes: bytes.to_vec(),
+                deadline,
+                hard_deadline,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                started: Arc::new(AtomicBool::new(false)),
+                progressed: Arc::new(AtomicBool::new(false)),
+                completion,
+            },
+            completed,
+        )
     }
 }
 
@@ -279,11 +342,15 @@ impl TerminalReplyWriter {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "终端应答写超时无效"))?;
+        let hard_deadline = deadline
+            .checked_add(super::TERMINAL_REPLY_PARTIAL_WRITE_GRACE)
+            .unwrap_or(deadline);
         self.transport
             .sender
             .try_send(TransportWrite::TerminalReply(TerminalReplyRequest {
                 bytes: bytes.to_vec(),
                 deadline,
+                hard_deadline,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 started: Arc::new(AtomicBool::new(false)),
                 progressed: Arc::new(AtomicBool::new(false)),
@@ -307,9 +374,13 @@ impl TerminalReplyWriter {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "终端应答写超时无效"))?;
+        let hard_deadline = deadline
+            .checked_add(super::TERMINAL_REPLY_PARTIAL_WRITE_GRACE)
+            .unwrap_or(deadline);
         let mut message = TransportWrite::TerminalReply(TerminalReplyRequest {
             bytes: bytes.to_vec(),
             deadline,
+            hard_deadline,
             cancelled: Arc::clone(&cancelled),
             started: Arc::clone(&started),
             progressed,

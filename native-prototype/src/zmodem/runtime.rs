@@ -13,6 +13,10 @@ use super::ZmodemError;
 pub const TRANSPORT_WRITE_QUEUE_CAPACITY: usize = 32;
 pub const DEFAULT_PROTOCOL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_TERMINAL_REPLY_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+/// A partly emitted terminal control sequence must either finish promptly or
+/// tear down its byte stream; appending ordinary input after a truncated reply
+/// would corrupt the remote protocol state.
+pub const TERMINAL_REPLY_PARTIAL_WRITE_GRACE: Duration = Duration::from_secs(1);
 pub const READER_PUMP_CAPACITY: usize = 8;
 pub const READER_POLL_INTERVAL: Duration = Duration::from_millis(20);
 pub const ACTIVE_READER_POLL_INTERVAL: Duration = Duration::from_millis(1);

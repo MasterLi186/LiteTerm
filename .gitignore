@@ -11,3 +11,4 @@ src-tauri/gen
 credentials.enc
 passwords.toml
 /native-prototype/target/
+/native-prototype/dist/

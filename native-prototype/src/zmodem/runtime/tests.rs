@@ -129,31 +129,21 @@ fn queued_terminal_reply_that_times_out_never_starts() {
 }
 
 #[test]
-fn terminal_reply_may_expire_before_write_but_finishes_after_partial_progress() {
-    let gate = Arc::new(ProtocolGate::new());
-    let (transport, receiver) = transport_write_channel(gate);
-    let writer = TerminalReplyWriter::from_transport_writer(transport);
+fn terminal_reply_partial_progress_only_gets_a_finite_hard_deadline_grace() {
+    let now = Instant::now();
+    let request = TerminalReplyRequest::with_deadlines_for_test(
+        b"after-progress",
+        now - Duration::from_secs(2),
+        now - Duration::from_secs(1),
+    );
 
-    writer
-        .try_enqueue(b"before-progress", Duration::from_millis(5))
-        .unwrap();
-    let TransportWrite::TerminalReply(before_progress) = receiver.try_recv().unwrap() else {
-        panic!("expected typed terminal reply request");
-    };
-    assert!(before_progress.begin());
-    std::thread::sleep(Duration::from_millis(10));
-    assert!(!before_progress.may_continue());
+    request.mark_progress();
 
-    writer
-        .try_enqueue(b"after-progress", Duration::from_millis(5))
-        .unwrap();
-    let TransportWrite::TerminalReply(after_progress) = receiver.try_recv().unwrap() else {
-        panic!("expected typed terminal reply request");
-    };
-    assert!(after_progress.begin());
-    after_progress.mark_progress();
-    std::thread::sleep(Duration::from_millis(10));
-    assert!(after_progress.may_continue());
+    assert!(
+        !request.may_continue_at(now),
+        "partial progress must not keep a terminal reply alive forever"
+    );
+    assert!(request.hard_deadline_expired_at(now));
 }
 
 #[test]

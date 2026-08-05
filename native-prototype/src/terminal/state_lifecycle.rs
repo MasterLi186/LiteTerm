@@ -179,7 +179,9 @@ impl TerminalState {
         cmd.env("TERM", "xterm-256color");
         if let Some(runtime) = &local_bash_runtime {
             cmd.arg("--rcfile");
-            cmd.arg(runtime.rc_path());
+            cmd.arg(crate::bash_integration::bash_path_for_shell(
+                runtime.rc_path(),
+            ));
             cmd.arg("-i");
             #[cfg(test)]
             configure_isolated_test_bash_environment(&mut cmd, runtime);

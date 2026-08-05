@@ -209,23 +209,26 @@ impl App {
             egui_ctx: {
                 let ctx = egui::Context::default();
                 let mut fonts = egui::FontDefinitions::default();
-                if let Ok(font_data) =
-                    std::fs::read("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
-                {
-                    fonts.font_data.insert(
-                        "noto_cjk".to_owned(),
-                        egui::FontData::from_owned(font_data).into(),
-                    );
-                    fonts
-                        .families
-                        .entry(egui::FontFamily::Proportional)
-                        .or_default()
-                        .push("noto_cjk".to_owned());
-                    fonts
-                        .families
-                        .entry(egui::FontFamily::Monospace)
-                        .or_default()
-                        .push("noto_cjk".to_owned());
+                if let Some(font_path) = crate::font_support::find_cjk_font() {
+                    if let Ok(font_data) = std::fs::read(&font_path) {
+                        fonts.font_data.insert(
+                            "liteterm_cjk".to_owned(),
+                            egui::FontData::from_owned(font_data).into(),
+                        );
+                        fonts
+                            .families
+                            .entry(egui::FontFamily::Proportional)
+                            .or_default()
+                            .push("liteterm_cjk".to_owned());
+                        fonts
+                            .families
+                            .entry(egui::FontFamily::Monospace)
+                            .or_default()
+                            .push("liteterm_cjk".to_owned());
+                        log::debug!("加载 CJK UI 字体：{}", font_path.display());
+                    } else {
+                        log::debug!("读取 CJK UI 字体失败：{}", font_path.display());
+                    }
                 }
                 ctx.set_fonts(fonts);
                 ctx

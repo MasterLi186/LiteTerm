@@ -304,6 +304,7 @@ impl TerminalState {
             // Replies generated before the transport existed are no longer timely. Sending them
             // after attachment would inject stale control bytes into the new session.
             sink.discard_pending();
+            sink.discard_deferred();
             sink.writer = Some(
                 crate::zmodem::runtime::TerminalReplyWriter::from_transport_writer(writer.clone()),
             );
@@ -359,6 +360,35 @@ impl TerminalState {
 
         if let Some(sink) = &self.terminal_reply_sink {
             sink.lock().unwrap().allowed = allowed;
+        }
+    }
+
+    pub(super) fn begin_terminal_reply_batch(&self) {
+        if let Some(sink) = &self.terminal_reply_sink {
+            sink.lock().unwrap().begin_deferred_batch();
+        }
+    }
+
+    pub(super) fn observe_terminal_reply_input(&self, data: &[u8]) {
+        if let Some(sink) = &self.terminal_reply_sink {
+            sink.lock().unwrap().observe_input(data);
+        }
+    }
+
+    pub(super) fn finish_terminal_reply_batch(&self) {
+        self.refresh_terminal_reply_policy();
+        let alternate_screen = self
+            .term
+            .as_ref()
+            .is_some_and(|term| term.mode().contains(TermMode::ALT_SCREEN));
+        let deferred = self
+            .terminal_reply_sink
+            .as_ref()
+            .and_then(|sink| sink.lock().unwrap().finish_deferred_batch(alternate_screen));
+        if let Some((writer, replies)) = deferred {
+            for reply in replies {
+                super::enqueue_terminal_reply(&writer, &reply);
+            }
         }
     }
 

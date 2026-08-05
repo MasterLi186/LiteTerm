@@ -513,6 +513,20 @@ struct PendingChannelWrite {
     started: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingWritePreparation {
+    NoPending,
+    Ready,
+    DiscardExpired,
+    CloseConnection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompletedWriteDisposition {
+    Continue,
+    CloseConnection,
+}
+
 impl PendingChannelWrite {
     fn from_transport(message: crate::zmodem::runtime::TransportWrite) -> Self {
         match message {
@@ -543,7 +557,7 @@ impl PendingChannelWrite {
         }
     }
 
-    fn begin(&mut self) -> bool {
+    fn begin_at(&mut self, now: Instant) -> bool {
         if self.started {
             return true;
         }
@@ -554,24 +568,30 @@ impl PendingChannelWrite {
             || self
                 .terminal_reply
                 .as_ref()
-                .is_some_and(|request| request.begin());
+                .is_some_and(|request| request.begin_at(now));
         self.started
     }
 
-    fn may_continue(&self) -> bool {
+    fn may_continue_at(&self, now: Instant) -> bool {
         self.protocol
             .as_ref()
             .is_none_or(|request| request.may_continue())
             && self
                 .terminal_reply
                 .as_ref()
-                .is_none_or(|request| request.may_continue())
+                .is_none_or(|request| request.may_continue_at(now))
     }
 
     fn mark_progress(&self) {
         if let Some(terminal_reply) = &self.terminal_reply {
             terminal_reply.mark_progress();
         }
+    }
+
+    fn requires_transport_shutdown_at(&self, now: Instant) -> bool {
+        self.terminal_reply
+            .as_ref()
+            .is_some_and(|request| request.requires_transport_shutdown_at(now))
     }
 
     fn complete(self, result: std::io::Result<()>) {
@@ -584,6 +604,51 @@ impl PendingChannelWrite {
 
     fn is_normal(&self) -> bool {
         self.normal_epoch.is_some()
+    }
+}
+
+fn prepare_front_write(
+    writes: &mut VecDeque<PendingChannelWrite>,
+    now: Instant,
+) -> PendingWritePreparation {
+    let Some(pending) = writes.front_mut() else {
+        return PendingWritePreparation::NoPending;
+    };
+    if pending.begin_at(now) && pending.may_continue_at(now) {
+        return PendingWritePreparation::Ready;
+    }
+
+    let expired = writes.pop_front().expect("queue front was checked");
+    let hard_expired = expired.requires_transport_shutdown_at(now);
+    expired.complete(Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        if hard_expired {
+            "SSH 终端应答部分写入后超过硬截止时间，关闭连接以避免字节流损坏"
+        } else {
+            "协议写请求在 SSH 写入前已取消或超时"
+        },
+    )));
+    if hard_expired {
+        PendingWritePreparation::CloseConnection
+    } else {
+        PendingWritePreparation::DiscardExpired
+    }
+}
+
+fn complete_front_write(
+    writes: &mut VecDeque<PendingChannelWrite>,
+    now: Instant,
+) -> CompletedWriteDisposition {
+    let completed = writes.pop_front().expect("queue front was completed");
+    if completed.requires_transport_shutdown_at(now) {
+        completed.complete(Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "SSH 终端应答完成时超过硬截止时间，关闭连接以避免字节流损坏",
+        )));
+        CompletedWriteDisposition::CloseConnection
+    } else {
+        completed.complete(Ok(()));
+        CompletedWriteDisposition::Continue
     }
 }
 
@@ -714,7 +779,7 @@ pub fn connect(
                 }
             }
 
-            if let Some(pending) = writes.front_mut() {
+            if let Some(pending) = writes.front() {
                 if pending.is_normal()
                     && (protocol_active.is_active()
                         || pending.normal_epoch != Some(protocol_active.epoch()))
@@ -722,18 +787,24 @@ pub fn connect(
                     writes.pop_front();
                     continue;
                 }
-                if !pending.begin() || !pending.may_continue() {
-                    let expired = writes.pop_front().unwrap();
-                    expired.complete(Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "协议写请求在 SSH 写入前已取消或超时",
-                    )));
-                    continue;
+            }
+            match prepare_front_write(&mut writes, Instant::now()) {
+                PendingWritePreparation::NoPending | PendingWritePreparation::Ready => {}
+                PendingWritePreparation::DiscardExpired => continue,
+                PendingWritePreparation::CloseConnection => {
+                    failure = Some("SSH 终端应答部分写入后超过硬截止时间，连接已关闭".into());
+                    break;
                 }
+            }
+            if let Some(pending) = writes.front_mut() {
                 match write_channel_once(&mut channel, pending) {
                     Ok(true) => {
-                        let completed = writes.pop_front().unwrap();
-                        completed.complete(Ok(()));
+                        if complete_front_write(&mut writes, Instant::now())
+                            == CompletedWriteDisposition::CloseConnection
+                        {
+                            failure = Some("SSH 终端应答完成时超过硬截止时间，连接已关闭".into());
+                            break;
+                        }
                     }
                     Ok(false) => {}
                     Err(error) => {

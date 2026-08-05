@@ -370,13 +370,27 @@ fn drain_writes(
                         }
                     }
                 }
-                if result.is_ok() && request.may_continue() {
-                    result = writer.flush();
+                if result.is_ok() {
+                    if request.may_continue() {
+                        result = writer.flush();
+                        if result.is_ok() && !request.may_continue() {
+                            result = Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "串口终端应答 flush 后超过硬截止时间",
+                            ));
+                        }
+                    } else {
+                        result = Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "串口终端应答在完成前超过硬截止时间",
+                        ));
+                    }
                 }
                 let failed = result.is_err()
-                    && result
-                        .as_ref()
-                        .is_err_and(|error| error.kind() != io::ErrorKind::TimedOut);
+                    && (request.requires_transport_shutdown()
+                        || result
+                            .as_ref()
+                            .is_err_and(|error| error.kind() != io::ErrorKind::TimedOut));
                 request.complete(result);
                 if failed {
                     return Err(io::Error::new(

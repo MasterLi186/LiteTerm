@@ -27,8 +27,9 @@ pub(crate) fn validate_candidate_bytes(bytes: &[u8]) -> Result<(), String> {
 
 pub fn is_bash_path(path: &str) -> bool {
     Path::new(path)
-        .file_name()
-        .is_some_and(|name| name == "bash")
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("bash"))
 }
 
 pub fn is_safe_remote_bash_path(path: &str) -> bool {
@@ -38,6 +39,26 @@ pub fn is_safe_remote_bash_path(path: &str) -> bool {
             .chars()
             .any(|character| character.is_control() || matches!(character, '\'' | '"'))
         && is_bash_path(path)
+}
+
+/// Convert a native path to the POSIX spelling understood by Git Bash/MSYS.
+/// Unix shells keep the original path unchanged.
+pub fn bash_path_for_shell(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        let bytes = raw.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' {
+            let drive = raw[..1].to_ascii_lowercase();
+            let rest = raw[2..].replace('\\', "/");
+            return format!("/{drive}{rest}");
+        }
+        return raw.replace('\\', "/");
+    }
+    #[cfg(not(windows))]
+    {
+        raw.into_owned()
+    }
 }
 
 fn sequence_number(session: &CompletionSessionKey) -> u32 {
@@ -70,7 +91,7 @@ pub fn build_bash_rc(
     fill_sequence: &str,
     snapshot_sequence: &str,
 ) -> String {
-    let candidate = shell_single_quote(&candidate_path.to_string_lossy());
+    let candidate = shell_single_quote(&bash_path_for_shell(candidate_path));
     let fill_key = readline_literal(fill_sequence);
     let snapshot_key = readline_literal(snapshot_sequence);
     let token = session.token();

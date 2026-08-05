@@ -795,6 +795,33 @@ fn draw_serial_row(ui: &mut egui::Ui, port: &crate::serial::SerialPortInfo) -> e
 }
 
 fn shell_display_name(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let stem = path
+            .file_stem()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if stem.eq_ignore_ascii_case("bash")
+            && path.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("git")
+            })
+        {
+            return "Git Bash".to_owned();
+        }
+        if stem.eq_ignore_ascii_case("pwsh") {
+            return "PowerShell 7".to_owned();
+        }
+        if stem.eq_ignore_ascii_case("powershell") {
+            return "Windows PowerShell".to_owned();
+        }
+        if stem.eq_ignore_ascii_case("cmd") {
+            return "命令提示符".to_owned();
+        }
+    }
+
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
@@ -938,6 +965,11 @@ where
 }
 
 fn load_shell_candidates() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        return crate::terminal::local_shell_paths();
+    }
+
     let contents = std::fs::read_to_string(SHELLS_FILE).ok();
     let default_shell = crate::terminal::default_shell_path();
     shell_candidates_with_fallback(

@@ -226,7 +226,9 @@ impl TerminalState {
         }
         self.writer = None;
         if let Some(sink) = &self.terminal_reply_sink {
-            sink.lock().unwrap().writer = None;
+            let mut sink = sink.lock().unwrap();
+            sink.writer = None;
+            sink.discard_deferred();
         }
         self.zmodem_protocol_writer = None;
         self.zmodem_input_gate.deactivate();
@@ -292,6 +294,8 @@ impl TerminalState {
                 .saturating_add(data.len());
         }
         self.refresh_terminal_reply_policy();
+        self.begin_terminal_reply_batch();
+        self.observe_terminal_reply_input(data);
         let boundaries = match &mut self.prompt_tracking {
             Some(tracking) => tracking.decoder.scan(data),
             None => {
@@ -299,6 +303,7 @@ impl TerminalState {
                     parser.advance(term, data);
                 }
                 self.prune_invalid_selection();
+                self.finish_terminal_reply_batch();
                 return Vec::new();
             }
         };
@@ -361,6 +366,7 @@ impl TerminalState {
         }
         self.prune_invalid_selection();
         self.invalidate_ambiguous_prompt();
+        self.finish_terminal_reply_batch();
         events
     }
 

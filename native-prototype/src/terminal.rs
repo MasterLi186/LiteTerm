@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -45,16 +46,112 @@ impl From<TerminalSelectionKind> for SelectionType {
 pub(crate) fn default_shell_path() -> String {
     #[cfg(windows)]
     {
-        std::env::var("COMSPEC").unwrap_or_else(|_| {
-            std::env::var("SystemRoot")
-                .map(|root| format!(r"{root}\System32\cmd.exe"))
-                .unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_string())
-        })
+        local_shell_paths()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                std::env::var_os("SystemRoot")
+                    .map(PathBuf::from)
+                    .map(|root| root.join("System32/cmd.exe"))
+                    .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"))
+            })
+            .to_string_lossy()
+            .into_owned()
     }
     #[cfg(not(windows))]
     {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
     }
+}
+
+/// Return usable local shells in preference order. Windows installations may
+/// have multiple interactive shells, so Git Bash is preferred, followed by
+/// PowerShell 7, Windows PowerShell and finally cmd.exe.
+pub(crate) fn local_shell_paths() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut shells = Vec::new();
+        let mut add = |path: PathBuf| {
+            if !path.is_file() {
+                return;
+            }
+            let key = path.to_string_lossy().to_ascii_lowercase();
+            if shells
+                .iter()
+                .all(|existing: &PathBuf| existing.to_string_lossy().to_ascii_lowercase() != key)
+            {
+                shells.push(path);
+            }
+        };
+
+        let mut git_bash = Vec::new();
+        for variable in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(root) = std::env::var_os(variable).map(PathBuf::from) {
+                git_bash.push(root.join("Git/bin/bash.exe"));
+                git_bash.push(root.join("Git/usr/bin/bash.exe"));
+            }
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            git_bash.push(local_app_data.join("Programs/Git/bin/bash.exe"));
+        }
+        if let Some(git) = find_windows_executable("git.exe") {
+            if let Some(git_root) = git.parent().and_then(|path| path.parent()) {
+                git_bash.push(git_root.join("bin/bash.exe"));
+                git_bash.push(git_root.join("usr/bin/bash.exe"));
+            }
+        }
+        if let Some(path) = find_windows_executable("bash.exe") {
+            if path.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("git")
+            }) {
+                git_bash.push(path);
+            }
+        }
+        for path in git_bash {
+            add(path);
+        }
+
+        if let Some(path) = find_windows_executable("pwsh.exe") {
+            add(path);
+        }
+        if let Some(root) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
+            add(root.join("PowerShell/7/pwsh.exe"));
+        }
+        if let Some(root) = std::env::var_os("SystemRoot").map(PathBuf::from) {
+            add(root.join("System32/WindowsPowerShell/v1.0/powershell.exe"));
+        }
+        if let Some(path) = find_windows_executable("powershell.exe") {
+            add(path);
+        }
+
+        if let Some(path) = std::env::var_os("COMSPEC").map(PathBuf::from) {
+            add(path);
+        }
+        if let Some(root) = std::env::var_os("SystemRoot").map(PathBuf::from) {
+            add(root.join("System32/cmd.exe"));
+        }
+
+        return shells;
+    }
+
+    #[cfg(not(windows))]
+    {
+        vec![PathBuf::from(
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+        )]
+    }
+}
+
+#[cfg(windows)]
+fn find_windows_executable(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file())
 }
 
 struct TermDimensions {
@@ -82,10 +179,78 @@ pub struct Listener {
 const MAX_PENDING_TERMINAL_REPLIES: usize = 32;
 const MAX_PENDING_TERMINAL_REPLY_BYTES: usize = 4 * 1024;
 
+#[derive(Default)]
+enum AltScreenSequenceState {
+    #[default]
+    Ground,
+    Escape,
+    Csi(Vec<u8>),
+    String,
+    StringEscape,
+}
+
+impl AltScreenSequenceState {
+    fn is_alt_screen_enable(params: &[u8]) -> bool {
+        params
+            .strip_prefix(b"?")
+            .unwrap_or(params)
+            .split(|byte| *byte == b';')
+            .any(|parameter| matches!(parameter, b"47" | b"1047" | b"1049"))
+    }
+
+    fn advance(self, byte: u8, alt_screen_seen: &mut bool) -> Self {
+        match self {
+            Self::Ground => match byte {
+                0x1b => Self::Escape,
+                0x9b => Self::Csi(Vec::new()),
+                0x9d | 0x90 | 0x98 | 0x9e | 0x9f => Self::String,
+                _ => Self::Ground,
+            },
+            Self::Escape => match byte {
+                b'[' => Self::Csi(Vec::new()),
+                b']' | b'P' | b'X' | b'^' | b'_' => Self::String,
+                b'\x1b' => Self::Escape,
+                0x9b => Self::Csi(Vec::new()),
+                _ => Self::Ground,
+            },
+            Self::Csi(mut params) => {
+                if (0x40..=0x7e).contains(&byte) {
+                    if byte == b'h' && Self::is_alt_screen_enable(&params) {
+                        *alt_screen_seen = true;
+                    }
+                    Self::Ground
+                } else if byte == 0x1b {
+                    Self::Escape
+                } else {
+                    if params.len() < 64 {
+                        params.push(byte);
+                    }
+                    Self::Csi(params)
+                }
+            }
+            Self::String => match byte {
+                b'\x07' | 0x9c => Self::Ground,
+                0x1b => Self::StringEscape,
+                _ => Self::String,
+            },
+            Self::StringEscape => match byte {
+                b'\\' | 0x9c => Self::Ground,
+                0x1b => Self::StringEscape,
+                _ => Self::String,
+            },
+        }
+    }
+}
+
 struct TerminalReplySink {
     writer: Option<crate::zmodem::runtime::TerminalReplyWriter>,
     pending: Vec<String>,
     pending_bytes: usize,
+    deferred: Vec<String>,
+    deferred_bytes: usize,
+    defer_disallowed: bool,
+    deferred_alt_screen: bool,
+    alt_screen_sequence_state: AltScreenSequenceState,
     allowed: bool,
 }
 
@@ -95,6 +260,11 @@ impl Default for TerminalReplySink {
             writer: None,
             pending: Vec::new(),
             pending_bytes: 0,
+            deferred: Vec::new(),
+            deferred_bytes: 0,
+            defer_disallowed: false,
+            deferred_alt_screen: false,
+            alt_screen_sequence_state: AltScreenSequenceState::default(),
             allowed: true,
         }
     }
@@ -116,6 +286,54 @@ impl TerminalReplySink {
         self.pending_bytes = 0;
     }
 
+    fn discard_deferred(&mut self) {
+        self.deferred.clear();
+        self.deferred_bytes = 0;
+        self.defer_disallowed = false;
+        self.deferred_alt_screen = false;
+        self.alt_screen_sequence_state = AltScreenSequenceState::default();
+    }
+
+    fn begin_deferred_batch(&mut self) {
+        self.defer_disallowed = true;
+        self.deferred.clear();
+        self.deferred_bytes = 0;
+        self.deferred_alt_screen = false;
+    }
+
+    fn observe_input(&mut self, data: &[u8]) {
+        for &byte in data {
+            let state = std::mem::take(&mut self.alt_screen_sequence_state);
+            self.alt_screen_sequence_state = state.advance(byte, &mut self.deferred_alt_screen);
+        }
+    }
+
+    fn push_deferred(&mut self, text: String) {
+        if self.deferred.len() >= MAX_PENDING_TERMINAL_REPLIES
+            || self.deferred_bytes.saturating_add(text.len()) > MAX_PENDING_TERMINAL_REPLY_BYTES
+        {
+            return;
+        }
+        self.deferred_bytes += text.len();
+        self.deferred.push(text);
+    }
+
+    fn finish_deferred_batch(
+        &mut self,
+        allow: bool,
+    ) -> Option<(crate::zmodem::runtime::TerminalReplyWriter, Vec<String>)> {
+        self.defer_disallowed = false;
+        self.deferred_bytes = 0;
+        let allow = allow || self.deferred_alt_screen;
+        self.deferred_alt_screen = false;
+        if !allow {
+            self.deferred.clear();
+            return None;
+        }
+        let replies = std::mem::take(&mut self.deferred);
+        self.writer.clone().map(|writer| (writer, replies))
+    }
+
     fn take_pending(&mut self) -> Vec<String> {
         self.pending_bytes = 0;
         std::mem::take(&mut self.pending)
@@ -128,6 +346,10 @@ impl EventListener for Listener {
             let writer = {
                 let mut sink = self.terminal_reply_sink.lock().unwrap();
                 if !sink.allowed {
+                    if sink.defer_disallowed {
+                        sink.push_deferred(text);
+                        return;
+                    }
                     log::debug!("忽略 canonical PTY 输出中的终端协议查询");
                     return;
                 }
@@ -137,16 +359,20 @@ impl EventListener for Listener {
                 };
                 writer
             };
-            if let Err(error) = writer.try_enqueue(
-                text.as_bytes(),
-                crate::zmodem::runtime::DEFAULT_TERMINAL_REPLY_WRITE_TIMEOUT,
-            ) {
-                if error.kind() == std::io::ErrorKind::WouldBlock {
-                    log::debug!("终端协议应答队列已满，丢弃过载应答");
-                } else {
-                    log::warn!("终端协议应答写回失败: {error}");
-                }
-            }
+            enqueue_terminal_reply(&writer, &text);
+        }
+    }
+}
+
+fn enqueue_terminal_reply(writer: &crate::zmodem::runtime::TerminalReplyWriter, text: &str) {
+    if let Err(error) = writer.try_enqueue(
+        text.as_bytes(),
+        crate::zmodem::runtime::DEFAULT_TERMINAL_REPLY_WRITE_TIMEOUT,
+    ) {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            log::debug!("终端协议应答队列已满，丢弃过载应答");
+        } else {
+            log::warn!("终端协议应答写回失败: {error}");
         }
     }
 }
@@ -261,13 +487,27 @@ fn spawn_writer_worker_with_protocol(
                             }
                         }
                     }
-                    if result.is_ok() && request.may_continue() {
-                        result = writer.flush();
+                    if result.is_ok() {
+                        if request.may_continue() {
+                            result = writer.flush();
+                            if result.is_ok() && !request.may_continue() {
+                                result = Err(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    "终端应答 flush 后超过硬截止时间",
+                                ));
+                            }
+                        } else {
+                            result = Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "终端应答在完成前超过硬截止时间",
+                            ));
+                        }
                     }
                     let failed = result.is_err()
-                        && result
-                            .as_ref()
-                            .is_err_and(|error| error.kind() != std::io::ErrorKind::TimedOut);
+                        && (request.requires_transport_shutdown()
+                            || result
+                                .as_ref()
+                                .is_err_and(|error| error.kind() != std::io::ErrorKind::TimedOut));
                     request.complete(result);
                     if failed {
                         break;

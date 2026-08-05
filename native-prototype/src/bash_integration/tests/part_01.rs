@@ -181,7 +181,7 @@ printf '%s\\n%s\\n%s\\n%s\\n' \"$HOME\" \"$HISTFILE\" \"$INPUTRC\" \"$BASH_ENV\"
         assert!(is_bash_path("/usr/local/bin/bash"));
         assert!(!is_bash_path("/bin/sh"));
         assert!(is_bash_path("/tmp/bash/"));
-        assert!(!is_bash_path("bash.exe"));
+        assert!(is_bash_path("bash.exe"));
     }
 
     #[test]

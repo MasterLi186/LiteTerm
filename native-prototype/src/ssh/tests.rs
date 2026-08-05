@@ -1,12 +1,14 @@
 use super::{
-    bootstrap_shell, cleanup_targets, configure_tcp_timeouts, connect, connect_resolved,
-    connect_resolved_with_clock, read_probe_shell, resolve_ssh_addresses, shutdown_requested,
-    with_temporary_ssh_timeout, write_channel_once, ConnectionParams, PendingChannelWrite,
+    bootstrap_shell, cleanup_targets, complete_front_write, configure_tcp_timeouts, connect,
+    connect_resolved, connect_resolved_with_clock, prepare_front_write, read_probe_shell,
+    resolve_ssh_addresses, shutdown_requested, with_temporary_ssh_timeout, write_channel_once,
+    CompletedWriteDisposition, ConnectionParams, PendingChannelWrite, PendingWritePreparation,
     SessionTimeoutControl, ShellBootstrap, SshHandle,
 };
 use crate::bash_integration::RemoteBashRuntime;
 use crate::sidebar::SshConnection;
 use crate::smart_completion::CompletionSessionKey;
+use std::collections::VecDeque;
 
 #[test]
 fn resolver_accepts_bare_ipv6_host() {
@@ -499,12 +501,113 @@ fn ssh_terminal_reply_ack_follows_channel_write_and_flush() {
         calls: 0,
     };
 
-    assert!(pending.begin());
+    assert!(pending.begin_at(std::time::Instant::now()));
     while !write_channel_once(&mut writer, &mut pending).unwrap() {}
     pending.complete(Ok(()));
 
     reply.join().unwrap().unwrap();
     assert_eq!(writer.output, b"\x1b[1;212R");
+}
+
+#[test]
+fn ssh_hard_expired_partial_terminal_reply_closes_before_tail_normal_input() {
+    let now = std::time::Instant::now();
+    let started_at = now - std::time::Duration::from_secs(3);
+    let (terminal_reply, completion) =
+        crate::zmodem::runtime::TerminalReplyRequest::with_deadlines_and_completion_for_test(
+            b"\x1b[1;212R",
+            started_at + std::time::Duration::from_secs(1),
+            started_at + std::time::Duration::from_secs(2),
+        );
+    assert!(terminal_reply.begin_at(started_at));
+    terminal_reply.mark_progress();
+    let head = PendingChannelWrite {
+        bytes: terminal_reply.bytes().to_vec(),
+        offset: 2,
+        protocol: None,
+        terminal_reply: Some(terminal_reply),
+        normal_epoch: None,
+        started: true,
+    };
+    let tail =
+        PendingChannelWrite::from_transport(crate::zmodem::runtime::TransportWrite::Normal {
+            bytes: b"ordinary-input".to_vec(),
+            epoch: 0,
+        });
+    let mut writes = VecDeque::from([head, tail]);
+
+    assert_eq!(
+        prepare_front_write(&mut writes, now),
+        PendingWritePreparation::CloseConnection
+    );
+    assert_eq!(writes.len(), 1, "only the expired queue head is removed");
+    assert_eq!(writes.front().unwrap().bytes, b"ordinary-input");
+    assert!(completion.try_recv().unwrap().is_err());
+}
+
+#[test]
+fn ssh_soft_expired_terminal_reply_is_discarded_without_closing_the_tail() {
+    let now = std::time::Instant::now();
+    let (terminal_reply, completion) =
+        crate::zmodem::runtime::TerminalReplyRequest::with_deadlines_and_completion_for_test(
+            b"\x1b[1;212R",
+            now - std::time::Duration::from_secs(1),
+            now + std::time::Duration::from_secs(1),
+        );
+    let head = PendingChannelWrite::from_transport(
+        crate::zmodem::runtime::TransportWrite::TerminalReply(terminal_reply),
+    );
+    let tail =
+        PendingChannelWrite::from_transport(crate::zmodem::runtime::TransportWrite::Normal {
+            bytes: b"ordinary-input".to_vec(),
+            epoch: 0,
+        });
+    let mut writes = VecDeque::from([head, tail]);
+
+    assert_eq!(
+        prepare_front_write(&mut writes, now),
+        PendingWritePreparation::DiscardExpired
+    );
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes.front().unwrap().bytes, b"ordinary-input");
+    assert!(completion.try_recv().unwrap().is_err());
+}
+
+#[test]
+fn ssh_successful_reply_write_that_crosses_hard_deadline_closes_before_tail_input() {
+    let began_at = std::time::Instant::now();
+    let (terminal_reply, completion) =
+        crate::zmodem::runtime::TerminalReplyRequest::with_deadlines_and_completion_for_test(
+            b"\x1b[1;212R",
+            began_at + std::time::Duration::from_secs(1),
+            began_at + std::time::Duration::from_secs(2),
+        );
+    assert!(terminal_reply.begin_at(began_at));
+    terminal_reply.mark_progress();
+    let head = PendingChannelWrite {
+        bytes: terminal_reply.bytes().to_vec(),
+        offset: 0,
+        protocol: None,
+        terminal_reply: Some(terminal_reply),
+        normal_epoch: None,
+        started: true,
+    };
+    let tail =
+        PendingChannelWrite::from_transport(crate::zmodem::runtime::TransportWrite::Normal {
+            bytes: b"ordinary-input".to_vec(),
+            epoch: 0,
+        });
+    let mut writes = VecDeque::from([head, tail]);
+    let mut writer = std::io::Cursor::new(Vec::new());
+
+    assert!(write_channel_once(&mut writer, writes.front_mut().unwrap()).unwrap());
+    assert_eq!(
+        complete_front_write(&mut writes, began_at + std::time::Duration::from_secs(3),),
+        CompletedWriteDisposition::CloseConnection
+    );
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes.front().unwrap().bytes, b"ordinary-input");
+    assert!(completion.try_recv().unwrap().is_err());
 }
 
 #[test]

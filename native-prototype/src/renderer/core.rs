@@ -48,9 +48,22 @@ pub struct Renderer {
     pub viewport_height: f32,
 }
 
+fn new_font_system() -> FontSystem {
+    let mut font_system = FontSystem::new();
+    if !crate::font_support::database_has_known_cjk_family(font_system.db()) {
+        if let Some(path) = crate::font_support::find_cjk_font() {
+            match font_system.db_mut().load_font_file(&path) {
+                Ok(()) => log::debug!("为终端回退加载 CJK 字体：{}", path.display()),
+                Err(error) => log::debug!("加载终端 CJK 回退字体失败 {}: {error}", path.display()),
+            }
+        }
+    }
+    font_system
+}
+
 impl Renderer {
     pub fn new(gpu: &GpuState) -> Self {
-        let mut font_system = FontSystem::new();
+        let mut font_system = new_font_system();
         let mut swash_cache = SwashCache::new();
         let atlas = GlyphAtlas::new(&mut font_system, &mut swash_cache, BOOTSTRAP_FONT_SIZE);
 
@@ -273,7 +286,7 @@ impl Renderer {
 
     /// 实时切换字体：重建 CPU 字体状态并清空 atlas（同尺寸纹理原地覆盖），不重建 pipeline/主题。
     pub fn set_font(&mut self, gpu: &GpuState, family: &str, size: f32) {
-        self.font_system = FontSystem::new();
+        self.font_system = new_font_system();
         self.swash_cache = SwashCache::new();
         self.atlas.reset(family, size);
         // 立即上传已清零的 atlas，避免切换后一帧残留旧字形
