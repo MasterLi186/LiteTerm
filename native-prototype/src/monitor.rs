@@ -847,16 +847,38 @@ fn platform_default_interface() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn platform_default_interface() -> Option<String> {
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1 -ExpandProperty InterfaceAlias",
-        ])
-        .output()
-        .ok()?;
-    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!name.is_empty()).then_some(name)
+    // Query the active route through IP Helper instead of launching PowerShell on
+    // every monitor refresh.  Spawning a shell here creates a visible console
+    // window on some Windows configurations and needlessly churns short-lived
+    // powershell.exe processes.
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetBestInterface, GetIfEntry2, MIB_IF_ROW2,
+    };
+
+    let mut interface_index = 0u32;
+    // 8.8.8.8 follows the default route while avoiding the loopback route that
+    // an unspecified destination (0.0.0.0) can select on some systems.
+    let route_status = unsafe { GetBestInterface(0x0808_0808, &mut interface_index) };
+    if route_status != 0 || interface_index == 0 {
+        return None;
+    }
+
+    let mut row = MIB_IF_ROW2::default();
+    row.InterfaceIndex = interface_index;
+    let entry_status = unsafe { GetIfEntry2(&mut row) };
+    if entry_status != 0 {
+        return None;
+    }
+
+    let length = row
+        .Alias
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(row.Alias.len());
+    String::from_utf16(&row.Alias[..length])
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

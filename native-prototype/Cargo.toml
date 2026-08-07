@@ -80,3 +80,9 @@ axum = "0.8"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tower = { version = "0.5", features = ["limit", "util"] }
 subtle = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+] }
