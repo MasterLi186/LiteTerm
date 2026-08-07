@@ -175,6 +175,21 @@ struct DiskRowColors {
     capacity: egui::Color32,
 }
 
+/// Return the memory value used by the compact sidebar process list.
+///
+/// Windows Task Manager's process list reports the resident working set, while the full
+/// process manager keeps the private-commit value as its application-memory diagnostic. Use
+/// the working set only in the sidebar so its number can be compared directly with Task Manager.
+#[cfg(target_os = "windows")]
+fn sidebar_process_memory(process: &crate::monitor::ProcessInfo) -> (&str, u64) {
+    (&process.resident_mem_mb, process.resident_mem_bytes)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sidebar_process_memory(process: &crate::monitor::ProcessInfo) -> (&str, u64) {
+    (&process.mem_mb, process.mem_bytes)
+}
+
 fn sidebar_card_inner_width(card_width: f32, margin: f32) -> f32 {
     (card_width - margin * 2.0).max(0.0)
 }

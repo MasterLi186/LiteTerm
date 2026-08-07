@@ -473,7 +473,11 @@ impl Sidebar {
         if !mon.processes.is_empty() {
             let mut sorted = mon.processes.clone();
             match *process_tab {
-                0 => sorted.sort_by(|a, b| b.mem_bytes.cmp(&a.mem_bytes)),
+                0 => sorted.sort_by(|a, b| {
+                    sidebar_process_memory(b)
+                        .1
+                        .cmp(&sidebar_process_memory(a).1)
+                }),
                 2 => sorted.sort_by(|a, b| a.name.cmp(&b.name)),
                 _ => sorted.sort_by(|a, b| {
                     b.cpu
@@ -548,10 +552,11 @@ impl Sidebar {
                         egui::Color32::TRANSPARENT
                     };
                     ui.painter().rect_filled(row_rect, 0.0, row_bg);
+                    let (memory_text, _) = sidebar_process_memory(p);
                     render_process_row_content(
                         ui,
                         row_rect,
-                        &p.mem_mb,
+                        memory_text,
                         p.cpu,
                         &p.name,
                         section_color,
