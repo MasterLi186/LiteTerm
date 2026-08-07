@@ -356,7 +356,10 @@ impl SettingsPanel {
                         ui.add(
                             egui::TextEdit::singleline(&mut self.draft.font_family)
                                 .desired_width(280.0)
-                                .hint_text("例如 Ubuntu Mono"),
+                                .hint_text(format!(
+                                    "例如 {}",
+                                    crate::settings::DEFAULT_TERMINAL_FONT_FAMILY
+                                )),
                         );
                         ui.end_row();
 

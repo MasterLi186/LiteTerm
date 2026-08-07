@@ -891,7 +891,10 @@ fn font_family_picker(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
             ui.add_sized(
                 [ui.available_width(), 34.0],
                 egui::TextEdit::singleline(&mut panel.draft.font_family)
-                    .hint_text("例如 Ubuntu Mono")
+                    .hint_text(format!(
+                        "例如 {}",
+                        crate::settings::DEFAULT_TERMINAL_FONT_FAMILY
+                    ))
                     .vertical_align(egui::Align::Center)
                     .margin(egui::Margin::symmetric(9, 6)),
             );

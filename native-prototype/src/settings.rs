@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::shortcuts::ShortcutSettings;
 
+#[cfg(target_os = "windows")]
+pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Consolas";
+#[cfg(not(target_os = "windows"))]
 pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Ubuntu Mono";
 pub const DEFAULT_TERMINAL_FONT_SIZE: f32 = 22.0;
 pub const DEFAULT_TERMINAL_COLOR_SCHEME: &str = "AdventureTime";
@@ -87,6 +90,11 @@ fn normalize_font(raw: &str) -> String {
     }
     let joined = tokens.join(" ");
     if joined.is_empty() {
+        DEFAULT_TERMINAL_FONT_FAMILY.to_string()
+    } else if cfg!(target_os = "windows") && joined.eq_ignore_ascii_case("Ubuntu Mono") {
+        // Older Native builds used Ubuntu Mono on every platform. Windows does
+        // not ship that family, so migrate the legacy default to the same
+        // Consolas face used by the classic Command Prompt.
         DEFAULT_TERMINAL_FONT_FAMILY.to_string()
     } else {
         joined
@@ -593,8 +601,11 @@ mod tests {
 
     /// Fresh Native settings use the Native product defaults.
     #[test]
-    fn default_terminal_uses_ubuntu_mono_22_and_adventure_time() {
+    fn default_terminal_uses_platform_mono_22_and_adventure_time() {
         let settings = Settings::default();
+        #[cfg(target_os = "windows")]
+        assert_eq!(DEFAULT_TERMINAL_FONT_FAMILY, "Consolas");
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(DEFAULT_TERMINAL_FONT_FAMILY, "Ubuntu Mono");
         assert_eq!(DEFAULT_TERMINAL_FONT_SIZE, 22.0);
         assert_eq!(DEFAULT_TERMINAL_COLOR_SCHEME, "AdventureTime");
@@ -604,6 +615,14 @@ mod tests {
             settings.terminal.color_scheme,
             DEFAULT_TERMINAL_COLOR_SCHEME
         );
+    }
+
+    #[test]
+    fn legacy_ubuntu_mono_is_migrated_only_on_windows() {
+        #[cfg(target_os = "windows")]
+        assert_eq!(super::normalize_font("Ubuntu Mono"), "Consolas");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(super::normalize_font("Ubuntu Mono"), "Ubuntu Mono");
     }
 
     /// P0 Task 3 RED: 旧式 "family size" 字符串应规范化为纯 family，
