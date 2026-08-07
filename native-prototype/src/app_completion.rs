@@ -207,19 +207,32 @@ pub(super) fn apply_history_path_event(
     session: &CompletionSessionKey,
     path: String,
 ) -> Option<(CompletionSessionKey, std::path::PathBuf)> {
-    let path_buf = std::path::PathBuf::from(&path);
     let index = tab_manager.find_by_id(tab_id)?;
-    let completion = &mut tab_manager.tabs[index].pane_mut(pane_id)?.completion;
+    let tab = &mut tab_manager.tabs[index];
+    if path.chars().any(char::is_control) {
+        return None;
+    }
+    let is_local = matches!(&tab.tab_type, TabType::Local { .. });
+    let path_buf = if is_local {
+        crate::bash_integration::local_history_path(&path)?
+    } else {
+        let path_buf = std::path::PathBuf::from(&path);
+        path_buf.is_absolute().then_some(path_buf)?
+    };
+    let path_string = if is_local {
+        path_buf.to_string_lossy().into_owned()
+    } else {
+        path
+    };
+    let completion = &mut tab.pane_mut(pane_id)?.completion;
     if !completion_event_is_current(completion.session(), session)
-        || !path_buf.is_absolute()
-        || path.chars().any(char::is_control)
-        || completion.history_path() == Some(path.as_str())
+        || completion.history_path() == Some(path_string.as_str())
     {
         return None;
     }
 
     completion.replace_history(Vec::new());
-    completion.set_history_path(path);
+    completion.set_history_path(path_string);
     Some((completion.session().clone(), path_buf))
 }
 
@@ -360,6 +373,17 @@ pub(super) fn completion_input_for_render(
             .map(str::to_owned)
             .or_else(|| terminal.current_bash_input_or_request_snapshot(now));
     }
+
+    // Git Bash on Windows can emit a prompt redraw without the OSC marker
+    // being visible to ConPTY.  The completion state still receives every
+    // real keyboard edit, so use that input as a narrowly scoped fallback for
+    // local Bash only.  PowerShell/CMD never have a Bash runtime and remain
+    // unsupported by the history completion feature.
+    #[cfg(windows)]
+    if terminal.has_local_bash_runtime() {
+        return completion.tracked_input().map(str::to_owned);
+    }
+
     if completion.completion_suspended_without_prompt() {
         None
     } else {

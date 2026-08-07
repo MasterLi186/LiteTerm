@@ -673,6 +673,23 @@
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_git_bash_fallback_uses_tracked_input_without_prompt_marker() {
+        let session = super::smart_completion::CompletionSessionKey::new_for_test(4, "windows");
+        let mut completion = super::smart_completion::CompletionState::new(session.clone());
+        completion.track_user_input("ls -");
+        let mut terminal = super::terminal::TerminalState::new_replay(80, 24);
+        terminal.local_bash_runtime = Some(
+            super::bash_integration::LocalBashRuntime::create(session).unwrap(),
+        );
+
+        assert_eq!(
+            super::completion_input_for_render(&mut completion, &mut terminal, Instant::now()),
+            Some("ls -".into())
+        );
+    }
+
     #[test]
     fn tracked_input_remains_available_in_adb_but_is_hidden_in_fish() {
         let session = CompletionSessionKey::new_for_test(4, "nested");

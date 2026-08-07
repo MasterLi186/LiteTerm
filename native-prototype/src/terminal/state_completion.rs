@@ -42,6 +42,14 @@ impl TerminalState {
             .is_some_and(|tracking| tracking.active)
     }
 
+    /// Whether this pane owns the local Bash integration runtime.  On Windows
+    /// Git Bash can occasionally redraw its prompt without returning our OSC
+    /// marker; the UI uses this only for a narrow, keyboard-input fallback.
+    #[cfg(windows)]
+    pub fn has_local_bash_runtime(&self) -> bool {
+        self.local_bash_runtime.is_some()
+    }
+
     pub fn completion_surface_safe(&self) -> bool {
         self.term.as_ref().is_some_and(|term| {
             !term

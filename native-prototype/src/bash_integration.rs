@@ -61,6 +61,45 @@ pub fn bash_path_for_shell(path: &Path) -> String {
     }
 }
 
+/// Convert a history path emitted by Bash into a path that the host filesystem
+/// APIs can open.  Git Bash commonly reports Windows files using MSYS syntax
+/// (`/c/Users/name/.bash_history`), while `std::path::Path` on Windows only
+/// recognizes the native drive-prefixed form as absolute.
+pub fn local_history_path(path: &str) -> Option<PathBuf> {
+    if path.is_empty() || path.chars().any(char::is_control) {
+        return None;
+    }
+
+    #[cfg(windows)]
+    let path = msys_history_path(path);
+    #[cfg(not(windows))]
+    let path = path.to_owned();
+
+    let path = PathBuf::from(path);
+    path.is_absolute().then_some(path)
+}
+
+#[cfg(windows)]
+fn msys_history_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+    {
+        let drive = bytes[1].to_ascii_uppercase() as char;
+        let rest = path[2..].replace('/', "\\");
+        return format!("{drive}:{rest}");
+    }
+
+    // Keep native drive paths and UNC paths intact; only normalize separators
+    // for the Windows filesystem parser.
+    if path.as_bytes().get(1) == Some(&b':') || path.starts_with("\\\\") {
+        return path.replace('/', "\\");
+    }
+    path.to_owned()
+}
+
 fn sequence_number(session: &CompletionSessionKey) -> u32 {
     session
         .token()

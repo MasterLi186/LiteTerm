@@ -184,6 +184,32 @@ printf '%s\\n%s\\n%s\\n%s\\n' \"$HOME\" \"$HISTFILE\" \"$INPUTRC\" \"$BASH_ENV\"
         assert!(is_bash_path("bash.exe"));
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn local_history_path_requires_an_absolute_host_path() {
+        assert_eq!(local_history_path("relative/.bash_history"), None);
+        assert_eq!(
+            local_history_path("/tmp/.bash_history").as_deref(),
+            Some(std::path::Path::new("/tmp/.bash_history"))
+        );
+        assert_eq!(local_history_path("/tmp/bad\npath"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_history_path_converts_git_bash_msys_drive_paths() {
+        assert_eq!(local_history_path("relative/.bash_history"), None);
+        assert_eq!(local_history_path("C:/tmp/bad\npath"), None);
+        assert_eq!(
+            local_history_path("/c/Users/lfl/.bash_history").as_deref(),
+            Some(std::path::Path::new(r"C:\Users\lfl\.bash_history")),
+        );
+        assert_eq!(
+            local_history_path("C:/Users/lfl/.bash_history").as_deref(),
+            Some(std::path::Path::new(r"C:\Users\lfl\.bash_history")),
+        );
+    }
+
     #[test]
     fn widget_sequence_is_stable_and_token_specific() {
         let first = CompletionSessionKey::new_for_test(1, "01234567aaaaaaaa");
