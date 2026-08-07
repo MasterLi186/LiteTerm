@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use liteterm_native_api as api;
 use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Arc, Mutex};
