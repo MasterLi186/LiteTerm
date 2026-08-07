@@ -578,16 +578,6 @@ impl App {
                             return;
                         }
 
-                        if shift && self.shift_extend_selection_for_pane(&pane_id, cell) {
-                            // A visible native selection keeps its original anchor. Without one,
-                            // Shift+click starts at the live terminal cursor instead of reusing an
-                            // invisible stale mouse press.
-                            self.reset_click_sequence();
-                            self.click_state = ClickState::Single;
-                            self.do_render();
-                            return;
-                        }
-
                         let now = Instant::now();
                         let elapsed = now.duration_since(self.last_click_time).as_millis();
                         let same_pos = cell == self.last_click_pos;

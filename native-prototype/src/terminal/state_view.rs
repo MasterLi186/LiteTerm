@@ -34,33 +34,6 @@ impl TerminalState {
         true
     }
 
-    /// Extend a visible selection, or start a new selection at the live terminal cursor.
-    ///
-    /// A plain click leaves an empty selection behind so a subsequent drag can start without
-    /// losing its press position. That empty mouse anchor must not become the anchor of a later
-    /// Shift+click: without visible selected text, users expect Shift+click to select between the
-    /// live terminal cursor and the clicked scrollback cell.
-    pub fn shift_extend_selection(&mut self, point: (usize, i32)) -> bool {
-        let Some(term) = self.term.as_mut() else {
-            return false;
-        };
-        let has_visible_selection = term
-            .selection
-            .as_ref()
-            .and_then(|selection| selection.to_range(term))
-            .is_some();
-        if !has_visible_selection {
-            let cursor = term.grid().cursor.point;
-            term.selection = Some(Selection::new(SelectionType::Simple, cursor, Side::Left));
-            self.mark_render_dirty();
-        }
-
-        // Reaching this point means the Shift+click was handled even when the click is exactly on
-        // the cursor and therefore produces no visible range yet.
-        let _ = self.update_selection(point);
-        true
-    }
-
     pub fn clear_selection(&mut self) {
         let Some(term) = self.term.as_mut() else {
             return;

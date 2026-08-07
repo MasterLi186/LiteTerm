@@ -71,24 +71,6 @@ impl App {
         updated
     }
 
-    pub(super) fn shift_extend_selection_for_pane(
-        &mut self,
-        pane_id: &str,
-        cell: (usize, usize),
-    ) -> bool {
-        let Some(point) = self.visual_cell_to_selection_point_for_pane(pane_id, cell) else {
-            return false;
-        };
-        let Some(terminal) = self.terminal_for_pane(pane_id) else {
-            return false;
-        };
-        let handled = terminal
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .shift_extend_selection(point);
-        handled
-    }
-
     pub(super) fn copy_selection(&mut self) {
         let text = self.get_selection_text();
         if !text.is_empty() {

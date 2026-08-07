@@ -108,44 +108,6 @@
     }
 
     #[test]
-    fn shift_click_without_visible_selection_uses_live_cursor_not_stale_mouse_anchor() {
-        use alacritty_terminal::grid::Scroll;
-
-        let output = (0..340)
-            .map(|line| format!("line-{line:03}\r\n"))
-            .collect::<String>();
-        let mut terminal = selection_fixture(&output);
-        terminal.term_mut().unwrap().scroll_display(Scroll::Top);
-        let stale_mouse_anchor = terminal.visual_point_to_grid_point((0, 1)).unwrap();
-        let clicked = terminal.visual_point_to_grid_point((7, 2)).unwrap();
-        let live_cursor = terminal.term().unwrap().grid().cursor.point;
-
-        assert!(terminal.begin_selection(stale_mouse_anchor, TerminalSelectionKind::Simple));
-        assert!(terminal.has_selection_anchor());
-        assert!(terminal.selection_range().is_none());
-        assert!(terminal.current_selection_text().is_empty());
-
-        assert!(terminal.shift_extend_selection(clicked));
-
-        let range = terminal.selection_range().expect("Shift extension must become visible");
-        assert!(range.start.line.0.abs_diff(range.end.line.0) >= 300);
-        assert!(terminal.current_selection_text().lines().count() >= 300);
-        assert!(range.contains(live_cursor));
-    }
-
-    #[test]
-    fn shift_click_extends_an_existing_visible_selection_instead_of_live_cursor() {
-        let mut terminal = selection_fixture("alpha beta\r\ntail");
-        let alpha = terminal.visual_point_to_grid_point((2, 1)).unwrap();
-        let beta = terminal.visual_point_to_grid_point((8, 1)).unwrap();
-        terminal.begin_selection(alpha, TerminalSelectionKind::Semantic);
-        assert_eq!(terminal.current_selection_text(), "alpha");
-
-        assert!(terminal.shift_extend_selection(beta));
-        assert_eq!(terminal.current_selection_text(), "alpha beta");
-    }
-
-    #[test]
     fn same_cell_pointer_jitter_keeps_a_plain_click_anchor_invisible() {
         let mut terminal = selection_fixture("alpha");
         let point = terminal.visual_point_to_grid_point((2, 1)).unwrap();

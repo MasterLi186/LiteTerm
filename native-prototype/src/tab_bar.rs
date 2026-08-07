@@ -40,6 +40,31 @@ impl TabDragState {
 pub const TAB_BAR_HEIGHT: f32 = 38.0;
 const TITLE_ACTION_WIDTH: f32 = 40.0;
 const TITLE_ACTIONS_RESERVED_WIDTH: f32 = 210.0;
+const TAB_ITEM_SPACING: f32 = 2.0;
+const TAB_PLUS_WIDTH: f32 = 42.0;
+const TAB_WIDTH_MIN: f32 = 72.0;
+const TAB_WIDTH_MAX: f32 = 176.0;
+
+/// Compute a tab width that fills the tab strip without encroaching on the
+/// fixed action area at the right side of the title bar.
+///
+/// `TAB_WIDTH_MIN` is the preferred lower bound for normal layouts. If the
+/// window is narrower than that allows, the width is reduced further instead
+/// of allowing the tab row to overlap the global controls.
+fn responsive_tab_width(strip_width: f32, tab_count: usize) -> f32 {
+    if tab_count == 0 {
+        return TAB_WIDTH_MAX;
+    }
+
+    let count = tab_count as f32;
+    let gaps = count * TAB_ITEM_SPACING;
+    let fitting_width = (strip_width - TAB_PLUS_WIDTH - gaps).max(0.0) / count;
+    if fitting_width >= TAB_WIDTH_MIN {
+        fitting_width.min(TAB_WIDTH_MAX)
+    } else {
+        fitting_width
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabRenameRequest {
@@ -356,177 +381,207 @@ pub fn render_tab_bar(
                 .inner_margin(egui::Margin::symmetric(4, 0)),
         )
         .show(ctx, |ui| {
-            let mut strip_right = ui.max_rect().left();
-            ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                let reserved_actions_width = TITLE_ACTIONS_RESERVED_WIDTH;
-                ui.set_max_width((ui.available_width() - reserved_actions_width).max(24.0));
-                let mut drag_target_seen = false;
+            let panel_rect = ui.max_rect();
+            let tabs_right =
+                (panel_rect.right() - TITLE_ACTIONS_RESERVED_WIDTH).max(panel_rect.left() + 1.0);
+            let tabs_rect = egui::Rect::from_min_max(
+                panel_rect.left_top(),
+                egui::pos2(tabs_right, panel_rect.bottom()),
+            );
+            let controls_rect = egui::Rect::from_min_max(
+                egui::pos2(tabs_right, panel_rect.top()),
+                panel_rect.right_bottom(),
+            );
+            ui.painter().rect_filled(
+                controls_rect,
+                0.0,
+                egui::Color32::from_rgb(0x13, 0x18, 0x20),
+            );
+            ui.painter().line_segment(
+                [
+                    egui::pos2(tabs_right, panel_rect.top() + 5.0),
+                    egui::pos2(tabs_right, panel_rect.bottom() - 5.0),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x36, 0x3d)),
+            );
 
-                for (i, tab) in tab_manager.tabs.iter().enumerate() {
-                    let is_active = i == tab_manager.active_idx;
+            let tab_width = responsive_tab_width(tabs_rect.width(), tab_manager.tabs.len());
+            let mut strip_right = tabs_rect.left();
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(tabs_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = TAB_ITEM_SPACING;
+                    ui.set_clip_rect(ui.clip_rect().intersect(tabs_rect));
+                    let mut drag_target_seen = false;
 
-                    let dot_color = tab_dot_color(&tab.tab_type, &tab.status);
+                    for (i, tab) in tab_manager.tabs.iter().enumerate() {
+                        let is_active = i == tab_manager.active_idx;
 
-                    let bg = if is_active {
-                        egui::Color32::from_rgb(0x21, 0x26, 0x2d)
-                    } else {
-                        egui::Color32::from_rgb(0x16, 0x1b, 0x22)
-                    };
-                    let text_color = if is_active {
-                        egui::Color32::from_rgb(0xe6, 0xed, 0xf3)
-                    } else {
-                        egui::Color32::from_rgb(0x8b, 0x94, 0x9e)
-                    };
+                        let dot_color = tab_dot_color(&tab.tab_type, &tab.status);
 
-                    let (tab_rect, tab_resp) = ui.allocate_exact_size(
-                        egui::vec2(176.0, TAB_BAR_HEIGHT - 6.0),
-                        egui::Sense::click_and_drag(),
-                    );
+                        let bg = if is_active {
+                            egui::Color32::from_rgb(0x21, 0x26, 0x2d)
+                        } else {
+                            egui::Color32::from_rgb(0x16, 0x1b, 0x22)
+                        };
+                        let text_color = if is_active {
+                            egui::Color32::from_rgb(0xe6, 0xed, 0xf3)
+                        } else {
+                            egui::Color32::from_rgb(0x8b, 0x94, 0x9e)
+                        };
 
-                    // 背景
-                    ui.painter().rect_filled(tab_rect, 4.0, bg);
-                    if tab_resp.hovered() && !is_active {
-                        ui.painter().rect_filled(
-                            tab_rect,
-                            4.0,
-                            egui::Color32::from_rgba_unmultiplied(0x30, 0x36, 0x3d, 0x60),
+                        let (tab_rect, tab_resp) = ui.allocate_exact_size(
+                            egui::vec2(tab_width, TAB_BAR_HEIGHT - 6.0),
+                            egui::Sense::click_and_drag(),
                         );
-                    }
 
-                    // 类型圆点
-                    let dot_center = egui::pos2(tab_rect.left() + 12.0, tab_rect.center().y);
-                    ui.painter().circle_filled(dot_center, 3.0, dot_color);
+                        // 背景
+                        ui.painter().rect_filled(tab_rect, 4.0, bg);
+                        if tab_resp.hovered() && !is_active {
+                            ui.painter().rect_filled(
+                                tab_rect,
+                                4.0,
+                                egui::Color32::from_rgba_unmultiplied(0x30, 0x36, 0x3d, 0x60),
+                            );
+                        }
 
-                    // 标签名只允许绘制到关闭按钮左侧。长的 SSH/进程标题不能覆盖 × 和 +。
-                    let text_pos = egui::pos2(tab_rect.left() + 22.0, tab_rect.center().y);
-                    let label_clip = egui::Rect::from_min_max(
-                        egui::pos2(tab_rect.left() + 20.0, tab_rect.top()),
-                        egui::pos2(tab_rect.right() - 22.0, tab_rect.bottom()),
-                    );
-                    ui.painter().with_clip_rect(label_clip).text(
-                        text_pos,
-                        egui::Align2::LEFT_CENTER,
-                        &tab.label,
-                        egui::FontId::proportional(13.0),
-                        text_color,
-                    );
+                        // 类型圆点
+                        let dot_center = egui::pos2(tab_rect.left() + 12.0, tab_rect.center().y);
+                        ui.painter().circle_filled(dot_center, 3.0, dot_color);
 
-                    // × 关闭按钮
-                    let close_rect = egui::Rect::from_min_size(
-                        egui::pos2(tab_rect.right() - 20.0, tab_rect.top()),
-                        egui::vec2(20.0, tab_rect.height()),
-                    );
-                    let close_resp = ui.interact(
-                        close_rect,
-                        egui::Id::new(("tab_close", i)),
-                        egui::Sense::click(),
-                    );
+                        // 标签名只允许绘制到关闭按钮左侧。长的 SSH/进程标题不能覆盖 × 和 +。
+                        let text_pos = egui::pos2(tab_rect.left() + 22.0, tab_rect.center().y);
+                        let label_clip = egui::Rect::from_min_max(
+                            egui::pos2(tab_rect.left() + 20.0, tab_rect.top()),
+                            egui::pos2(tab_rect.right() - 22.0, tab_rect.bottom()),
+                        );
+                        ui.painter().with_clip_rect(label_clip).text(
+                            text_pos,
+                            egui::Align2::LEFT_CENTER,
+                            &tab.label,
+                            egui::FontId::proportional(13.0),
+                            text_color,
+                        );
 
-                    let close_color = if close_resp.hovered() {
-                        egui::Color32::from_rgb(0xf8, 0x51, 0x49)
-                    } else {
-                        egui::Color32::from_rgb(0x48, 0x4f, 0x58)
-                    };
-                    ui.painter().text(
-                        close_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "×",
-                        egui::FontId::proportional(16.0),
-                        close_color,
-                    );
+                        // × 关闭按钮
+                        let close_rect = egui::Rect::from_min_size(
+                            egui::pos2(tab_rect.right() - 20.0, tab_rect.top()),
+                            egui::vec2(20.0, tab_rect.height()),
+                        );
+                        let close_resp = ui.interact(
+                            close_rect,
+                            egui::Id::new(("tab_close", i)),
+                            egui::Sense::click(),
+                        );
 
-                    // 事件
-                    if close_resp.clicked() {
-                        action = TabBarAction::Close(i);
-                    } else if tab_resp.clicked() {
-                        action = TabBarAction::SwitchTo(i);
-                    }
-                    if tab_resp.drag_started()
-                        && ctx
-                            .input(|input| input.pointer.interact_pos())
-                            .is_some_and(|position| !close_rect.contains(position))
-                    {
-                        drag.dragged_id = Some(tab.id.clone());
-                        drag.insertion = None;
-                    }
-                    if drag.dragged_id.as_deref().is_some_and(|id| id != tab.id)
-                        && tab_resp.hovered()
-                    {
-                        if let Some(position) = ctx.input(|input| input.pointer.interact_pos()) {
-                            drag_target_seen = true;
-                            let placement = if position.x < tab_rect.center().x {
-                                TabPlacement::Before
-                            } else {
-                                TabPlacement::After
-                            };
-                            let x = match placement {
-                                TabPlacement::Before => tab_rect.left(),
-                                TabPlacement::After => tab_rect.right(),
-                            };
-                            drag.insertion = Some((tab.id.clone(), placement, x));
+                        let close_color = if close_resp.hovered() {
+                            egui::Color32::from_rgb(0xf8, 0x51, 0x49)
+                        } else {
+                            egui::Color32::from_rgb(0x48, 0x4f, 0x58)
+                        };
+                        ui.painter().text(
+                            close_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "×",
+                            egui::FontId::proportional(16.0),
+                            close_color,
+                        );
+
+                        // 事件
+                        if close_resp.clicked() {
+                            action = TabBarAction::Close(i);
+                        } else if tab_resp.clicked() {
+                            action = TabBarAction::SwitchTo(i);
+                        }
+                        if tab_resp.drag_started()
+                            && ctx
+                                .input(|input| input.pointer.interact_pos())
+                                .is_some_and(|position| !close_rect.contains(position))
+                        {
+                            drag.dragged_id = Some(tab.id.clone());
+                            drag.insertion = None;
+                        }
+                        if drag.dragged_id.as_deref().is_some_and(|id| id != tab.id)
+                            && tab_resp.hovered()
+                        {
+                            if let Some(position) = ctx.input(|input| input.pointer.interact_pos())
+                            {
+                                drag_target_seen = true;
+                                let placement = if position.x < tab_rect.center().x {
+                                    TabPlacement::Before
+                                } else {
+                                    TabPlacement::After
+                                };
+                                let x = match placement {
+                                    TabPlacement::Before => tab_rect.left(),
+                                    TabPlacement::After => tab_rect.right(),
+                                };
+                                drag.insertion = Some((tab.id.clone(), placement, x));
+                            }
+                        }
+                        if tab_resp.middle_clicked() {
+                            action = TabBarAction::Close(i);
+                        }
+
+                        // 右键菜单触发：记住鼠标位置
+                        if tab_resp.secondary_clicked() {
+                            let capabilities = context_menu_capabilities(&tab.tab_type);
+                            let pos = ctx.input(|i| i.pointer.interact_pos().unwrap_or_default());
+                            show_menu = Some(ContextMenuState {
+                                tab_idx: i,
+                                capabilities,
+                            });
+                            ctx.memory_mut(|mem| {
+                                mem.data.insert_temp(
+                                    menu_id,
+                                    (
+                                        i,
+                                        capabilities.can_duplicate_terminal,
+                                        capabilities.can_reconnect,
+                                        pos,
+                                    ),
+                                )
+                            });
                         }
                     }
-                    if tab_resp.middle_clicked() {
-                        action = TabBarAction::Close(i);
+                    if drag.dragged_id.is_some() && !drag_target_seen {
+                        drag.insertion = None;
                     }
 
-                    // 右键菜单触发：记住鼠标位置
-                    if tab_resp.secondary_clicked() {
-                        let capabilities = context_menu_capabilities(&tab.tab_type);
-                        let pos = ctx.input(|i| i.pointer.interact_pos().unwrap_or_default());
-                        show_menu = Some(ContextMenuState {
-                            tab_idx: i,
-                            capabilities,
-                        });
-                        ctx.memory_mut(|mem| {
-                            mem.data.insert_temp(
-                                menu_id,
-                                (
-                                    i,
-                                    capabilities.can_duplicate_terminal,
-                                    capabilities.can_reconnect,
-                                    pos,
-                                ),
-                            )
-                        });
-                    }
-                }
-                if drag.dragged_id.is_some() && !drag_target_seen {
-                    drag.insertion = None;
-                }
-
-                // [+] 按钮
-                let (plus_rect, plus_resp) = ui.allocate_exact_size(
-                    egui::vec2(42.0, TAB_BAR_HEIGHT - 4.0),
-                    egui::Sense::click(),
-                );
-                if plus_resp.hovered() {
-                    ui.painter().rect_filled(
-                        plus_rect,
-                        5.0,
-                        egui::Color32::from_rgba_unmultiplied(0x00, 0xd4, 0xff, 0x24),
+                    // [+] 按钮
+                    let (plus_rect, plus_resp) = ui.allocate_exact_size(
+                        egui::vec2(TAB_PLUS_WIDTH, TAB_BAR_HEIGHT - 4.0),
+                        egui::Sense::click(),
                     );
-                }
-                ui.painter().text(
-                    plus_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "+",
-                    egui::FontId::proportional(26.0),
                     if plus_resp.hovered() {
-                        egui::Color32::from_rgb(0x00, 0xd4, 0xff)
-                    } else {
-                        egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)
-                    },
-                );
-                if plus_resp.clicked() {
-                    action = TabBarAction::NewTab;
-                }
-                strip_right = plus_rect.right();
-            });
+                        ui.painter().rect_filled(
+                            plus_rect,
+                            5.0,
+                            egui::Color32::from_rgba_unmultiplied(0x00, 0xd4, 0xff, 0x24),
+                        );
+                    }
+                    ui.painter().text(
+                        plus_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "+",
+                        egui::FontId::proportional(26.0),
+                        if plus_resp.hovered() {
+                            egui::Color32::from_rgb(0x00, 0xd4, 0xff)
+                        } else {
+                            egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)
+                        },
+                    );
+                    if plus_resp.clicked() {
+                        action = TabBarAction::NewTab;
+                    }
+                    strip_right = plus_rect.right();
+                },
+            );
             // Only the genuinely blank part of the bar is draggable. Registering the whole
             // title bar would steal tab reorder and close-button gestures.
-            let drag_right = ui.max_rect().right() - TITLE_ACTIONS_RESERVED_WIDTH;
+            let drag_right = tabs_rect.right();
             if drag_right > strip_right + 4.0 {
                 let drag_rect = egui::Rect::from_min_max(
                     egui::pos2(strip_right + 4.0, ui.max_rect().top()),
@@ -934,6 +989,34 @@ mod tests {
         assert!(rects
             .windows(2)
             .all(|pair| pair[0].center().y == pair[1].center().y));
+    }
+
+    #[test]
+    fn responsive_tab_width_reserves_plus_button_and_spacing() {
+        let strip_width = 1_060.0;
+        let tab_count = 9;
+        let width = responsive_tab_width(strip_width, tab_count);
+        let used = width * tab_count as f32 + TAB_ITEM_SPACING * tab_count as f32 + TAB_PLUS_WIDTH;
+
+        assert!(width < TAB_WIDTH_MAX);
+        assert!(width >= TAB_WIDTH_MIN);
+        assert!(used <= strip_width + f32::EPSILON);
+    }
+
+    #[test]
+    fn responsive_tab_width_caps_single_tab_at_the_normal_width() {
+        assert_eq!(responsive_tab_width(1_060.0, 1), TAB_WIDTH_MAX);
+    }
+
+    #[test]
+    fn responsive_tab_width_still_fits_when_the_strip_is_very_tight() {
+        let strip_width = 180.0;
+        let tab_count = 4;
+        let width = responsive_tab_width(strip_width, tab_count);
+        let used = width * tab_count as f32 + TAB_ITEM_SPACING * tab_count as f32 + TAB_PLUS_WIDTH;
+
+        assert!(width < TAB_WIDTH_MIN);
+        assert!(used <= strip_width + f32::EPSILON);
     }
 
     #[test]
