@@ -328,7 +328,16 @@ impl TerminalState {
             })
             .unwrap_or(true);
         #[cfg(not(unix))]
-        let interactive_local = true;
+        let interactive_local = self
+            .prompt_tracking
+            .as_ref()
+            // Windows does not expose a portable termios/foreground-process
+            // probe through portable-pty.  Bash integration gives us an
+            // authenticated prompt boundary instead: only answer primary
+            // screen queries while readline is waiting for input.  Once a
+            // line is submitted, command output must not feed DA/DSR replies
+            // back into the shell's input queue.
+            .is_none_or(|tracking| tracking.active);
         let allowed = alternate_screen || (bounded_primary_output && interactive_local);
 
         if let Some(sink) = &self.terminal_reply_sink {

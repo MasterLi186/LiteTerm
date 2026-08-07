@@ -629,6 +629,38 @@
     }
 
     #[test]
+    fn submitting_a_line_invalidates_the_authenticated_prompt_before_output() {
+        let mut terminal = tracked_terminal(80, 24);
+        let mut parser = TestProcessor::new();
+        terminal.process_pty_output(&mut parser, &prompt_marker());
+        assert!(terminal.has_authenticated_active_bash_prompt());
+
+        terminal.write_input("ls\r");
+
+        assert!(!terminal.has_authenticated_active_bash_prompt());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_bash_command_output_cannot_reinject_primary_screen_replies() {
+        let (write_tx, write_rx) = test_transport_capture();
+        let mut terminal = tracked_terminal(80, 24);
+        terminal.install_transport_writer(write_tx);
+        let mut parser = TestProcessor::new();
+
+        terminal.process_pty_output(&mut parser, &prompt_marker());
+        terminal.process_pty_output(&mut parser, b"\x1b[c");
+        assert_eq!(write_rx.try_recv().unwrap(), b"\x1b[?6c");
+
+        terminal.write_input("ls\r");
+        terminal.process_pty_output(&mut parser, b"\x1b[c");
+        assert!(matches!(
+            write_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
     fn local_and_ssh_writers_receive_the_same_alacritty_reply() {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let (completed_tx, completed_rx) = mpsc::channel();
