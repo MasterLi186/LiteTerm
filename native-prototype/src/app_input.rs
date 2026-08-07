@@ -71,6 +71,181 @@ pub(super) fn window_drag_threshold_reached(
     dx * dx + dy * dy >= threshold * threshold
 }
 
+const WINDOW_RESIZE_BORDER_LOGICAL: f64 = 8.0;
+const MIN_WINDOW_WIDTH_LOGICAL: f64 = 640.0;
+const MIN_WINDOW_HEIGHT_LOGICAL: f64 = 400.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum WindowResizeInteraction {
+    /// The platform owns the pointer grab after `Window::drag_resize_window`.
+    System,
+    /// Fallback used on platforms where winit cannot start a native resize drag.
+    Manual(WindowResizeDrag),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct WindowResizeDrag {
+    pub(super) direction: winit::window::ResizeDirection,
+    pub(super) start_cursor: (f64, f64),
+    pub(super) start_outer_position: (i32, i32),
+    pub(super) start_inner_size: (u32, u32),
+    pub(super) min_inner_size: (u32, u32),
+}
+
+impl WindowResizeDrag {
+    pub(super) fn geometry_for_cursor(self, cursor: (f64, f64)) -> ((i32, i32), (u32, u32)) {
+        let dx = cursor.0 - self.start_cursor.0;
+        let dy = cursor.1 - self.start_cursor.1;
+        let resize_west = matches!(
+            self.direction,
+            winit::window::ResizeDirection::West
+                | winit::window::ResizeDirection::NorthWest
+                | winit::window::ResizeDirection::SouthWest
+        );
+        let resize_north = matches!(
+            self.direction,
+            winit::window::ResizeDirection::North
+                | winit::window::ResizeDirection::NorthWest
+                | winit::window::ResizeDirection::NorthEast
+        );
+        let resize_east = matches!(
+            self.direction,
+            winit::window::ResizeDirection::East
+                | winit::window::ResizeDirection::NorthEast
+                | winit::window::ResizeDirection::SouthEast
+        );
+        let resize_south = matches!(
+            self.direction,
+            winit::window::ResizeDirection::South
+                | winit::window::ResizeDirection::SouthWest
+                | winit::window::ResizeDirection::SouthEast
+        );
+
+        let mut left = f64::from(self.start_outer_position.0);
+        let mut top = f64::from(self.start_outer_position.1);
+        let mut width = f64::from(self.start_inner_size.0);
+        let mut height = f64::from(self.start_inner_size.1);
+
+        if resize_west {
+            width = (f64::from(self.start_inner_size.0) - dx).max(f64::from(self.min_inner_size.0));
+            left =
+                f64::from(self.start_outer_position.0) + f64::from(self.start_inner_size.0) - width;
+        } else if resize_east {
+            width = (f64::from(self.start_inner_size.0) + dx).max(f64::from(self.min_inner_size.0));
+        }
+
+        if resize_north {
+            height =
+                (f64::from(self.start_inner_size.1) - dy).max(f64::from(self.min_inner_size.1));
+            top = f64::from(self.start_outer_position.1) + f64::from(self.start_inner_size.1)
+                - height;
+        } else if resize_south {
+            height =
+                (f64::from(self.start_inner_size.1) + dy).max(f64::from(self.min_inner_size.1));
+        }
+
+        (
+            (
+                clamp_f64_to_i32(left.round()),
+                clamp_f64_to_i32(top.round()),
+            ),
+            (
+                clamp_f64_to_u32(width.round()),
+                clamp_f64_to_u32(height.round()),
+            ),
+        )
+    }
+}
+
+fn clamp_f64_to_i32(value: f64) -> i32 {
+    value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+fn clamp_f64_to_u32(value: f64) -> u32 {
+    value.clamp(1.0, f64::from(u32::MAX)) as u32
+}
+
+pub(super) fn window_resize_direction(
+    position: (f64, f64),
+    window_size: (u32, u32),
+    border: f64,
+) -> Option<winit::window::ResizeDirection> {
+    let (x, y) = position;
+    let (width, height) = (f64::from(window_size.0), f64::from(window_size.1));
+    if !x.is_finite()
+        || !y.is_finite()
+        || !border.is_finite()
+        || border <= 0.0
+        || width <= 0.0
+        || height <= 0.0
+        || x < 0.0
+        || y < 0.0
+        || x >= width
+        || y >= height
+    {
+        return None;
+    }
+
+    let border_x = border.min(width / 2.0);
+    let border_y = border.min(height / 2.0);
+    let horizontal = if x < border_x {
+        Some(winit::window::ResizeDirection::West)
+    } else if x >= width - border_x {
+        Some(winit::window::ResizeDirection::East)
+    } else {
+        None
+    };
+    let vertical = if y < border_y {
+        Some(winit::window::ResizeDirection::North)
+    } else if y >= height - border_y {
+        Some(winit::window::ResizeDirection::South)
+    } else {
+        None
+    };
+
+    match (horizontal, vertical) {
+        (
+            Some(winit::window::ResizeDirection::West),
+            Some(winit::window::ResizeDirection::North),
+        ) => Some(winit::window::ResizeDirection::NorthWest),
+        (
+            Some(winit::window::ResizeDirection::West),
+            Some(winit::window::ResizeDirection::South),
+        ) => Some(winit::window::ResizeDirection::SouthWest),
+        (
+            Some(winit::window::ResizeDirection::East),
+            Some(winit::window::ResizeDirection::North),
+        ) => Some(winit::window::ResizeDirection::NorthEast),
+        (
+            Some(winit::window::ResizeDirection::East),
+            Some(winit::window::ResizeDirection::South),
+        ) => Some(winit::window::ResizeDirection::SouthEast),
+        (Some(direction), None) | (None, Some(direction)) => Some(direction),
+        (None, None) => None,
+        (Some(_), Some(_)) => None,
+    }
+}
+
+pub(super) fn window_resize_border_physical(scale_factor: f64) -> f64 {
+    if scale_factor.is_finite() && scale_factor > 0.0 {
+        WINDOW_RESIZE_BORDER_LOGICAL * scale_factor
+    } else {
+        WINDOW_RESIZE_BORDER_LOGICAL
+    }
+}
+
+pub(super) fn min_window_inner_size_physical(scale_factor: f64) -> (u32, u32) {
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    (
+        clamp_f64_to_u32((MIN_WINDOW_WIDTH_LOGICAL * scale_factor).ceil()),
+        clamp_f64_to_u32((MIN_WINDOW_HEIGHT_LOGICAL * scale_factor).ceil()),
+    )
+}
+
 pub(super) fn point_in_terminal_bounds(
     x: f32,
     y: f32,
@@ -825,6 +1000,56 @@ mod drag_upload_event_tests {
         assert!(retire_drag_upload_transfer(&mut tracked, &stale_event));
         assert!(tracked.is_empty());
         assert!(!retire_drag_upload_transfer(&mut tracked, &stale_event));
+    }
+}
+
+#[cfg(test)]
+mod window_resize_tests {
+    use super::*;
+
+    #[test]
+    fn resize_hit_testing_distinguishes_edges_and_corners() {
+        let size = (1_280, 800);
+        assert_eq!(
+            window_resize_direction((0.0, 400.0), size, 8.0),
+            Some(winit::window::ResizeDirection::West)
+        );
+        assert_eq!(
+            window_resize_direction((1_279.0, 400.0), size, 8.0),
+            Some(winit::window::ResizeDirection::East)
+        );
+        assert_eq!(
+            window_resize_direction((4.0, 4.0), size, 8.0),
+            Some(winit::window::ResizeDirection::NorthWest)
+        );
+        assert_eq!(
+            window_resize_direction((1_276.0, 796.0), size, 8.0),
+            Some(winit::window::ResizeDirection::SouthEast)
+        );
+        assert_eq!(window_resize_direction((640.0, 400.0), size, 8.0), None);
+        assert_eq!(window_resize_direction((-1.0, 400.0), size, 8.0), None);
+    }
+
+    #[test]
+    fn manual_resize_keeps_the_opposite_corner_fixed_at_minimum_size() {
+        let drag = WindowResizeDrag {
+            direction: winit::window::ResizeDirection::NorthWest,
+            start_cursor: (100.0, 100.0),
+            start_outer_position: (20, 30),
+            start_inner_size: (1_000, 700),
+            min_inner_size: (640, 400),
+        };
+
+        let (outer, size) = drag.geometry_for_cursor((600.0, 500.0));
+        assert_eq!(size, (640, 400));
+        assert_eq!(outer, (380, 330));
+    }
+
+    #[test]
+    fn resize_border_and_minimum_size_scale_with_dpi() {
+        assert_eq!(window_resize_border_physical(2.0), 16.0);
+        assert_eq!(min_window_inner_size_physical(1.5), (960, 600));
+        assert_eq!(window_resize_border_physical(f64::NAN), 8.0);
     }
 }
 

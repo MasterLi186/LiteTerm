@@ -240,6 +240,37 @@ fn header_title_is_left_aligned_at_16_pixels_and_vertically_centered() {
 }
 
 #[test]
+fn header_close_button_is_aligned_to_the_modal_right_edge() {
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+    let ctx = egui::Context::default();
+    ctx.begin_pass(egui::RawInput {
+        screen_rect: Some(viewport),
+        time: Some(1.0),
+        ..Default::default()
+    });
+    let mut selector = NewTabSelector::new();
+    selector.visible = true;
+
+    assert_eq!(selector.show(&ctx, &[]), NewTabAction::None);
+    let _ = ctx.end_pass();
+    ctx.begin_pass(egui::RawInput {
+        screen_rect: Some(viewport),
+        time: Some(2.0),
+        ..Default::default()
+    });
+    assert_eq!(selector.show(&ctx, &[]), NewTabAction::None);
+    let output = ctx.end_pass();
+    let modal = egui::AreaState::load(&ctx, egui::Id::new("new_tab_selector_window"))
+        .expect("selector area should be recorded")
+        .rect();
+    let (close_pos, close_size) =
+        text_shape_position(&output.shapes, "×").expect("close button should be rendered");
+
+    assert!(close_pos.x + close_size.x <= modal.right() - 1.0);
+    assert!(close_pos.x >= modal.right() - 36.0);
+}
+
+#[test]
 fn rendered_modal_never_exceeds_its_narrow_viewport_constraint() {
     let viewport = egui::Rect::from_min_size(egui::pos2(7.0, 11.0), egui::vec2(40.0, 200.0));
     let constraint = modal_geometry(viewport)

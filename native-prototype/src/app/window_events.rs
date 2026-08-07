@@ -1,6 +1,87 @@
 use super::*;
 
 impl App {
+    pub(super) fn window_resize_direction_at(
+        &self,
+        position: (f64, f64),
+    ) -> Option<winit::window::ResizeDirection> {
+        let window = self.window.as_ref()?;
+        if window.is_maximized() {
+            return None;
+        }
+        let size = window.inner_size();
+        window_resize_direction(
+            position,
+            (size.width, size.height),
+            window_resize_border_physical(window.scale_factor()),
+        )
+    }
+
+    fn start_window_resize(&mut self, direction: winit::window::ResizeDirection) -> bool {
+        let Some(window) = self.window.clone() else {
+            return false;
+        };
+        if window.is_maximized() {
+            return false;
+        }
+        window.set_cursor(CursorIcon::from(direction));
+
+        match window.drag_resize_window(direction) {
+            Ok(()) => {
+                self.window_resize_interaction = Some(WindowResizeInteraction::System);
+                true
+            }
+            Err(error) => {
+                // macOS currently reports NotSupported for winit's native
+                // resize drag on borderless windows. Keep the same edge UX by
+                // falling back to a pointer-driven resize there (and on any
+                // backend that cannot provide a system grab).
+                log::debug!("原生窗口缩放不可用，使用手动缩放: {error}");
+                let Ok(outer_position) = window.outer_position() else {
+                    log::debug!("无法读取窗口外部位置，取消窗口缩放");
+                    return false;
+                };
+                let inner_size = window.inner_size();
+                let drag = WindowResizeDrag {
+                    direction,
+                    start_cursor: self.mouse_position,
+                    start_outer_position: (outer_position.x, outer_position.y),
+                    start_inner_size: (inner_size.width, inner_size.height),
+                    min_inner_size: min_window_inner_size_physical(window.scale_factor()),
+                };
+                self.window_resize_interaction = Some(WindowResizeInteraction::Manual(drag));
+                true
+            }
+        }
+    }
+
+    fn update_manual_window_resize(&mut self, cursor: (f64, f64)) {
+        self.mouse_position = cursor;
+        let Some(WindowResizeInteraction::Manual(drag)) = self.window_resize_interaction else {
+            return;
+        };
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let (outer_position, inner_size) = drag.geometry_for_cursor(cursor);
+        if matches!(
+            drag.direction,
+            winit::window::ResizeDirection::West
+                | winit::window::ResizeDirection::NorthWest
+                | winit::window::ResizeDirection::SouthWest
+                | winit::window::ResizeDirection::North
+                | winit::window::ResizeDirection::NorthEast
+        ) {
+            window.set_outer_position(winit::dpi::PhysicalPosition::new(
+                outer_position.0,
+                outer_position.1,
+            ));
+        }
+        let _ =
+            window.request_inner_size(winit::dpi::PhysicalSize::new(inner_size.0, inner_size.1));
+        window.request_redraw();
+    }
+
     pub(super) fn handle_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         match &event {
             WindowEvent::HoveredFile(_) => {
@@ -128,6 +209,12 @@ impl App {
                 button: MouseButton::Left,
                 ..
             } => {
+                if let Some(direction) = self.window_resize_direction_at(self.mouse_position) {
+                    self.pending_window_drag_origin = None;
+                    if self.start_window_resize(direction) {
+                        return;
+                    }
+                }
                 let logical_position = physical_to_egui_position(
                     self.mouse_position,
                     self.egui_ctx.pixels_per_point(),
@@ -141,7 +228,26 @@ impl App {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.window_resize_interaction.take().is_some() {
+                    self.pending_window_drag_origin = None;
+                    return;
+                }
                 self.pending_window_drag_origin = None;
+            }
+            WindowEvent::CursorMoved { position, .. }
+                if self.window_resize_interaction.is_some() =>
+            {
+                let current = (position.x, position.y);
+                match self.window_resize_interaction {
+                    Some(WindowResizeInteraction::Manual(_)) => {
+                        self.update_manual_window_resize(current);
+                    }
+                    Some(WindowResizeInteraction::System) => {
+                        self.mouse_position = current;
+                    }
+                    None => {}
+                }
+                return;
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let current = (position.x, position.y);
@@ -161,6 +267,7 @@ impl App {
             }
             WindowEvent::Focused(false) => {
                 self.pending_window_drag_origin = None;
+                self.window_resize_interaction = None;
             }
             _ => {}
         }

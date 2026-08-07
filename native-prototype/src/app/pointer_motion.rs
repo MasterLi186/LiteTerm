@@ -81,6 +81,9 @@ impl App {
                 }
             } else if self.dragged_split.is_none() {
                 if let Some(window) = &self.window {
+                    let resize_cursor = self
+                        .window_resize_direction_at((position.x, position.y))
+                        .map(CursorIcon::from);
                     let divider_cursor = self
                         .pane_layout
                         .divider_at(physical_to_egui_position(
@@ -90,9 +93,12 @@ impl App {
                         .map(|divider| match divider.direction {
                             SplitDirection::Horizontal => CursorIcon::RowResize,
                             SplitDirection::Vertical => CursorIcon::ColResize,
-                        })
-                        .unwrap_or(CursorIcon::Default);
-                    window.set_cursor(divider_cursor);
+                        });
+                    window.set_cursor(
+                        resize_cursor
+                            .or(divider_cursor)
+                            .unwrap_or(CursorIcon::Default),
+                    );
                 }
             }
             match (self.left_mouse_gesture, target_pane_id.as_deref(), cell) {

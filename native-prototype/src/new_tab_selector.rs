@@ -212,7 +212,7 @@ impl NewTabSelector {
                             (modal_max_height - border_width * 2.0).max(0.0);
                         let header_height = MODAL_HEADER_HEIGHT.min(modal_content_max_height);
                         let (header_rect, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), header_height),
+                            egui::vec2(modal_content_width, header_height),
                             egui::Sense::hover(),
                         );
                         ui.painter().line_segment(
@@ -967,7 +967,7 @@ where
 fn load_shell_candidates() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
-        return crate::terminal::local_shell_paths();
+        return deduplicate_windows_shell_candidates(crate::terminal::local_shell_paths());
     }
 
     let contents = std::fs::read_to_string(SHELLS_FILE).ok();
@@ -977,6 +977,47 @@ fn load_shell_candidates() -> Vec<PathBuf> {
         Some(OsStr::new(&default_shell)),
         is_executable_file,
     )
+}
+
+#[cfg(windows)]
+fn deduplicate_windows_shell_candidates(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| seen.insert(windows_shell_identity(path)))
+        .collect()
+}
+
+#[cfg(windows)]
+fn windows_shell_identity(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if stem == "bash"
+        && path.components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("git")
+        })
+    {
+        return "git-bash".to_owned();
+    }
+    if stem == "pwsh" {
+        return "powershell-7".to_owned();
+    }
+    if stem == "powershell" {
+        return "windows-powershell".to_owned();
+    }
+    if stem == "cmd" {
+        return "cmd".to_owned();
+    }
+
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_ascii_lowercase()
 }
 
 fn is_executable_file(path: &Path) -> bool {

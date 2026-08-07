@@ -43,6 +43,7 @@ impl ApplicationHandler<UserEvent> for App {
         let attrs = Window::default_attributes()
             .with_title("LiteTerm Native")
             .with_decorations(false)
+            .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 400.0))
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         // Enable platform IME so Preedit/Commit events are delivered.
