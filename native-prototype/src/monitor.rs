@@ -66,7 +66,8 @@ pub struct ProcessInfo {
     /// which excludes reclaimable file-backed mappings. A dash is shown when unavailable.
     pub mem_mb: String,
     pub mem_bytes: u64,
-    /// Full resident set size, retained separately for diagnostics in the process manager.
+    /// Resident-memory value used by the process manager. On Windows this is the private
+    /// working set used by Task Manager; on other platforms it is the full resident set.
     pub resident_mem_mb: String,
     pub resident_mem_bytes: u64,
     pub cpu: f32,
@@ -337,7 +338,7 @@ pub fn collect_local_process_detail(pid: u32) -> Result<ProcessDetail, String> {
         .ok_or_else(|| "本机进程不存在或无权读取".to_string())?;
     let start_ticks = process.start_time();
     let parent = process.parent();
-    let mem_bytes = process.memory();
+    let mem_bytes = process_resident_memory(pid, process);
     let platform_memory = collect_platform_memory(pid, process);
     let name = bounded_process_text(&process.name().to_string_lossy(), 1024);
     let command = bounded_process_text(
@@ -480,6 +481,82 @@ fn parse_linux_pss_bytes(contents: &str) -> Option<u64> {
 fn collect_platform_memory(_pid: u32, process: &sysinfo::Process) -> Option<ProcessMemoryMetric> {
     // sysinfo 0.34 maps this value to PROCESS_MEMORY_COUNTERS_EX::PrivateUsage on Windows.
     memory_metric("平台占用（私有提交）", process.virtual_memory())
+}
+
+/// Return the resident-memory value shown by the Windows 11 Task Manager process list.
+///
+/// `sysinfo::Process::memory()` maps to `PROCESS_MEMORY_COUNTERS_EX::WorkingSetSize`, which
+/// includes shared pages. Task Manager's default process memory column uses the private working
+/// set, exposed by `PROCESS_MEMORY_COUNTERS_EX2::PrivateWorkingSetSize`. The EX2 structure is
+/// available on current Windows 10/11; older systems fall back to the full working set.
+#[cfg(target_os = "windows")]
+fn process_resident_memory(pid: u32, process: &sysinfo::Process) -> u64 {
+    private_working_set_bytes(pid).unwrap_or_else(|| process.memory())
+}
+
+#[cfg(target_os = "windows")]
+fn private_working_set_bytes(pid: u32) -> Option<u64> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX, PROCESS_MEMORY_COUNTERS_EX2,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    // SAFETY: `pid` is copied from sysinfo's process snapshot; OpenProcess does not borrow any
+    // caller-owned memory, and a null handle is handled before any subsequent FFI call.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+
+    let result = (|| {
+        let mut counters = PROCESS_MEMORY_COUNTERS_EX2 {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `counters` is initialized writable storage with the exact EX2 size in `cb`.
+        // The API only writes through the valid process handle returned above.
+        let ex2_ok = unsafe {
+            GetProcessMemoryInfo(
+                handle,
+                (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX2)
+                    .cast::<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS>(),
+                counters.cb,
+            )
+        } != 0;
+        if ex2_ok {
+            return Some(counters.PrivateWorkingSetSize as u64);
+        }
+
+        // PROCESS_MEMORY_COUNTERS_EX2 was added after the original PSAPI structure. Keep the
+        // monitor useful on older Windows by falling back to the older working-set field.
+        let mut legacy = PROCESS_MEMORY_COUNTERS_EX {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `legacy` is initialized writable storage with the exact EX size in `cb`.
+        let legacy_ok = unsafe {
+            GetProcessMemoryInfo(
+                handle,
+                (&mut legacy as *mut PROCESS_MEMORY_COUNTERS_EX)
+                    .cast::<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS>(),
+                legacy.cb,
+            )
+        } != 0;
+        legacy_ok.then_some(legacy.WorkingSetSize as u64)
+    })();
+
+    // SAFETY: `handle` came from a successful OpenProcess call and is closed exactly once here.
+    unsafe {
+        CloseHandle(handle);
+    }
+    result
+}
+
+#[cfg(not(target_os = "windows"))]
+fn process_resident_memory(_pid: u32, process: &sysinfo::Process) -> u64 {
+    process.memory()
 }
 
 #[cfg(target_os = "macos")]
@@ -681,7 +758,7 @@ impl MonitorCollector {
             .processes()
             .values()
             .map(|p| {
-                let resident_mem = p.memory();
+                let resident_mem = process_resident_memory(p.pid().as_u32(), p);
                 let name = truncate_process_text(&p.name().to_string_lossy(), 1024);
                 ProcessInfo {
                     pid: p.pid().as_u32(),
