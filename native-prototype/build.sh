@@ -50,6 +50,12 @@ fi
 [[ "$PACKAGER_VERSION" == "cargo-packager $REQUIRED_PACKAGER_VERSION" ]] || \
     die "cargo-packager 版本不符合要求（需要 $REQUIRED_PACKAGER_VERSION，实际：${PACKAGER_VERSION:-缺失}）"
 
+echo "=== Native release 编译 ==="
+cargo build --release --locked --bin liteterm-native
+
+BINARY="$SCRIPT_DIR/target/release/liteterm-native"
+[[ -x "$BINARY" ]] || die "未找到 Native release 构建产物：$BINARY"
+
 # Only remove the exact installer directory owned by this script. Refuse to
 # operate on symlinks or unexpected path shapes before invoking rm.
 EXPECTED_DIST_DIR="$SCRIPT_DIR/dist/installers"
@@ -63,12 +69,6 @@ if [[ -d "$DIST_DIR" ]]; then
     rm -rf -- "$DIST_DIR"
 fi
 mkdir -p -- "$DIST_DIR"
-
-echo "=== Native release 编译 ==="
-cargo build --release --locked --bin liteterm-native
-
-BINARY="$SCRIPT_DIR/target/release/liteterm-native"
-[[ -x "$BINARY" ]] || die "未找到 Native release 构建产物：$BINARY"
 
 echo "=== Debian 安装包生成 ==="
 cargo packager --release --formats deb --verbose

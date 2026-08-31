@@ -15,7 +15,11 @@ native_needs_build() {
         fi
     done
 
-    if find native-prototype/src -type f -newer "$BINARY" -print -quit |
+    if [ ! -d native-prototype/assets/icons ]; then
+        return 0
+    fi
+
+    if find native-prototype/src native-prototype/assets/icons -type f -newer "$BINARY" -print -quit |
         grep -q .; then
         return 0
     fi
