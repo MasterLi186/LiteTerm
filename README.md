@@ -52,7 +52,7 @@
 
 ### 下载安装包
 
-前往 [Releases](https://github.com/MasterLi186/LiteTerm/releases) 下载：
+前往 [Releases](https://github.com/MasterLi186/LiteTerm/releases) 下载项目发布资产。下表是项目整体支持的格式，不代表本地脚本会生成全部格式：
 
 | 平台 | 格式 |
 |------|------|
@@ -66,14 +66,42 @@
 # 系统依赖 (Ubuntu/Debian)
 sudo apt install -y build-essential pkg-config libudev-dev
 
-# 构建 Native 版本（默认不运行自动测试）
+# 获取源码
 git clone https://github.com/MasterLi186/LiteTerm.git
 cd LiteTerm
-cargo build --manifest-path native-prototype/Cargo.toml
 
-# 运行
+# 快速开发：从 native-prototype 构建 debug Native 版本（不运行自动测试）
+cd native-prototype
+cargo build --locked --bin liteterm-native
+cd ..
+
+# 运行（根目录入口；不会生成安装包）
 ./run-native.sh
 ```
+
+也可以在仓库根目录用等价命令构建：`cargo build --manifest-path native-prototype/Cargo.toml --locked --bin liteterm-native`。如果 debug 二进制缺失或过期，`./run-native.sh` 会直接执行该 Native cargo 构建，不会生成 `.deb`。
+
+### Debian/Ubuntu 本地 `.deb` 打包
+
+在仓库根目录执行：
+
+```bash
+./native-prototype/build.sh
+```
+
+这是无参数的本地发布打包入口：只构建 `release` 锁定版本并生成 Debian `.deb`，不运行自动测试，也不会自动使用 `sudo` 安装。首次运行若缺少指定版本，会自动安装固定的 `cargo-packager 0.11.8`。产物目录为 `native-prototype/dist/installers/`，文件名按版本和 Debian 架构动态生成：
+
+```text
+native-prototype/dist/installers/LiteTerm-Native_<版本>_<架构>.deb
+```
+
+安装时将占位符替换为实际文件名，例如：
+
+```bash
+sudo apt install ./native-prototype/dist/installers/LiteTerm-Native_<版本>_<架构>.deb
+```
+
+脚本最后会打印实际产物路径和可直接复制的安装命令。
 
 ## 技术栈
 
