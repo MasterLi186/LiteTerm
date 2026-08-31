@@ -41,14 +41,17 @@ command -v dpkg-deb >/dev/null 2>&1 || die "未找到 dpkg-deb"
 DEB_ARCH="$(dpkg --print-architecture)"
 [[ -n "$DEB_ARCH" ]] || die "无法读取 Debian 架构"
 
-PACKAGER_VERSION="$(cargo packager --version 2>/dev/null || true)"
-if [[ "$PACKAGER_VERSION" != "cargo-packager $REQUIRED_PACKAGER_VERSION" ]]; then
+PACKAGER_VERSION_OUTPUT="$(cargo packager --version 2>&1 || true)"
+PACKAGER_VERSION="$(awk 'NF { version = $NF } END { print version }' <<< "$PACKAGER_VERSION_OUTPUT")"
+if [[ "$PACKAGER_VERSION" != "$REQUIRED_PACKAGER_VERSION" ]]; then
     echo "安装 cargo-packager $REQUIRED_PACKAGER_VERSION..."
     cargo install cargo-packager --version "$REQUIRED_PACKAGER_VERSION" --locked --force
-    PACKAGER_VERSION="$(cargo packager --version 2>/dev/null || true)"
+    PACKAGER_VERSION_OUTPUT="$(cargo packager --version 2>&1 || true)"
+    PACKAGER_VERSION="$(awk 'NF { version = $NF } END { print version }' <<< "$PACKAGER_VERSION_OUTPUT")"
 fi
-[[ "$PACKAGER_VERSION" == "cargo-packager $REQUIRED_PACKAGER_VERSION" ]] || \
-    die "cargo-packager 版本不符合要求（需要 $REQUIRED_PACKAGER_VERSION，实际：${PACKAGER_VERSION:-缺失}）"
+if [[ "$PACKAGER_VERSION" != "$REQUIRED_PACKAGER_VERSION" ]]; then
+    die "cargo-packager 版本不符合要求（需要 $REQUIRED_PACKAGER_VERSION，实际版本：${PACKAGER_VERSION:-缺失}；完整输出：${PACKAGER_VERSION_OUTPUT:-缺失}）"
+fi
 
 echo "=== Native release 编译 ==="
 cargo build --release --locked --bin liteterm-native

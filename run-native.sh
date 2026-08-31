@@ -15,12 +15,27 @@ native_needs_build() {
         fi
     done
 
-    if [ ! -d native-prototype/assets/icons ]; then
+    if [ ! -d native-prototype/src ] || [ ! -r native-prototype/src ] || [ ! -x native-prototype/src ]; then
+        echo "Native 源码目录缺失或不可遍历：native-prototype/src" >&2
         return 0
     fi
 
-    if find native-prototype/src native-prototype/assets/icons -type f -newer "$BINARY" -print -quit |
-        grep -q .; then
+    if [ ! -d native-prototype/assets/icons ]; then
+        echo "Native 图标目录缺失：native-prototype/assets/icons" >&2
+        return 0
+    fi
+
+    if [ ! -f native-prototype/assets/icons/256x256.png ]; then
+        echo "Native 窗口图标缺失：native-prototype/assets/icons/256x256.png" >&2
+        return 0
+    fi
+
+    local newer_input
+    if ! newer_input="$(find native-prototype/src native-prototype/assets/icons -newer "$BINARY" -print -quit)"; then
+        echo "无法检查 Native 源码或图标目录的更新时间" >&2
+        return 0
+    fi
+    if [ -n "$newer_input" ]; then
         return 0
     fi
 
