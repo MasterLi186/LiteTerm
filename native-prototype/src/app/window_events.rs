@@ -291,6 +291,12 @@ impl App {
                         .cloned()
                     })
                     .flatten();
+                let live_completion_popup = completion_surface_safe
+                    && self
+                        .tab_manager
+                        .active()
+                        .filter(|tab| tab.tab_type.is_terminal())
+                        .is_some_and(|tab| tab.completion.is_popup_visible());
                 let fill_pending = self
                     .tab_manager
                     .active()
@@ -298,7 +304,7 @@ impl App {
                 let action = completion_key_action(
                     &event.logical_key,
                     self.modifiers.state(),
-                    popup_snapshot.is_some(),
+                    popup_snapshot.is_some() || live_completion_popup,
                     fill_pending,
                     self.egui_ctx.wants_keyboard_input(),
                     has_dialog,
@@ -334,7 +340,21 @@ impl App {
                         self.invalidate_completion_popup_snapshot();
                         let selection = popup_snapshot
                             .as_ref()
-                            .and_then(completion_snapshot_selection);
+                            .and_then(completion_snapshot_selection)
+                            .or_else(|| {
+                                self.tab_manager.active().and_then(|tab| {
+                                    if !tab.tab_type.is_terminal() {
+                                        return None;
+                                    }
+                                    tab.completion.selected_candidate().map(|candidate| {
+                                        (
+                                            tab.id.clone(),
+                                            tab.active_pane_id().to_string(),
+                                            candidate.to_owned(),
+                                        )
+                                    })
+                                })
+                            });
                         if let Some((tab_id, pane_id, candidate)) = selection {
                             if let Err(error) =
                                 self.stage_completion_fill(&tab_id, &pane_id, &candidate)
@@ -361,17 +381,17 @@ impl App {
 
         // Tab 键不传给 egui（egui 用 Tab 切焦点会收起侧边栏）
         // 只拦截 Pressed 的 Tab，Released 不处理
-        let is_tab_key = keyboard_route == Some(KeyboardInputRoute::App)
+        let is_tab_key_event = keyboard_route == Some(KeyboardInputRoute::App)
             && matches!(
                 &event,
                 WindowEvent::KeyboardInput { event, .. }
-                    if matches!(event.logical_key, Key::Named(NamedKey::Tab))
+                    if is_tab_key(&event.logical_key)
             );
 
         let mut egui_consumed = false;
 
         // Tab 键在没有弹窗时跳过 egui，直接给终端
-        if is_tab_key && !has_dialog {
+        if is_tab_key_event && !has_dialog {
             // 不传给 egui，直接走下面的 KeyboardInput 处理
         } else {
             // Pass events to egui first
@@ -1022,7 +1042,7 @@ impl App {
                 // Special keys
                 let esc = match event.logical_key {
                     Key::Named(NamedKey::Backspace) => Some(terminal_backspace_sequence(alt)),
-                    Key::Named(NamedKey::Tab) => Some("\t"),
+                    key if is_tab_key(&key) => Some("\t"),
                     Key::Named(NamedKey::Escape) => Some("\x1b"),
                     Key::Named(NamedKey::ArrowUp) => Some("\x1b[A"),
                     Key::Named(NamedKey::ArrowDown) => Some("\x1b[B"),

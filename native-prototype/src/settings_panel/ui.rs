@@ -424,7 +424,7 @@ fn render_appearance(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
     card(
         ui,
         "工作区布局",
-        "尺寸修改将在保存后应用。",
+        "尺寸修改实时预览，保存后持久化。",
         |ui| {
             toggle_row(
                 ui,
@@ -433,9 +433,20 @@ fn render_appearance(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
                 &mut panel.draft.show_sidebar,
             );
             divider(ui);
-            value_row(ui, "侧边栏宽度", "建议范围 200–320 px", |ui| {
-                ui.add(egui::Slider::new(&mut panel.draft.sidebar_width, 180..=420).suffix(" px"));
-            });
+            value_row(
+                ui,
+                "侧边栏宽度",
+                &format!("可调范围 {MIN_SIDEBAR_WIDTH}–{MAX_SIDEBAR_WIDTH} px"),
+                |ui| {
+                    ui.add(
+                        egui::Slider::new(
+                            &mut panel.draft.sidebar_width,
+                            MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH,
+                        )
+                        .suffix(" px"),
+                    );
+                },
+            );
             divider(ui);
             toggle_row(
                 ui,

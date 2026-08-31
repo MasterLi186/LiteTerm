@@ -13,6 +13,9 @@ pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Consolas";
 pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Ubuntu Mono";
 pub const DEFAULT_TERMINAL_FONT_SIZE: f32 = 22.0;
 pub const DEFAULT_TERMINAL_COLOR_SCHEME: &str = "AdventureTime";
+pub const MIN_SIDEBAR_WIDTH: u32 = 150;
+pub const MAX_SIDEBAR_WIDTH: u32 = 500;
+pub const DEFAULT_SIDEBAR_WIDTH: u32 = 220;
 pub const MIN_ZMODEM_TIMEOUT_SECS: u32 = 5;
 pub const MAX_ZMODEM_TIMEOUT_SECS: u32 = 3600;
 static SETTINGS_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -127,7 +130,7 @@ impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
             theme: "Adwaita".to_string(),
-            sidebar_width: 220,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             file_browser_height: 200,
             show_sidebar: true,
             show_file_browser: true,
@@ -380,6 +383,11 @@ impl Settings {
     /// - ZMODEM 超时或任一下载目录无效 → 回落到真实存在的系统目录
     pub fn sanitize_loaded(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
+
+        self.appearance.sidebar_width = self
+            .appearance
+            .sidebar_width
+            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
 
         let size = self.terminal.font_size;
         if !size.is_finite() {

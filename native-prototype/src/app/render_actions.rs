@@ -79,7 +79,8 @@ impl App {
         match settings_action {
             settings_panel::SettingsPanelAction::None => {}
             settings_panel::SettingsPanelAction::Cancel => {
-                // SettingsPanel::show 已 close
+                // SettingsPanel::show 已 close；撤销实时宽度预览。
+                self.sidebar.width = self.settings.appearance.sidebar_width as f32;
             }
             settings_panel::SettingsPanelAction::Apply(new_settings) => {
                 let plan = plan_settings_apply(&self.settings, &new_settings);

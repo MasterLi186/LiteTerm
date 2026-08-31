@@ -211,6 +211,20 @@
             ),
             CompletionKeyAction::Accept
         );
+        // Linux input backends may expose Tab as a literal control character
+        // instead of NamedKey::Tab; the completion action must be identical.
+        assert_eq!(
+            completion_key_action(
+                &Key::Character("\t".into()),
+                ModifiersState::empty(),
+                true,
+                false,
+                false,
+                false,
+                false,
+            ),
+            CompletionKeyAction::Accept
+        );
         assert_eq!(
             completion_key_action(
                 &Key::Named(NamedKey::Enter),
@@ -474,6 +488,18 @@
         );
         assert_eq!(
             completion_key_action(
+                &Key::Character("\t".into()),
+                ModifiersState::empty(),
+                true,
+                false,
+                false,
+                false,
+                false,
+            ),
+            CompletionKeyAction::Accept
+        );
+        assert_eq!(
+            completion_key_action(
                 &Key::Named(NamedKey::Tab),
                 ModifiersState::CONTROL,
                 true,
@@ -488,6 +514,30 @@
             completion_key_action(
                 &Key::Named(NamedKey::Enter),
                 ModifiersState::empty(),
+                true,
+                false,
+                true,
+                false,
+                false,
+            ),
+            CompletionKeyAction::PassThrough
+        );
+        assert_eq!(
+            completion_key_action(
+                &Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+                true,
+                false,
+                true,
+                false,
+                false,
+            ),
+            CompletionKeyAction::Accept
+        );
+        assert_eq!(
+            completion_key_action(
+                &Key::Named(NamedKey::Tab),
+                ModifiersState::SHIFT,
                 true,
                 false,
                 true,

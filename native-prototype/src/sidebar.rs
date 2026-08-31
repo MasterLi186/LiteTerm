@@ -6,19 +6,14 @@ const SIDEBAR_META_SIZE: f32 = 11.0;
 const SIDEBAR_BODY_SIZE: f32 = 12.0;
 const SIDEBAR_SECTION_SIZE: f32 = 12.0;
 const SIDEBAR_VALUE_SIZE: f32 = 13.0;
-const CONNECTION_ROW_HEIGHT: f32 = 22.0;
-const PROCESS_ROW_HEIGHT: f32 = 24.0;
-const DISK_ROW_HEIGHT: f32 = 22.0;
+const SIDEBAR_NARROW_THRESHOLD: f32 = 220.0;
+const CONNECTION_ROW_MIN_HEIGHT: f32 = 22.0;
+const PROCESS_ROW_MIN_HEIGHT: f32 = 24.0;
+const DISK_ROW_MIN_HEIGHT: f32 = 22.0;
 const SIDEBAR_CARD_STROKE_WIDTH: f32 = 1.0;
 const SIDEBAR_MIN_UPTIME_COLUMN_WIDTH: f32 = 40.0;
-const PROCESS_MEMORY_COLUMN_WIDTH: f32 = 38.0;
-const PROCESS_CPU_COLUMN_WIDTH: f32 = 46.0;
 const PROCESS_COLUMN_GAP: f32 = 8.0;
-const PROCESS_MIN_COMMAND_COLUMN_WIDTH: f32 = 20.0;
-const DISK_PERCENT_COLUMN_WIDTH: f32 = 40.0;
-const DISK_CAPACITY_COLUMN_WIDTH: f32 = 80.0;
 const DISK_COLUMN_GAP: f32 = 4.0;
-const DISK_MIN_MOUNT_COLUMN_WIDTH: f32 = 32.0;
 
 #[derive(Debug, PartialEq, Eq)]
 struct MonitorSourcePresentation {
@@ -67,11 +62,10 @@ impl Default for MonitorViewState {
     }
 }
 
-fn safe_monitor_text(value: &str, max_chars: usize) -> String {
+fn safe_monitor_text(value: &str) -> String {
     value
         .chars()
         .filter(|character| !character.is_control())
-        .take(max_chars)
         .collect()
 }
 
@@ -110,11 +104,11 @@ fn monitor_source_presentation(
         crate::monitor::MonitorKey::Remote { .. } => (
             MonitorDot::Remote,
             "已连接".into(),
-            safe_monitor_text(&key.status_text(), 96),
+            safe_monitor_text(&key.status_text()),
         ),
     };
     let safe_error = error.map(|value| {
-        let value = safe_monitor_text(value, 160);
+        let value = safe_monitor_text(value);
         value
             .strip_prefix("监控更新失败：")
             .unwrap_or(&value)
@@ -151,6 +145,13 @@ struct ProcessRowColumns {
     cpu_width: f32,
     command_width: f32,
     gap_width: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProcessRowRects {
+    memory: egui::Rect,
+    cpu: egui::Rect,
+    command: egui::Rect,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -298,66 +299,147 @@ fn show_sidebar_monitor_card<R>(
     Some(egui::InnerResponse::new(inner, response))
 }
 
-fn process_row_size(width: f32) -> egui::Vec2 {
-    let width = if width.is_finite() && width > 0.0 {
-        width
-    } else {
-        0.0
-    };
-    egui::vec2(width, PROCESS_ROW_HEIGHT)
+fn sidebar_text_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
+    ui.painter()
+        .layout_no_wrap(
+            text.to_owned(),
+            egui::FontId::proportional(size),
+            egui::Color32::WHITE,
+        )
+        .size()
+        .x
 }
 
-/// Split an already horizontally-padded process-row content width into columns.
-fn process_row_columns(content_width: f32) -> ProcessRowColumns {
+/// Split an already horizontally-padded process-row content width into three equal columns.
+fn process_table_columns(content_width: f32) -> ProcessRowColumns {
     let content_width = if content_width.is_finite() {
         content_width.max(0.0)
     } else {
         0.0
     };
-    let command_reserve = content_width.min(PROCESS_MIN_COMMAND_COLUMN_WIDTH);
-    let fixed_width =
-        PROCESS_MEMORY_COLUMN_WIDTH + PROCESS_CPU_COLUMN_WIDTH + PROCESS_COLUMN_GAP * 2.0;
-    let fixed_scale = ((content_width - command_reserve) / fixed_width).clamp(0.0, 1.0);
-    let memory_width = PROCESS_MEMORY_COLUMN_WIDTH * fixed_scale;
-    let cpu_width = PROCESS_CPU_COLUMN_WIDTH * fixed_scale;
-    let gap_width = PROCESS_COLUMN_GAP * fixed_scale;
-    let preceding_width = memory_width + cpu_width + gap_width * 2.0;
-    let mut command_width = (content_width - preceding_width).max(0.0);
-    while memory_width + cpu_width + command_width + gap_width * 2.0 > content_width
-        && command_width > 0.0
-    {
-        command_width = command_width.next_down().max(0.0);
-    }
+    let gap_width = PROCESS_COLUMN_GAP.min(content_width / 4.0);
+    let usable_width = (content_width - gap_width * 2.0).max(0.0);
+    let column_width = usable_width / 3.0;
+    let command_width = (usable_width - column_width * 2.0).max(0.0);
 
     ProcessRowColumns {
-        memory_width,
-        cpu_width,
+        memory_width: column_width,
+        cpu_width: column_width,
         command_width,
         gap_width,
     }
 }
 
-/// Split an already horizontally-padded disk-row content width into columns.
-fn disk_row_columns(content_width: f32) -> DiskRowColumns {
+fn process_row_rects(row_rect: egui::Rect, columns: ProcessRowColumns) -> ProcessRowRects {
+    let horizontal_inset = 8.0_f32.min(row_rect.width().max(0.0) / 2.0);
+    let content_rect = row_rect.shrink2(egui::vec2(horizontal_inset, 0.0));
+    let content_right = content_rect.right();
+    let memory_left = content_rect.left().min(content_right);
+    let memory_right = (memory_left + columns.memory_width)
+        .min(content_right)
+        .max(memory_left);
+    let cpu_left = (memory_right + columns.gap_width).min(content_right);
+    let cpu_right = (cpu_left + columns.cpu_width)
+        .min(content_right)
+        .max(cpu_left);
+    let command_left = (cpu_right + columns.gap_width).min(content_right);
+    let command_right = (command_left + columns.command_width)
+        .min(content_right)
+        .max(command_left);
+
+    ProcessRowRects {
+        memory: egui::Rect::from_min_max(
+            egui::pos2(memory_left, content_rect.top()),
+            egui::pos2(memory_right, content_rect.bottom()),
+        ),
+        cpu: egui::Rect::from_min_max(
+            egui::pos2(cpu_left, content_rect.top()),
+            egui::pos2(cpu_right, content_rect.bottom()),
+        ),
+        command: egui::Rect::from_min_max(
+            egui::pos2(command_left, content_rect.top()),
+            egui::pos2(command_right, content_rect.bottom()),
+        ),
+    }
+}
+
+fn process_row_height(
+    ui: &egui::Ui,
+    columns: ProcessRowColumns,
+    memory_text: &str,
+    command_text: &str,
+) -> f32 {
+    let font = egui::FontId::proportional(SIDEBAR_BODY_SIZE);
+    let memory_height = ui
+        .painter()
+        .layout(
+            memory_text.to_owned(),
+            font.clone(),
+            egui::Color32::WHITE,
+            columns.memory_width.max(1.0),
+        )
+        .size()
+        .y;
+    let command_height = ui
+        .painter()
+        .layout(
+            command_text.to_owned(),
+            font,
+            egui::Color32::WHITE,
+            columns.command_width.max(1.0),
+        )
+        .size()
+        .y;
+    (memory_height.max(command_height).max(14.0) + 6.0).max(PROCESS_ROW_MIN_HEIGHT)
+}
+
+/// Size the disk table from its actual values. The mount point receives the remaining width;
+/// when the sidebar is too small, every column wraps instead of losing text.
+fn disk_table_columns(
+    ui: &egui::Ui,
+    content_width: f32,
+    disks: &[crate::monitor::DiskItem],
+) -> DiskRowColumns {
     let content_width = if content_width.is_finite() {
         content_width.max(0.0)
     } else {
         0.0
     };
-    let mount_reserve = content_width.min(DISK_MIN_MOUNT_COLUMN_WIDTH);
-    let fixed_width =
-        DISK_PERCENT_COLUMN_WIDTH + DISK_CAPACITY_COLUMN_WIDTH + DISK_COLUMN_GAP * 2.0;
-    let fixed_scale = ((content_width - mount_reserve) / fixed_width).clamp(0.0, 1.0);
-    let percent_width = DISK_PERCENT_COLUMN_WIDTH * fixed_scale;
-    let capacity_width = DISK_CAPACITY_COLUMN_WIDTH * fixed_scale;
-    let gap_width = DISK_COLUMN_GAP * fixed_scale;
-    let preceding_width = percent_width + capacity_width + gap_width * 2.0;
-    let mut mount_width = (content_width - preceding_width).max(0.0);
-    while mount_width + percent_width + capacity_width + gap_width * 2.0 > content_width
-        && mount_width > 0.0
-    {
-        mount_width = mount_width.next_down().max(0.0);
-    }
+    let text_width = |text: &str| sidebar_text_width(ui, text, SIDEBAR_BODY_SIZE) + 2.0;
+    let mount_header_width = text_width("挂载点");
+    let percent_natural = disks
+        .iter()
+        .map(|disk| text_width(&format!("{}%", disk.percent)))
+        .fold(text_width("使用率"), f32::max);
+    let capacity_natural = disks
+        .iter()
+        .map(|disk| text_width(&format!("{}/{}", disk.avail, disk.size)))
+        .fold(text_width("可用/总量"), f32::max);
+    let gap_width = DISK_COLUMN_GAP.min(content_width / 4.0);
+    let usable_width = (content_width - gap_width * 2.0).max(0.0);
+
+    let (mount_width, percent_width, capacity_width) =
+        if mount_header_width + percent_natural + capacity_natural <= usable_width {
+            (
+                usable_width - percent_natural - capacity_natural,
+                percent_natural,
+                capacity_natural,
+            )
+        } else {
+            // A remote mount path can be arbitrarily long. It must wrap inside the first
+            // column instead of stealing nearly all width from usage and capacity.
+            let natural_total = mount_header_width + percent_natural + capacity_natural;
+            let scale = if natural_total > 0.0 {
+                (usable_width / natural_total).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (
+                mount_header_width * scale,
+                percent_natural * scale,
+                capacity_natural * scale,
+            )
+        };
 
     DiskRowColumns {
         mount_width,
@@ -367,10 +449,9 @@ fn disk_row_columns(content_width: f32) -> DiskRowColumns {
     }
 }
 
-fn disk_row_rects(row_rect: egui::Rect) -> DiskRowRects {
+fn disk_row_rects(row_rect: egui::Rect, columns: DiskRowColumns) -> DiskRowRects {
     let horizontal_inset = 8.0_f32.min(row_rect.width().max(0.0) / 2.0);
     let content_rect = row_rect.shrink2(egui::vec2(horizontal_inset, 0.0));
-    let columns = disk_row_columns(content_rect.width());
     let content_right = content_rect.right();
 
     let mount_left = content_rect.left().min(content_right);
@@ -408,19 +489,52 @@ fn disk_mount_label(text: &str, color: egui::Color32) -> egui::Label {
             .size(SIDEBAR_BODY_SIZE)
             .color(color),
     )
-    .truncate()
+    .wrap()
     .halign(egui::Align::Min)
+}
+
+fn disk_row_height(
+    ui: &egui::Ui,
+    row_width: f32,
+    columns: DiskRowColumns,
+    mount_text: &str,
+    percent_text: &str,
+    capacity_text: &str,
+) -> f32 {
+    let probe = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(row_width, 0.0));
+    let rects = disk_row_rects(probe, columns);
+    let font = egui::FontId::proportional(SIDEBAR_BODY_SIZE);
+    let text_height = [
+        (mount_text, rects.mount.width()),
+        (percent_text, rects.percent.width()),
+        (capacity_text, rects.capacity.width()),
+    ]
+    .into_iter()
+    .map(|(text, width)| {
+        ui.painter()
+            .layout(
+                text.to_owned(),
+                font.clone(),
+                egui::Color32::WHITE,
+                width.max(1.0),
+            )
+            .size()
+            .y
+    })
+    .fold(0.0_f32, f32::max);
+    (text_height + 6.0).max(DISK_ROW_MIN_HEIGHT)
 }
 
 fn render_disk_row_content(
     ui: &mut egui::Ui,
     row_rect: egui::Rect,
+    columns: DiskRowColumns,
     mount_text: &str,
     percent_text: &str,
     capacity_text: &str,
     colors: DiskRowColors,
 ) {
-    let rects = disk_row_rects(row_rect);
+    let rects = disk_row_rects(row_rect, columns);
     let mut row_ui = ui.new_child(
         egui::UiBuilder::new()
             .id_salt((
@@ -451,7 +565,7 @@ fn render_disk_row_content(
                     .size(SIDEBAR_BODY_SIZE)
                     .color(colors.percent),
             )
-            .truncate()
+            .wrap()
             .halign(egui::Align::Max),
         );
     }
@@ -463,7 +577,7 @@ fn render_disk_row_content(
                     .size(SIDEBAR_BODY_SIZE)
                     .color(colors.capacity),
             )
-            .truncate()
+            .wrap()
             .halign(egui::Align::Max),
         );
     }
@@ -472,52 +586,36 @@ fn render_disk_row_content(
 fn render_process_row_content(
     ui: &mut egui::Ui,
     row_rect: egui::Rect,
+    columns: ProcessRowColumns,
     memory_text: &str,
     cpu: f32,
     command_text: &str,
     memory_color: egui::Color32,
 ) {
-    let horizontal_inset = 8.0_f32.min(row_rect.width().max(0.0) / 2.0);
-    let content_rect = row_rect.shrink2(egui::vec2(horizontal_inset, 0.0));
-    let columns = process_row_columns(content_rect.width());
-    let content_right = content_rect.right();
-    let memory_left = content_rect.left().min(content_right);
-    let memory_right = (memory_left + columns.memory_width)
-        .min(content_right)
-        .max(memory_left);
-    let memory_rect = egui::Rect::from_min_max(
-        egui::pos2(memory_left, content_rect.top()),
-        egui::pos2(memory_right, content_rect.bottom()),
-    );
-    let cpu_left = (memory_right + columns.gap_width).min(content_right);
-    let cpu_right = (cpu_left + columns.cpu_width)
-        .min(content_right)
-        .max(cpu_left);
-    let cpu_height = 14.0_f32.min(content_rect.height().max(0.0));
-    let cpu_top = content_rect.center().y - cpu_height / 2.0;
+    let rects = process_row_rects(row_rect, columns);
+    let cpu_height = 14.0_f32.min(rects.cpu.height().max(0.0));
+    let cpu_top = rects.cpu.center().y - cpu_height / 2.0;
     let cpu_rect = egui::Rect::from_min_max(
-        egui::pos2(cpu_left, cpu_top),
-        egui::pos2(cpu_right, cpu_top + cpu_height),
-    );
-    let command_left = (cpu_right + columns.gap_width).min(content_right);
-    let command_right = (command_left + columns.command_width)
-        .min(content_right)
-        .max(command_left);
-    let command_rect = egui::Rect::from_min_max(
-        egui::pos2(command_left, content_rect.top()),
-        egui::pos2(command_right, content_rect.bottom()),
+        egui::pos2(rects.cpu.left(), cpu_top),
+        egui::pos2(rects.cpu.right(), cpu_top + cpu_height),
     );
 
     // Paint row contents without child widgets. Labels registered above the row response would
     // otherwise win hit-testing and make only the painted CPU badge clickable.
     if columns.memory_width > 0.0 {
-        ui.painter().with_clip_rect(memory_rect).text(
-            memory_rect.left_center(),
-            egui::Align2::LEFT_CENTER,
-            memory_text,
+        let galley = ui.painter().layout(
+            memory_text.to_owned(),
             egui::FontId::proportional(SIDEBAR_BODY_SIZE),
             memory_color,
+            rects.memory.width(),
         );
+        let position = egui::pos2(
+            rects.memory.left(),
+            rects.memory.center().y - galley.size().y / 2.0,
+        );
+        ui.painter()
+            .with_clip_rect(rects.memory)
+            .galley(position, galley, memory_color);
     }
 
     if columns.cpu_width > 0.0 && cpu_rect.height() > 0.0 {
@@ -547,14 +645,160 @@ fn render_process_row_content(
     }
 
     if columns.command_width > 0.0 {
-        ui.painter().with_clip_rect(command_rect).text(
-            command_rect.left_center(),
-            egui::Align2::LEFT_CENTER,
-            command_text,
+        let command_color = egui::Color32::from_rgb(0xc9, 0xd1, 0xd9);
+        let galley = ui.painter().layout(
+            command_text.to_owned(),
             egui::FontId::proportional(SIDEBAR_BODY_SIZE),
-            egui::Color32::from_rgb(0xc9, 0xd1, 0xd9),
+            command_color,
+            rects.command.width(),
         );
+        let position = egui::pos2(
+            rects.command.left(),
+            rects.command.center().y - galley.size().y / 2.0,
+        );
+        ui.painter()
+            .with_clip_rect(rects.command)
+            .galley(position, galley, command_color);
     }
+}
+
+fn render_process_table_header(
+    ui: &mut egui::Ui,
+    row_rect: egui::Rect,
+    columns: ProcessRowColumns,
+    process_tab: &mut u8,
+) {
+    let rects = process_row_rects(row_rect, columns);
+    for (rect, label, index, alignment) in [
+        (rects.memory, "内存", 0_u8, egui::Align2::LEFT_CENTER),
+        (rects.cpu, "CPU", 1_u8, egui::Align2::CENTER_CENTER),
+        (rects.command, "命令", 2_u8, egui::Align2::LEFT_CENTER),
+    ] {
+        if rect.width() <= 0.0 {
+            continue;
+        }
+        let response = ui.interact(
+            rect,
+            ui.id().with(("process_sort", index)),
+            egui::Sense::click(),
+        );
+        let active = *process_tab == index;
+        if active || response.hovered() {
+            let fill = if active {
+                egui::Color32::from_rgba_unmultiplied(0x00, 0xd4, 0xff, 0x26)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 8)
+            };
+            ui.painter()
+                .rect_filled(rect.shrink2(egui::vec2(0.0, 2.0)), 3.0, fill);
+        }
+        let text_color = if active {
+            egui::Color32::from_rgb(0x00, 0xd4, 0xff)
+        } else {
+            egui::Color32::from_rgb(0x48, 0x4f, 0x58)
+        };
+        let position = if index == 1 {
+            rect.center()
+        } else {
+            rect.left_center()
+        };
+        ui.painter().with_clip_rect(rect).text(
+            position,
+            alignment,
+            label,
+            egui::FontId::proportional(SIDEBAR_META_SIZE),
+            text_color,
+        );
+        if response.clicked() {
+            *process_tab = index;
+        }
+    }
+}
+
+fn render_narrow_process_row(
+    ui: &mut egui::Ui,
+    memory_text: &str,
+    cpu: f32,
+    command_text: &str,
+    memory_color: egui::Color32,
+    row_fill: egui::Color32,
+) -> egui::Response {
+    let background = ui.painter().add(egui::Shape::Noop);
+    let frame_response = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("内存 {memory_text}"))
+                        .size(SIDEBAR_META_SIZE)
+                        .color(memory_color),
+                );
+                ui.label(
+                    egui::RichText::new(format!("CPU {cpu:.1}%"))
+                        .size(SIDEBAR_META_SIZE)
+                        .color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)),
+                );
+            });
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(command_text)
+                        .size(SIDEBAR_BODY_SIZE)
+                        .color(egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)),
+                )
+                .wrap(),
+            );
+        })
+        .response;
+    let response = ui.interact(
+        frame_response.rect,
+        frame_response.id.with("click"),
+        egui::Sense::click(),
+    );
+    let fill = if response.hovered() {
+        egui::Color32::from_rgba_unmultiplied(0x00, 0xd4, 0xff, 0x0f)
+    } else {
+        row_fill
+    };
+    ui.painter().set(
+        background,
+        egui::Shape::rect_filled(frame_response.rect, 0.0, fill),
+    );
+    response
+}
+
+fn render_narrow_disk_row(
+    ui: &mut egui::Ui,
+    mount_text: &str,
+    percent_text: &str,
+    capacity_text: &str,
+    colors: DiskRowColors,
+    row_fill: egui::Color32,
+) {
+    egui::Frame::new()
+        .fill(row_fill)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(mount_text)
+                        .size(SIDEBAR_BODY_SIZE)
+                        .color(colors.mount),
+                )
+                .wrap(),
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(percent_text)
+                        .size(SIDEBAR_BODY_SIZE)
+                        .color(colors.percent),
+                );
+                ui.label(
+                    egui::RichText::new(capacity_text)
+                        .size(SIDEBAR_BODY_SIZE)
+                        .color(colors.capacity),
+                );
+            });
+        });
 }
 
 fn network_line_points(data: &[f64], rect: egui::Rect, max_value: f64) -> Vec<egui::Pos2> {
@@ -662,6 +906,7 @@ impl Default for NewConnForm {
 pub struct Sidebar {
     pub visible: bool,
     pub width: f32,
+    width_commit_requested: bool,
     pub connections: Vec<SshConnection>,
     pub selected: Option<usize>,
     pub on_connect: Option<SshConnection>,
@@ -737,7 +982,8 @@ impl Sidebar {
         let connections = Self::load_connections();
         Self {
             visible: true,
-            width: 220.0,
+            width: crate::settings::DEFAULT_SIDEBAR_WIDTH as f32,
+            width_commit_requested: false,
             connections,
             selected: None,
             on_connect: None,
@@ -790,6 +1036,12 @@ impl Sidebar {
 
     pub fn take_connect(&mut self) -> Option<SshConnection> {
         self.on_connect.take()
+    }
+
+    pub fn take_width_commit(&mut self) -> Option<u32> {
+        self.width_commit_requested
+            .then(|| self.width.round() as u32)
+            .inspect(|_| self.width_commit_requested = false)
     }
 
     pub fn take_open_process_manager(&mut self) -> Option<OpenProcessManagerAction> {

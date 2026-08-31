@@ -15,121 +15,119 @@ impl Sidebar {
         let mut save_and_connect = false;
         let mut save_only = false;
 
+        let screen = ctx.input(|input| input.screen_rect());
+        let max_width = (screen.width() - 32.0).max(160.0);
+        let max_height = (screen.height() - 32.0).max(160.0);
+        let default_width = (screen.width() * 0.45).clamp(160.0, max_width.min(520.0));
         egui::Window::new("新建 SSH 连接")
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .resizable(false)
-            .default_width(380.0)
+            .resizable(true)
+            .vscroll(true)
+            .default_width(default_width)
+            .max_width(max_width)
+            .max_height(max_height)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
 
-                egui::Grid::new("new_conn_grid")
-                    .num_columns(2)
-                    .spacing([8.0, 6.0])
-                    .show(ui, |ui| {
-                        ui.label("标签:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.new_conn.label)
-                                .desired_width(260.0),
-                        );
-                        ui.end_row();
+                ui.label("标签:");
+                let field_width = ui.available_width();
+                ui.add_sized(
+                    [field_width, 0.0],
+                    egui::TextEdit::singleline(&mut self.new_conn.label),
+                );
 
-                        ui.label("主机:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.new_conn.host)
-                                .desired_width(260.0)
-                                .hint_text("192.168.1.1"),
-                        );
-                        ui.end_row();
+                ui.label("主机:");
+                let field_width = ui.available_width();
+                ui.add_sized(
+                    [field_width, 0.0],
+                    egui::TextEdit::singleline(&mut self.new_conn.host).hint_text("192.168.1.1"),
+                );
 
-                        ui.label("端口:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.new_conn.port).desired_width(80.0),
-                        );
-                        ui.end_row();
+                ui.label("端口:");
+                let field_width = ui.available_width();
+                ui.add_sized(
+                    [field_width, 0.0],
+                    egui::TextEdit::singleline(&mut self.new_conn.port),
+                );
 
-                        ui.label("用户名:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.new_conn.user)
-                                .desired_width(260.0),
-                        );
-                        ui.end_row();
+                ui.label("用户名:");
+                let field_width = ui.available_width();
+                ui.add_sized(
+                    [field_width, 0.0],
+                    egui::TextEdit::singleline(&mut self.new_conn.user),
+                );
 
-                        ui.label("认证:");
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.new_conn.auth_idx, 0, "密钥");
-                            ui.selectable_value(&mut self.new_conn.auth_idx, 1, "密码");
-                        });
-                        ui.end_row();
+                ui.label("认证:");
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(&mut self.new_conn.auth_idx, 0, "密钥");
+                    ui.selectable_value(&mut self.new_conn.auth_idx, 1, "密码");
+                });
 
-                        if self.new_conn.auth_idx == 0 {
-                            ui.label("密钥路径:");
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.new_conn.key_path)
-                                        .desired_width(190.0),
-                                );
-                                if ui.button("浏览…").clicked() {
-                                    let mut dialog =
-                                        rfd::FileDialog::new().set_title("选择 SSH 私钥文件");
-                                    if let Some(ssh_dir) =
-                                        dirs::home_dir().map(|home| home.join(".ssh"))
-                                    {
-                                        dialog = dialog.set_directory(ssh_dir);
-                                    }
-                                    if let Some(path) = dialog.pick_file() {
-                                        self.new_conn.key_path =
-                                            path.to_string_lossy().into_owned();
-                                    }
-                                }
-                            });
-                            ui.end_row();
-                        } else {
-                            ui.label("密码:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.new_conn.password)
-                                    .password(true)
-                                    .desired_width(260.0),
-                            );
-                            ui.end_row();
+                if self.new_conn.auth_idx == 0 {
+                    ui.label("密钥路径:");
+                    let field_width = ui.available_width();
+                    ui.add_sized(
+                        [field_width, 0.0],
+                        egui::TextEdit::singleline(&mut self.new_conn.key_path),
+                    );
+                    if ui.button("浏览…").clicked() {
+                        let mut dialog = rfd::FileDialog::new().set_title("选择 SSH 私钥文件");
+                        if let Some(ssh_dir) = dirs::home_dir().map(|home| home.join(".ssh")) {
+                            dialog = dialog.set_directory(ssh_dir);
                         }
-
-                        ui.label("分组:");
-                        let store = ConnectionStore::load();
-                        let groups: Vec<String> = store.groups.keys().cloned().collect();
-                        egui::ComboBox::from_id_salt("group_combo")
-                            .selected_text(&self.new_conn.group)
-                            .show_ui(ui, |ui| {
-                                for g in &groups {
-                                    ui.selectable_value(&mut self.new_conn.group, g.clone(), g);
-                                }
-                                ui.selectable_value(
-                                    &mut self.new_conn.group,
-                                    "__new__".to_string(),
-                                    "+ 新建分组",
-                                );
-                            });
-                        ui.end_row();
-
-                        if self.new_conn.group == "__new__" {
-                            ui.label("新分组名:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.new_conn.new_group)
-                                    .desired_width(260.0),
-                            );
-                            ui.end_row();
+                        if let Some(path) = dialog.pick_file() {
+                            self.new_conn.key_path = path.to_string_lossy().into_owned();
                         }
+                    }
+                } else {
+                    ui.label("密码:");
+                    let field_width = ui.available_width();
+                    ui.add_sized(
+                        [field_width, 0.0],
+                        egui::TextEdit::singleline(&mut self.new_conn.password).password(true),
+                    );
+                }
+
+                ui.label("分组:");
+                let store = ConnectionStore::load();
+                let groups: Vec<String> = store.groups.keys().cloned().collect();
+                egui::ComboBox::from_id_salt("group_combo")
+                    .selected_text(&self.new_conn.group)
+                    .width(ui.available_width())
+                    .wrap_mode(egui::TextWrapMode::Wrap)
+                    .show_ui(ui, |ui| {
+                        for g in &groups {
+                            ui.selectable_value(&mut self.new_conn.group, g.clone(), g);
+                        }
+                        ui.selectable_value(
+                            &mut self.new_conn.group,
+                            "__new__".to_string(),
+                            "+ 新建分组",
+                        );
                     });
+
+                if self.new_conn.group == "__new__" {
+                    ui.label("新分组名:");
+                    let field_width = ui.available_width();
+                    ui.add_sized(
+                        [field_width, 0.0],
+                        egui::TextEdit::singleline(&mut self.new_conn.new_group),
+                    );
+                }
 
                 if !self.new_conn.status.is_empty() {
                     ui.add_space(4.0);
-                    ui.colored_label(
-                        egui::Color32::from_rgb(0xf8, 0x51, 0x49),
-                        &self.new_conn.status,
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&self.new_conn.status)
+                                .color(egui::Color32::from_rgb(0xf8, 0x51, 0x49)),
+                        )
+                        .wrap(),
                     );
                 }
 
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button("保存并连接").clicked() {
                         save_and_connect = true;
                     }
@@ -237,36 +235,53 @@ impl Sidebar {
         }
 
         let mut open = true;
+        let screen = ctx.input(|input| input.screen_rect());
+        let max_width = (screen.width() - 32.0).max(180.0);
+        let max_height = (screen.height() - 32.0).max(180.0);
+        let default_width = (screen.width() * 0.6).clamp(180.0, max_width.min(720.0));
+        let default_height = (screen.height() * 0.65).clamp(180.0, max_height.min(640.0));
         egui::Window::new("SSH 密钥管理")
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .resizable(true)
-            .default_width(500.0)
-            .default_height(400.0)
+            .vscroll(true)
+            .default_size(egui::vec2(default_width, default_height))
+            .max_width(max_width)
+            .max_height(max_height)
             .show(ctx, |ui| {
                 // Key list
                 ui.heading("已有密钥");
+                let key_list_height = (ui.available_height() * 0.5).max(100.0);
                 egui::ScrollArea::vertical()
-                    .max_height(250.0)
+                    .max_height(key_list_height)
                     .show(ui, |ui| {
                         for key in &self.ssh_keys {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 let icon = if key.is_public { "🔓" } else { "🔑" };
                                 ui.label(egui::RichText::new(icon).size(12.0));
-                                ui.label(
-                                    egui::RichText::new(&key.name)
-                                        .size(11.0)
-                                        .color(egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&key.name)
+                                            .size(11.0)
+                                            .color(egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)),
+                                    )
+                                    .wrap(),
                                 );
-                                ui.label(
-                                    egui::RichText::new(&key.key_type)
-                                        .size(10.0)
-                                        .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&key.key_type)
+                                            .size(10.0)
+                                            .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                                    )
+                                    .wrap(),
                                 );
                                 if !key.fingerprint.is_empty() {
-                                    ui.label(
-                                        egui::RichText::new(&key.fingerprint)
-                                            .size(9.0)
-                                            .color(egui::Color32::from_rgb(0x48, 0x4f, 0x58)),
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&key.fingerprint)
+                                                .size(9.0)
+                                                .color(egui::Color32::from_rgb(0x48, 0x4f, 0x58)),
+                                        )
+                                        .wrap(),
                                     );
                                 }
                                 if key.is_public {
@@ -284,10 +299,11 @@ impl Sidebar {
 
                 ui.separator();
                 ui.heading("生成新密钥");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("类型:");
                     egui::ComboBox::from_id_salt("keygen_type")
                         .selected_text(&self.keygen_type)
+                        .wrap_mode(egui::TextWrapMode::Wrap)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut self.keygen_type,
@@ -301,14 +317,14 @@ impl Sidebar {
                                 "ecdsa",
                             );
                         });
-                    ui.label("备注:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.keygen_comment)
-                            .desired_width(150.0)
-                            .hint_text("user@host"),
-                    );
                 });
-                ui.horizontal(|ui| {
+                ui.label("备注:");
+                let comment_width = ui.available_width();
+                ui.add_sized(
+                    [comment_width, 0.0],
+                    egui::TextEdit::singleline(&mut self.keygen_comment).hint_text("user@host"),
+                );
+                ui.horizontal_wrapped(|ui| {
                     if ui.button("生成密钥").clicked() {
                         match generate_ssh_key(&self.keygen_type, &self.keygen_comment) {
                             Ok(pub_key) => {
@@ -323,7 +339,10 @@ impl Sidebar {
                     }
                 });
                 if !self.keygen_status.is_empty() {
-                    ui.label(egui::RichText::new(&self.keygen_status).size(10.0));
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&self.keygen_status).size(10.0))
+                            .wrap(),
+                    );
                 }
                 ui.add_space(8.0);
                 if ui.button("关闭").clicked() {

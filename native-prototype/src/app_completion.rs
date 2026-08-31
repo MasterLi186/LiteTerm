@@ -269,7 +269,6 @@ pub(super) fn completion_key_action(
     if modifiers.control_key()
         || modifiers.alt_key()
         || modifiers.super_key()
-        || egui_wants_keyboard
         || has_dialog
         || search_field_owns_focus
     {
@@ -278,10 +277,22 @@ pub(super) fn completion_key_action(
     if !popup_visible {
         return CompletionKeyAction::PassThrough;
     }
+    // A visible completion popup is a terminal-owned overlay.  Linux egui
+    // backends can keep `wants_keyboard_input` set for a frame after another
+    // widget was focused; do not let that transient state swallow Tab.  Keep
+    // the guard for navigation/Escape so a genuinely focused egui field still
+    // retains those keys.
+    if egui_wants_keyboard {
+        return if is_tab_key(key) && !modifiers.shift_key() {
+            CompletionKeyAction::Accept
+        } else {
+            CompletionKeyAction::PassThrough
+        };
+    }
     match key {
         Key::Named(NamedKey::ArrowUp) => CompletionKeyAction::Previous,
         Key::Named(NamedKey::ArrowDown) => CompletionKeyAction::Next,
-        Key::Named(NamedKey::Tab) if !modifiers.shift_key() => CompletionKeyAction::Accept,
+        key if is_tab_key(key) && !modifiers.shift_key() => CompletionKeyAction::Accept,
         Key::Named(NamedKey::Escape) => CompletionKeyAction::Dismiss,
         _ => CompletionKeyAction::PassThrough,
     }

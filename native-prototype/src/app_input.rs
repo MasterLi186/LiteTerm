@@ -398,6 +398,15 @@ pub(super) fn is_modifier_only_key(key: &Key) -> bool {
     )
 }
 
+/// Winit normally reports Tab as `NamedKey::Tab`, but some Linux input
+/// backends/IME paths expose the same physical key as a literal tab
+/// character.  Treat both forms identically so the completion popup and the
+/// terminal input path do not depend on the backend's logical-key spelling.
+pub(super) fn is_tab_key(key: &Key) -> bool {
+    matches!(key, Key::Named(NamedKey::Tab))
+        || matches!(key, Key::Character(character) if character == "\t")
+}
+
 pub(super) fn terminal_backspace_sequence(alt: bool) -> &'static str {
     if alt {
         "\x1b\x7f"

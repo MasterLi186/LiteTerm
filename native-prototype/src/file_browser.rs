@@ -404,7 +404,10 @@ impl PaneState {
 impl FileBrowserState {
     pub fn new(local_path: String) -> Self {
         Self {
-            open: true,
+            // Every new/restored/reconnected SSH session starts collapsed.
+            // The per-tab state remains mutable so ordinary tab switching keeps
+            // the user's manual choice for the lifetime of that connection.
+            open: false,
             ready: false,
             local: PaneState::new(local_path),
             remote: PaneState::new("/".into()),

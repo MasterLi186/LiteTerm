@@ -1,8 +1,10 @@
 # LiteTerm
 
+> **开发状态：Native Only。** 当前唯一开发和运行目标是 `native-prototype/`（Rust + winit + wgpu + egui），通过 `./run-native.sh` 启动。React/Tauri 与旧 GTK 代码仅作历史参考，除非明确要求，否则不再修改。详见 [Native-only 开发约束](docs/NATIVE_ONLY.md)。
+
 轻量级跨平台 SSH 客户端 — FinalShell / Tabby / XShell 开源替代品。
 
-基于 **Tauri 2 + React + TypeScript + xterm.js** 构建，内存占用 ~30MB，安装包仅 6MB（deb）。
+当前版本基于 **Rust + winit + wgpu + egui** 构建。
 
 ## 功能特性
 
@@ -19,7 +21,7 @@
 - **快捷键自定义** — 9 组快捷键可自由配置
 
 ### SSH
-- **连接管理** — 分组保存，密码存入系统密钥环（GNOME Keyring）
+- **连接管理** — 分组保存，密码存入本地加密凭据文件
 - **ProxyJump** — 跳板机支持，通过系统 ssh -J 实现
 - **端口转发** — 本地隧道，支持多条同时运行
 - **自动重连** — 断线后指数退避重连（最多 5 次）
@@ -62,29 +64,28 @@
 
 ```bash
 # 系统依赖 (Ubuntu/Debian)
-sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev libudev-dev
+sudo apt install -y build-essential pkg-config libudev-dev
 
-# 构建
+# 构建 Native 版本（默认不运行自动测试）
 git clone https://github.com/MasterLi186/LiteTerm.git
 cd LiteTerm
-npm install
-./build.sh
+cargo build --manifest-path native-prototype/Cargo.toml
 
 # 运行
-./run.sh
+./run-native.sh
 ```
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|------|
-| 前端 | React 18 + TypeScript + Tailwind CSS |
-| 终端 | xterm.js + FitAddon + SearchAddon + zmodem.js |
-| 后端 | Rust + Tauri 2 |
+| 窗口/UI | winit + egui |
+| 渲染 | wgpu + cosmic-text |
+| 核心 | Rust |
 | SSH/SFTP | ssh2 (libssh2) |
 | 本地终端 | portable-pty |
 | 串口 | serialport |
-| 密钥存储 | secret-service (GNOME Keyring) |
+| 密钥存储 | OpenSSL AES-256-GCM 本地加密文件 |
 
 ## 截图
 

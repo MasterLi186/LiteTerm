@@ -27,6 +27,31 @@ fn monitor_with_rate(iface: &str, rx_rate: u64, tx_rate: u64) -> crate::monitor:
     }
 }
 
+fn sample_process(memory: &str, cpu: f32, name: &str) -> crate::monitor::ProcessInfo {
+    crate::monitor::ProcessInfo {
+        pid: 1,
+        user: "tester".into(),
+        state: "R".into(),
+        mem_mb: memory.into(),
+        mem_bytes: 1,
+        resident_mem_mb: memory.into(),
+        resident_mem_bytes: 1,
+        cpu,
+        name: name.into(),
+        command: name.into(),
+        start_time: String::new(),
+    }
+}
+
+fn sample_disk(mount: &str, percent: u8, avail: &str, size: &str) -> crate::monitor::DiskItem {
+    crate::monitor::DiskItem {
+        mount: mount.into(),
+        avail: avail.into(),
+        size: size.into(),
+        percent,
+    }
+}
+
 #[test]
 fn ssh_connection_debug_redacts_key_path_and_password() {
     let connection = SshConnection {
@@ -339,13 +364,17 @@ fn render_clickable_monitor_row(
                 egui::Color32::GRAY,
                 0.0,
                 |ui| {
+                    let row_width = ui.available_width();
+                    let columns = process_table_columns((row_width - 16.0).max(0.0));
+                    let row_height = process_row_height(ui, columns, "128M", "liteterm-native");
                     let (_, response) = ui.allocate_exact_size(
-                        process_row_size(ui.available_width()),
+                        egui::vec2(row_width, row_height),
                         egui::Sense::click(),
                     );
                     render_process_row_content(
                         ui,
                         response.rect,
+                        columns,
                         "128M",
                         42.0,
                         "liteterm-native",
@@ -483,75 +512,57 @@ fn monitor_card_frame_skips_non_renderable_geometry_without_advancing_parent() {
 }
 
 #[test]
-fn process_row_size_fills_available_width_and_keeps_fixed_height() {
-    assert_eq!(
-        process_row_size(188.0),
-        egui::vec2(188.0, PROCESS_ROW_HEIGHT)
-    );
-    for width in [0.0, -12.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        assert_eq!(process_row_size(width), egui::vec2(0.0, PROCESS_ROW_HEIGHT));
-    }
-}
-
-#[test]
-fn process_row_columns_fit_within_the_content_width() {
-    fn assert_fits(content_width: f32) {
-        let columns = process_row_columns(content_width);
-        let widths = [
-            columns.memory_width,
-            columns.cpu_width,
-            columns.command_width,
-            columns.gap_width,
-        ];
-
-        assert!(widths
-            .iter()
-            .all(|width| width.is_finite() && *width >= 0.0));
+fn process_table_columns_fit_and_are_shared_by_every_row() {
+    egui::__run_test_ui(|_ui| {
+        let content_width = 202.0;
+        let columns = process_table_columns(content_width);
         let total_width = columns.memory_width
             + columns.cpu_width
             + columns.command_width
             + columns.gap_width * 2.0;
-        assert!(
-            total_width <= content_width.max(0.0),
-            "content_width={content_width:?}, total_width={total_width:?}, columns={columns:?}"
+
+        assert!(total_width <= content_width);
+        assert!(columns.memory_width > 0.0);
+        assert!(columns.cpu_width > 0.0);
+        assert!(columns.command_width > 0.0);
+        assert!((columns.memory_width - columns.cpu_width).abs() < f32::EPSILON);
+        assert!((columns.cpu_width - columns.command_width).abs() < 0.001);
+
+        let first = process_row_rects(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(218.0, 24.0)),
+            columns,
         );
-    }
-
-    let normal = process_row_columns(180.0);
-    assert_eq!(normal.memory_width, 38.0);
-    assert_eq!(normal.cpu_width, 46.0);
-    assert_eq!(normal.gap_width, 8.0);
-
-    let reviewed_fractional_width = 64.009_803_77_f64 as f32;
-    for content_width in [
-        80.0,
-        reviewed_fractional_width,
-        63.999_996,
-        20.000_002,
-        7.25,
-        1.0,
-        0.1,
-        0.000_1,
-        0.0,
-        -10.0,
-    ] {
-        assert_fits(content_width);
-    }
-    assert!(process_row_columns(80.0).command_width > 0.0);
+        let second = process_row_rects(
+            egui::Rect::from_min_size(egui::pos2(0.0, 24.0), egui::vec2(218.0, 48.0)),
+            columns,
+        );
+        assert_eq!(first.cpu.left(), second.cpu.left());
+        assert_eq!(first.command.left(), second.command.left());
+    });
 }
 
 #[test]
 fn process_row_content_does_not_advance_the_parent_cursor() {
     egui::__run_test_ui(|ui| {
-        let (row_rect, _) = ui.allocate_exact_size(process_row_size(80.0), egui::Sense::hover());
+        let processes = [sample_process(
+            "123 MiB",
+            42.0,
+            "a very long process command that wraps",
+        )];
+        let row_width = 218.0;
+        let columns = process_table_columns(row_width - 16.0);
+        let row_height = process_row_height(ui, columns, "123 MiB", &processes[0].name);
+        let (row_rect, _) =
+            ui.allocate_exact_size(egui::vec2(row_width, row_height), egui::Sense::hover());
         let cursor_after_row = ui.cursor();
 
         render_process_row_content(
             ui,
             row_rect,
+            columns,
             "123 MiB",
             42.0,
-            "a very long process command that must be truncated",
+            &processes[0].name,
             egui::Color32::GRAY,
         );
 
@@ -560,119 +571,62 @@ fn process_row_content_does_not_advance_the_parent_cursor() {
 }
 
 #[test]
-fn disk_row_columns_fit_normal_narrow_and_invalid_widths() {
-    fn assert_fits(content_width: f32) {
-        let columns = disk_row_columns(content_width);
-        let widths = [
-            columns.mount_width,
-            columns.percent_width,
-            columns.capacity_width,
-            columns.gap_width,
-        ];
-        let width_limit = if content_width.is_finite() {
-            content_width.max(0.0)
-        } else {
-            0.0
-        };
-
-        assert!(widths
-            .iter()
-            .all(|width| width.is_finite() && *width >= 0.0));
-        let total_width = columns.mount_width
-            + columns.percent_width
-            + columns.capacity_width
-            + columns.gap_width * 2.0;
-        assert!(
-            total_width <= width_limit,
-            "content_width={content_width:?}, total_width={total_width:?}, columns={columns:?}"
-        );
-    }
-
-    let normal = disk_row_columns(202.0);
-    assert_eq!(normal.mount_width, 74.0);
-    assert_eq!(normal.percent_width, 40.0);
-    assert_eq!(normal.capacity_width, 80.0);
-    assert_eq!(normal.gap_width, 4.0);
-
-    for content_width in [
-        202.0,
-        102.0,
-        64.25,
-        20.0,
-        1.0,
-        0.0,
-        -10.0,
-        f32::NAN,
-        f32::INFINITY,
-        f32::NEG_INFINITY,
-    ] {
-        assert_fits(content_width);
-    }
-}
-
-#[test]
-fn disk_header_percent_column_reserves_readable_width_at_normal_size() {
-    let content_width = 202.0;
-    let columns = disk_row_columns(content_width);
-    let total_width = columns.mount_width
-        + columns.percent_width
-        + columns.capacity_width
-        + columns.gap_width * 2.0;
-
-    assert!(
-        columns.percent_width >= 40.0,
-        "12px Chinese header 使用率 needs at least 40px, columns={columns:?}"
-    );
-    assert!(columns.mount_width > 0.0);
-    assert!(columns.capacity_width > 0.0);
-    assert!(total_width <= content_width);
-}
-
-#[test]
-fn disk_row_columns_strictly_fit_fractional_widths() {
-    for content_width in [
-        202.000_02, 102.000_01, 64.250_01, 32.000_004, 20.000_002, 7.25, 0.000_1,
-    ] {
-        let columns = disk_row_columns(content_width);
-        let total_width = columns.mount_width
-            + columns.percent_width
-            + columns.capacity_width
-            + columns.gap_width * 2.0;
-        assert!(
-            total_width <= content_width,
-            "content_width={content_width:?}, total_width={total_width:?}, columns={columns:?}"
-        );
-    }
-}
-
-#[test]
-fn disk_row_rects_stay_inside_the_row_without_overlapping() {
-    let row_rect =
-        egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(218.0, DISK_ROW_HEIGHT));
-    let rects = disk_row_rects(row_rect);
-
-    assert_eq!(rects.mount.width(), 74.0);
-    assert_eq!(rects.percent.width(), 40.0);
-    assert_eq!(rects.capacity.width(), 80.0);
-    assert!(row_rect.contains_rect(rects.mount));
-    assert!(row_rect.contains_rect(rects.percent));
-    assert!(row_rect.contains_rect(rects.capacity));
-    assert!(rects.mount.right() <= rects.percent.left());
-    assert!(rects.percent.right() <= rects.capacity.left());
-}
-
-#[test]
-fn disk_row_content_truncates_unicode_without_advancing_or_expanding_parent() {
+fn disk_table_columns_fit_content_and_rects_do_not_overlap() {
     egui::__run_test_ui(|ui| {
+        let disks = [
+            sample_disk("/", 8, "163.9G", "186.7G"),
+            sample_disk("/7940_01", 99, "195.2G", "13.9T"),
+        ];
+        let content_width = 202.0;
+        let columns = disk_table_columns(ui, content_width, &disks);
+        let total_width = columns.mount_width
+            + columns.percent_width
+            + columns.capacity_width
+            + columns.gap_width * 2.0;
+        assert!(total_width <= content_width);
+
+        let row_rect = egui::Rect::from_min_size(
+            egui::pos2(10.0, 20.0),
+            egui::vec2(218.0, DISK_ROW_MIN_HEIGHT),
+        );
+        let rects = disk_row_rects(row_rect, columns);
+        assert!(row_rect.contains_rect(rects.mount));
+        assert!(row_rect.contains_rect(rects.percent));
+        assert!(row_rect.contains_rect(rects.capacity));
+        assert!(rects.mount.right() <= rects.percent.left());
+        assert!(rects.percent.right() <= rects.capacity.left());
+    });
+}
+
+#[test]
+fn disk_row_content_wraps_without_advancing_or_expanding_parent() {
+    egui::__run_test_ui(|ui| {
+        let disks = [sample_disk(
+            "/这是一个很长的挂载点/資料/🚀/不会按字节切片",
+            96,
+            "933.4G",
+            "1.8T",
+        )];
+        let row_width = 218.0;
+        let columns = disk_table_columns(ui, row_width - 16.0, &disks);
+        let row_height = disk_row_height(
+            ui,
+            row_width,
+            columns,
+            &disks[0].mount,
+            "96%",
+            "933.4G/1.8T",
+        );
         let (row_rect, _) =
-            ui.allocate_exact_size(egui::vec2(202.0, DISK_ROW_HEIGHT), egui::Sense::hover());
+            ui.allocate_exact_size(egui::vec2(row_width, row_height), egui::Sense::hover());
         let cursor_after_row = ui.cursor();
         let parent_min_rect_after_row = ui.min_rect();
 
         render_disk_row_content(
             ui,
             row_rect,
-            "/这是一个很长的挂载点/資料/🚀/不会按字节切片",
+            columns,
+            &disks[0].mount,
             "96%",
             "933.4G/1.8T",
             DiskRowColors {
@@ -685,49 +639,6 @@ fn disk_row_content_truncates_unicode_without_advancing_or_expanding_parent() {
         assert_eq!(ui.cursor(), cursor_after_row);
         assert_eq!(ui.min_rect(), parent_min_rect_after_row);
     });
-}
-
-#[test]
-fn disk_mount_shape_starts_at_the_production_column_left_edge() {
-    let ctx = egui::Context::default();
-    let mut mount_left = 0.0;
-    let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(400.0, 120.0),
-        )),
-        ..Default::default()
-    };
-    let output = ctx.run(input, |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let (row_rect, _) =
-                ui.allocate_exact_size(egui::vec2(218.0, DISK_ROW_HEIGHT), egui::Sense::hover());
-            mount_left = disk_row_rects(row_rect).mount.left();
-            render_disk_row_content(
-                ui,
-                row_rect,
-                "挂载点探针",
-                "96%",
-                "933.4G/1.8T",
-                DiskRowColors {
-                    mount: egui::Color32::WHITE,
-                    percent: egui::Color32::RED,
-                    capacity: egui::Color32::LIGHT_GRAY,
-                },
-            );
-        });
-    });
-    let mut painted_text = Vec::new();
-    for clipped in &output.shapes {
-        collect_painted_text(&clipped.shape, &mut painted_text);
-    }
-    let mount = painted_text
-        .iter()
-        .find(|text| text.text == "挂载点探针")
-        .unwrap_or_else(|| panic!("missing rendered mount label in {painted_text:?}"));
-
-    assert_eq!(mount.halign, egui::Align::Min);
-    assert_eq!(mount.pos.x, mount_left);
 }
 
 #[test]

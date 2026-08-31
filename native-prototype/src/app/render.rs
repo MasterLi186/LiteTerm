@@ -228,6 +228,7 @@ impl App {
         });
         let terminal_notice = self.terminal_notice.clone();
         let mut dismiss_terminal_notice = false;
+        let mut sidebar_width_commit = None;
         let egui_ctx = self.egui_ctx.clone();
         let egui_output = egui_ctx.run(egui_input, |ctx| {
             let pane_painter = ctx.layer_painter(egui::LayerId::new(
@@ -268,6 +269,7 @@ impl App {
                 active_monitor_data.as_ref(),
                 active_monitor_error.as_deref(),
             );
+            sidebar_width_commit = self.sidebar.take_width_commit();
             if self.new_tab_selector.is_open() {
                 selector_connections = self.sidebar.connections.clone();
             }
@@ -286,7 +288,12 @@ impl App {
             tab_action = tab_bar::render_tab_bar(ctx, &self.tab_manager, &mut self.tab_drag_state);
             tab_rename_request = self.tab_rename_dialog.render(ctx);
             if active_settings_tab {
+                let width_before = self.settings_panel.sidebar_width();
                 settings_action = self.settings_panel.show_page(ctx);
+                let width_after = self.settings_panel.sidebar_width();
+                if width_after != width_before {
+                    self.sidebar.width = width_after as f32;
+                }
             }
             if let Some((tab_id, key)) = active_process_tab.as_ref() {
                 let state = self
@@ -744,6 +751,13 @@ impl App {
                 }
             }
         });
+        if let Some(width) = sidebar_width_commit {
+            self.settings.appearance.sidebar_width = width;
+            self.settings_panel.sync_sidebar_width(width);
+            if let Err(error) = self.settings.save() {
+                self.terminal_notice = Some(format!("保存侧边栏宽度失败：{error}"));
+            }
+        }
         let tab_renamed = tab_rename_request
             .map(|request| {
                 self.tab_manager

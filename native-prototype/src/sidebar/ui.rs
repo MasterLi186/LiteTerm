@@ -1,4 +1,5 @@
 use super::*;
+use crate::settings::{MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 
 impl Sidebar {
     pub fn ui_with_monitor(
@@ -36,21 +37,32 @@ impl Sidebar {
         monitor: Option<&crate::monitor::MonitorData>,
         presentation: &MonitorSourcePresentation,
     ) -> f32 {
-        egui::SidePanel::left("sidebar")
-            .exact_width(panel_width)
-            .resizable(false)
+        let panel_id = egui::Id::new("sidebar");
+        let requested_width = panel_width.clamp(MIN_SIDEBAR_WIDTH as f32, MAX_SIDEBAR_WIDTH as f32);
+        if egui::containers::panel::PanelState::load(ctx, panel_id)
+            .is_some_and(|state| (state.rect.width() - requested_width).abs() > 0.5)
+        {
+            ctx.data_mut(|data| {
+                data.remove::<egui::containers::panel::PanelState>(panel_id);
+            });
+        }
+        let response = egui::SidePanel::left("sidebar")
+            .default_width(panel_width)
+            .width_range(MIN_SIDEBAR_WIDTH as f32..=MAX_SIDEBAR_WIDTH as f32)
+            .resizable(true)
             .frame(
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgb(0x0d, 0x11, 0x17))
                     .inner_margin(egui::Margin::same(0)),
             )
             .show(ctx, |ui| {
+                let panel_width = ui.max_rect().width();
                 ui.style_mut().visuals.override_text_color =
                     Some(egui::Color32::from_rgb(0x8b, 0x94, 0x9e));
 
                 // Header + toolbar
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add_space(6.0);
                     let arrow = if self.connections_visible {
                         "▼"
@@ -69,7 +81,7 @@ impl Sidebar {
                         self.connections_visible = !self.connections_visible;
                     }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         let normal = egui::Color32::from_rgb(0x8b, 0x94, 0x9e);
                         let cyan = egui::Color32::from_rgb(0x00, 0xd4, 0xff);
@@ -115,7 +127,7 @@ impl Sidebar {
                         if r4.clicked() {
                             self.import_connections_with_dialog();
                         }
-                    });
+                    }
                 });
                 ui.add_space(2.0);
                 ui.separator();
@@ -123,6 +135,7 @@ impl Sidebar {
                 // 整个侧边栏内容可滚动
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar_main_scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
                         if self.connections_visible {
                             let mut current_group = String::new();
@@ -132,7 +145,7 @@ impl Sidebar {
                                     let is_collapsed =
                                         self.collapsed_groups.contains(&current_group);
                                     ui.add_space(6.0);
-                                    let gr = ui.horizontal(|ui| {
+                                    let gr = ui.horizontal_wrapped(|ui| {
                                         ui.add_space(8.0);
                                         let arrow = if is_collapsed { "▶" } else { "▼" };
                                         ui.label(
@@ -150,10 +163,15 @@ impl Sidebar {
                                             egui::Sense::hover(),
                                         );
                                         ui.painter().circle_filled(r.center(), 4.0, dot);
-                                        ui.label(
-                                            egui::RichText::new(&current_group)
-                                                .size(SIDEBAR_META_SIZE)
-                                                .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&current_group)
+                                                    .size(SIDEBAR_META_SIZE)
+                                                    .color(egui::Color32::from_rgb(
+                                                        0x8b, 0x94, 0x9e,
+                                                    )),
+                                            )
+                                            .wrap(),
                                         )
                                     });
                                     if gr.inner.clicked() {
@@ -175,8 +193,25 @@ impl Sidebar {
                                 let is_selected = self.selected == Some(i);
                                 let resp = ui.horizontal(|ui| {
                                     ui.add_space(16.0);
+                                    let row_width = ui.available_width().max(1.0);
+                                    let text_width = (row_width - 8.0).max(1.0);
+                                    let label = ui.painter().layout(
+                                        conn.label.clone(),
+                                        egui::FontId::proportional(SIDEBAR_BODY_SIZE),
+                                        egui::Color32::from_rgb(0xc9, 0xd1, 0xd9),
+                                        text_width,
+                                    );
+                                    let label_height = label.size().y;
+                                    let detail = ui.painter().layout(
+                                        format!("{}@{}:{}", conn.user, conn.host, conn.port),
+                                        egui::FontId::proportional(SIDEBAR_META_SIZE),
+                                        egui::Color32::from_rgb(0x8b, 0x94, 0x9e),
+                                        text_width,
+                                    );
+                                    let row_height = (label_height + detail.size().y + 10.0)
+                                        .max(CONNECTION_ROW_MIN_HEIGHT);
                                     let (rect, resp) = ui.allocate_exact_size(
-                                        egui::vec2(panel_width - 20.0, CONNECTION_ROW_HEIGHT),
+                                        egui::vec2(row_width, row_height),
                                         egui::Sense::click(),
                                     );
                                     if is_selected || resp.hovered() {
@@ -190,16 +225,15 @@ impl Sidebar {
                                         ui.painter().rect_filled(rect, 3.0, bg);
                                     }
                                     let tr = rect.shrink2(egui::vec2(4.0, 0.0));
-                                    let g = ui.painter().layout(
-                                        conn.label.clone(),
-                                        egui::FontId::proportional(SIDEBAR_BODY_SIZE),
+                                    ui.painter().galley(
+                                        tr.left_top() + egui::vec2(0.0, 3.0),
+                                        label,
                                         egui::Color32::from_rgb(0xc9, 0xd1, 0xd9),
-                                        tr.width(),
                                     );
                                     ui.painter().galley(
-                                        tr.left_center() - egui::vec2(0.0, g.size().y / 2.0),
-                                        g,
-                                        egui::Color32::from_rgb(0xc9, 0xd1, 0xd9),
+                                        tr.left_top() + egui::vec2(0.0, label_height + 7.0),
+                                        detail,
+                                        egui::Color32::from_rgb(0x8b, 0x94, 0x9e),
                                     );
                                     resp
                                 });
@@ -257,7 +291,7 @@ impl Sidebar {
 
                         // 当前标签监控来源 + 系统监控面板
                         ui.separator();
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.add_space(8.0);
                             let (r, _) =
                                 ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
@@ -269,25 +303,34 @@ impl Sidebar {
                                     .color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3)),
                             );
                             if !presentation.detail.is_empty() {
-                                ui.label(
-                                    egui::RichText::new(&presentation.detail)
-                                        .size(SIDEBAR_META_SIZE)
-                                        .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&presentation.detail)
+                                            .size(SIDEBAR_META_SIZE)
+                                            .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                                    )
+                                    .wrap(),
                                 );
                             }
                         });
                         if let Some(warning) = &presentation.warning {
-                            ui.label(
-                                egui::RichText::new(warning)
-                                    .size(SIDEBAR_META_SIZE)
-                                    .color(egui::Color32::from_rgb(0xd2, 0x99, 0x22)),
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(warning)
+                                        .size(SIDEBAR_META_SIZE)
+                                        .color(egui::Color32::from_rgb(0xd2, 0x99, 0x22)),
+                                )
+                                .wrap(),
                             );
                         }
                         if !presentation.message.is_empty() {
-                            ui.label(
-                                egui::RichText::new(&presentation.message)
-                                    .size(SIDEBAR_META_SIZE)
-                                    .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&presentation.message)
+                                        .size(SIDEBAR_META_SIZE)
+                                        .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                                )
+                                .wrap(),
                             );
                         }
 
@@ -312,8 +355,21 @@ impl Sidebar {
                     }); // end ScrollArea
             });
 
+        self.width = response
+            .response
+            .rect
+            .width()
+            .clamp(MIN_SIDEBAR_WIDTH as f32, MAX_SIDEBAR_WIDTH as f32);
+        let resize_id = panel_id.with("__resize");
+        if ctx
+            .read_response(resize_id)
+            .is_some_and(|response| response.drag_stopped())
+        {
+            self.width_commit_requested = true;
+        }
+
         self.render_dialogs(ctx);
-        panel_width
+        self.width
     }
 
     fn render_monitor_static(
@@ -333,6 +389,7 @@ impl Sidebar {
         if !geometry.can_render {
             return;
         }
+        let narrow = panel_width <= SIDEBAR_NARROW_THRESHOLD;
         let cpu_text_width = geometry.uptime_content_width;
         let label_color = egui::Color32::from_rgb(0x48, 0x4f, 0x58);
         let value_color = egui::Color32::from_rgb(0xe6, 0xed, 0xf3);
@@ -350,40 +407,78 @@ impl Sidebar {
             card_border,
             geometry.uptime_inner_margin,
             |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.columns(2, |columns| {
-                    columns[0].vertical(|ui| {
+                if narrow {
+                    ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new("运行时间")
                                 .size(SIDEBAR_META_SIZE)
                                 .color(label_color),
                         );
-                        ui.label(
-                            egui::RichText::new(&mon.uptime_text)
-                                .size(SIDEBAR_VALUE_SIZE)
-                                .color(value_color),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&mon.uptime_text)
+                                    .size(SIDEBAR_VALUE_SIZE)
+                                    .color(value_color),
+                            )
+                            .wrap(),
                         );
-                    });
-                    columns[1].vertical(|ui| {
+                        ui.add_space(4.0);
                         ui.label(
                             egui::RichText::new("系统负载")
                                 .size(SIDEBAR_META_SIZE)
                                 .color(label_color),
                         );
-                        ui.label(
-                            egui::RichText::new(&mon.load_text)
-                                .size(SIDEBAR_VALUE_SIZE)
-                                .color(value_color),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&mon.load_text)
+                                    .size(SIDEBAR_VALUE_SIZE)
+                                    .color(value_color),
+                            )
+                            .wrap(),
                         );
                     });
-                });
+                } else {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.columns(2, |columns| {
+                        columns[0].vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("运行时间")
+                                    .size(SIDEBAR_META_SIZE)
+                                    .color(label_color),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&mon.uptime_text)
+                                        .size(SIDEBAR_VALUE_SIZE)
+                                        .color(value_color),
+                                )
+                                .wrap(),
+                            );
+                        });
+                        columns[1].vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("系统负载")
+                                    .size(SIDEBAR_META_SIZE)
+                                    .color(label_color),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&mon.load_text)
+                                        .size(SIDEBAR_VALUE_SIZE)
+                                        .color(value_color),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    });
+                }
             },
         );
 
         // ── 资源 ──
         ui.add_space(4.0);
         let _ = show_sidebar_monitor_card(ui, geometry, card_bg, card_border, 0.0, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("资源")
@@ -397,7 +492,7 @@ impl Sidebar {
 
             // CPU
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("CPU")
@@ -406,14 +501,17 @@ impl Sidebar {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(format!("{:.1}%", mon.cpu_percent))
-                            .size(SIDEBAR_VALUE_SIZE)
-                            .color(value_color),
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("{:.1}%", mon.cpu_percent))
+                                .size(SIDEBAR_VALUE_SIZE)
+                                .color(value_color),
+                        )
+                        .wrap(),
                     );
                 });
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.add_sized(
                     [cpu_text_width, 0.0],
@@ -429,7 +527,7 @@ impl Sidebar {
             ui.add_space(4.0);
 
             // Memory
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("内存")
@@ -438,10 +536,13 @@ impl Sidebar {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(&mon.memory_text)
-                            .size(SIDEBAR_VALUE_SIZE)
-                            .color(value_color),
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&mon.memory_text)
+                                .size(SIDEBAR_VALUE_SIZE)
+                                .color(value_color),
+                        )
+                        .wrap(),
                     );
                 });
             });
@@ -449,7 +550,7 @@ impl Sidebar {
             ui.add_space(4.0);
 
             // Swap
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new("交换")
@@ -458,10 +559,13 @@ impl Sidebar {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(&mon.swap_text)
-                            .size(SIDEBAR_VALUE_SIZE)
-                            .color(value_color),
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&mon.swap_text)
+                                .size(SIDEBAR_VALUE_SIZE)
+                                .color(value_color),
+                        )
+                        .wrap(),
                     );
                 });
             });
@@ -488,38 +592,40 @@ impl Sidebar {
 
             ui.add_space(4.0);
             let _ = show_sidebar_monitor_card(ui, geometry, card_bg, card_border, 0.0, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new("进程")
-                            .size(SIDEBAR_SECTION_SIZE)
-                            .color(section_color),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(4.0);
-                        for &(label, idx) in &[("命令", 2u8), ("CPU", 1u8), ("内存", 0u8)] {
+                let visible_processes = &sorted[..sorted.len().min(8)];
+                let process_columns = (!narrow)
+                    .then(|| process_table_columns((ui.available_width() - 16.0).max(0.0)));
+                if narrow {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("进程")
+                                .size(SIDEBAR_SECTION_SIZE)
+                                .color(section_color),
+                        );
+                        for &(label, idx) in &[("内存", 0_u8), ("CPU", 1_u8), ("命令", 2_u8)] {
                             let active = *process_tab == idx;
-                            let color = if active {
-                                egui::Color32::from_rgb(0x00, 0xd4, 0xff)
-                            } else {
-                                egui::Color32::from_rgb(0x48, 0x4f, 0x58)
-                            };
-                            let bg = if active {
-                                egui::Color32::from_rgba_unmultiplied(0x00, 0xd4, 0xff, 0x26)
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            };
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        egui::RichText::new(label)
-                                            .size(SIDEBAR_META_SIZE)
-                                            .color(color),
+                                        egui::RichText::new(label).size(SIDEBAR_META_SIZE).color(
+                                            if active {
+                                                egui::Color32::from_rgb(0x00, 0xd4, 0xff)
+                                            } else {
+                                                egui::Color32::from_rgb(0x48, 0x4f, 0x58)
+                                            },
+                                        ),
                                     )
-                                    .fill(bg)
+                                    .fill(if active {
+                                        egui::Color32::from_rgba_unmultiplied(
+                                            0x00, 0xd4, 0xff, 0x26,
+                                        )
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    })
                                     .stroke(egui::Stroke::NONE)
                                     .corner_radius(3.0)
-                                    .min_size(egui::vec2(0.0, 16.0)),
+                                    .wrap(),
                                 )
                                 .clicked()
                             {
@@ -527,17 +633,63 @@ impl Sidebar {
                             }
                         }
                     });
-                });
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("进程")
+                                .size(SIDEBAR_SECTION_SIZE)
+                                .color(section_color),
+                        );
+                    });
+                }
                 let (sep, _) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), 1.0),
                     egui::Sense::hover(),
                 );
                 ui.painter().rect_filled(sep, 0.0, card_border);
 
-                for (i, p) in sorted.iter().take(8).enumerate() {
+                if let Some(columns) = process_columns {
+                    let header_height = PROCESS_ROW_MIN_HEIGHT;
+                    let (header_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), header_height),
+                        egui::Sense::hover(),
+                    );
+                    render_process_table_header(ui, header_rect, columns, process_tab);
+                }
+                for (i, p) in visible_processes.iter().enumerate() {
                     let open_action = process_manager_open_action(active_key);
+                    let stripe_fill = if i % 2 == 1 {
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4)
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    };
+                    if narrow {
+                        let (memory_text, _) = sidebar_process_memory(p);
+                        let row_response = render_narrow_process_row(
+                            ui,
+                            memory_text,
+                            p.cpu,
+                            &p.name,
+                            section_color,
+                            stripe_fill,
+                        );
+                        if row_response.clicked() {
+                            *open_process_manager = open_action;
+                        }
+                        if i + 1 < sorted.len().min(8) {
+                            ui.separator();
+                        }
+                        continue;
+                    }
+                    let (memory_text, _) = sidebar_process_memory(p);
+                    let row_width = ui.available_width().max(0.0);
+                    let Some(columns) = process_columns else {
+                        continue;
+                    };
+                    let row_height = process_row_height(ui, columns, memory_text, &p.name);
                     let (row_rect, row_response) = ui.allocate_exact_size(
-                        process_row_size(ui.available_width()),
+                        egui::vec2(row_width, row_height),
                         if open_action.is_some() {
                             egui::Sense::click()
                         } else {
@@ -546,16 +698,14 @@ impl Sidebar {
                     );
                     let row_bg = if row_response.hovered() {
                         egui::Color32::from_rgba_unmultiplied(0x00, 0xd4, 0xff, 0x0f)
-                    } else if i % 2 == 1 {
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 4)
                     } else {
-                        egui::Color32::TRANSPARENT
+                        stripe_fill
                     };
                     ui.painter().rect_filled(row_rect, 0.0, row_bg);
-                    let (memory_text, _) = sidebar_process_memory(p);
                     render_process_row_content(
                         ui,
                         row_rect,
+                        columns,
                         memory_text,
                         p.cpu,
                         &p.name,
@@ -584,7 +734,7 @@ impl Sidebar {
 
             ui.add_space(4.0);
             let _ = show_sidebar_monitor_card(ui, geometry, card_bg, card_border, 0.0, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new("网络")
@@ -596,9 +746,11 @@ impl Sidebar {
                         let iface_names: Vec<String> =
                             mon.net_interfaces.iter().map(|n| n.name.clone()).collect();
                         let mut changed_iface: Option<String> = None;
+                        let selector_width = ui.available_width().max(1.0);
                         egui::ComboBox::from_id_salt("net_iface_sel")
                             .selected_text(&sel)
-                            .width(80.0)
+                            .width(selector_width)
+                            .wrap_mode(egui::TextWrapMode::Wrap)
                             .show_ui(ui, |ui| {
                                 for name in &iface_names {
                                     if ui.selectable_label(&sel == name, name).clicked() {
@@ -623,19 +775,25 @@ impl Sidebar {
                 ui.painter().rect_filled(sep, 0.0, card_border);
 
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(format!("↑ {}/s", format_speed(tx_rate)))
-                            .size(SIDEBAR_BODY_SIZE)
-                            .color(egui::Color32::from_rgb(0x3f, 0xb9, 0x50)),
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("↑ {}/s", format_speed(tx_rate)))
+                                .size(SIDEBAR_BODY_SIZE)
+                                .color(egui::Color32::from_rgb(0x3f, 0xb9, 0x50)),
+                        )
+                        .wrap(),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(format!("↓ {}/s", format_speed(rx_rate)))
-                                .size(SIDEBAR_BODY_SIZE)
-                                .color(egui::Color32::from_rgb(0x58, 0xa6, 0xff)),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("↓ {}/s", format_speed(rx_rate)))
+                                    .size(SIDEBAR_BODY_SIZE)
+                                    .color(egui::Color32::from_rgb(0x58, 0xa6, 0xff)),
+                            )
+                            .wrap(),
                         );
                     });
                 });
@@ -708,23 +866,35 @@ impl Sidebar {
                 );
                 ui.painter().rect_filled(sep, 0.0, card_border);
 
-                // Header
-                let (header_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), DISK_ROW_HEIGHT),
-                    egui::Sense::hover(),
-                );
-                render_disk_row_content(
-                    ui,
-                    header_rect,
-                    "挂载点",
-                    "使用率",
-                    "可用/总量",
-                    DiskRowColors {
-                        mount: label_color,
-                        percent: label_color,
-                        capacity: label_color,
-                    },
-                );
+                let disk_content_width = (ui.available_width() - 16.0).max(0.0);
+                let disk_columns = disk_table_columns(ui, disk_content_width, &mon.disk_items);
+                if !narrow {
+                    let header_height = disk_row_height(
+                        ui,
+                        ui.available_width(),
+                        disk_columns,
+                        "挂载点",
+                        "使用率",
+                        "可用/总量",
+                    );
+                    let (header_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), header_height),
+                        egui::Sense::hover(),
+                    );
+                    render_disk_row_content(
+                        ui,
+                        header_rect,
+                        disk_columns,
+                        "挂载点",
+                        "使用率",
+                        "可用/总量",
+                        DiskRowColors {
+                            mount: label_color,
+                            percent: label_color,
+                            capacity: label_color,
+                        },
+                    );
+                }
 
                 for (i, d) in mon.disk_items.iter().enumerate() {
                     let row_bg = if i % 2 == 1 {
@@ -732,11 +902,6 @@ impl Sidebar {
                     } else {
                         egui::Color32::TRANSPARENT
                     };
-                    let (row_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), DISK_ROW_HEIGHT),
-                        egui::Sense::hover(),
-                    );
-                    ui.painter().rect_filled(row_rect, 0.0, row_bg);
                     let percent_color = if d.percent > 90 {
                         egui::Color32::from_rgb(0xf8, 0x51, 0x49)
                     } else if d.percent > 70 {
@@ -746,9 +911,38 @@ impl Sidebar {
                     };
                     let percent_text = format!("{}%", d.percent);
                     let capacity_text = format!("{}/{}", d.avail, d.size);
+                    if narrow {
+                        render_narrow_disk_row(
+                            ui,
+                            &d.mount,
+                            &percent_text,
+                            &capacity_text,
+                            DiskRowColors {
+                                mount: egui::Color32::from_rgb(0xc9, 0xd1, 0xd9),
+                                percent: percent_color,
+                                capacity: section_color,
+                            },
+                            row_bg,
+                        );
+                        continue;
+                    }
+                    let row_height = disk_row_height(
+                        ui,
+                        ui.available_width(),
+                        disk_columns,
+                        &d.mount,
+                        &percent_text,
+                        &capacity_text,
+                    );
+                    let (row_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), row_height),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(row_rect, 0.0, row_bg);
                     render_disk_row_content(
                         ui,
                         row_rect,
+                        disk_columns,
                         &d.mount,
                         &percent_text,
                         &capacity_text,

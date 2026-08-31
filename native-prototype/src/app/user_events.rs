@@ -283,9 +283,13 @@ impl App {
                             )
                             .to_string_lossy()
                             .into_owned();
-                            self.file_browsers
+                            let browser = self
+                                .file_browsers
                                 .entry(tab_id.clone())
                                 .or_insert_with(|| file_browser::FileBrowserState::new(local_path));
+                            // A successful SSH connection establishes a new session,
+                            // including reconnect, restore, duplicate and API-open flows.
+                            browser.open = false;
                             let worker = sftp::start_worker_for_pane(
                                 tab_id.clone(),
                                 pane_id.clone(),

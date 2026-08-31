@@ -1,6 +1,6 @@
 use crate::settings::{
-    resolve_existing_download_directory, validate_zmodem_timeout, Settings,
-    MAX_ZMODEM_TIMEOUT_SECS, MIN_ZMODEM_TIMEOUT_SECS,
+    resolve_existing_download_directory, validate_zmodem_timeout, Settings, MAX_SIDEBAR_WIDTH,
+    MAX_ZMODEM_TIMEOUT_SECS, MIN_SIDEBAR_WIDTH, MIN_ZMODEM_TIMEOUT_SECS,
 };
 use crate::shortcuts::{KeyChord, ShortcutAction, ShortcutSettings};
 use crate::themes::{all_themes, theme_by_name};
@@ -81,8 +81,10 @@ impl SettingsDraft {
                 "滚动历史必须在 {MIN_SCROLLBACK_LINES} 到 {MAX_SCROLLBACK_LINES} 行之间"
             ));
         }
-        if !(180..=420).contains(&self.sidebar_width) {
-            return Err("侧边栏宽度必须在 180 到 420 之间".into());
+        if !(MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH).contains(&self.sidebar_width) {
+            return Err(format!(
+                "侧边栏宽度必须在 {MIN_SIDEBAR_WIDTH} 到 {MAX_SIDEBAR_WIDTH} 之间"
+            ));
         }
         if !(120..=600).contains(&self.file_browser_height) {
             return Err("文件管理器高度必须在 120 到 600 之间".into());
@@ -200,6 +202,15 @@ impl SettingsPanel {
         self.draft = SettingsDraft::from(settings);
         self.error = None;
         self.feedback = Some("设置已保存并应用".into());
+    }
+
+    pub fn sync_sidebar_width(&mut self, width: u32) {
+        self.base.appearance.sidebar_width = width;
+        self.draft.sidebar_width = width;
+    }
+
+    pub fn sidebar_width(&self) -> u32 {
+        self.draft.sidebar_width
     }
 
     fn reset_draft(&mut self) {
