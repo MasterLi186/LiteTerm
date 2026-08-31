@@ -95,10 +95,10 @@ cd ..
 native-prototype/dist/installers/LiteTerm-Native_<版本>_<架构>.deb
 ```
 
-安装时将占位符替换为实际文件名，例如：
+请复制 `build.sh` 最后打印的实际安装命令。以下是当前版本与常见 amd64 架构的示例，仅供参考，实际文件名和命令以脚本输出为准：
 
 ```bash
-sudo apt install ./native-prototype/dist/installers/LiteTerm-Native_<版本>_<架构>.deb
+sudo apt install ./native-prototype/dist/installers/LiteTerm-Native_0.1.15_amd64.deb
 ```
 
 脚本最后会打印实际产物路径和可直接复制的安装命令。

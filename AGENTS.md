@@ -29,7 +29,7 @@ Automated testing is disabled by default for this repository. Existing tests rem
 
 - Do not run `cargo test`, `cargo test --no-run`, test scripts, `cargo clippy --all-targets`, or any command that transitively executes or compiles automated tests unless the user explicitly requests automated testing. The packaging `build.sh` is not a test command and does not run tests.
 - Do not add or update test-only code as part of ordinary implementation work unless the user explicitly asks for tests. A request to fix, review, build, verify, or launch the application is not implicit test authorization.
-- For native UI changes, the default verification path is: run `cargo build`, launch the real native window, and inspect the affected behavior through actual interaction. Automated geometry or headless egui assertions must never be presented as a substitute for clicking and visually checking the running interface.
+- For native UI changes, the default verification path is: from the repository root run `(cd native-prototype && cargo build --locked --bin liteterm-native)`, then `./run-native.sh`, launch the real native window, and inspect the affected behavior through actual interaction. Automated geometry or headless egui assertions must never be presented as a substitute for clicking and visually checking the running interface.
 - Report verification precisely. If only compilation and launch were performed, say so; never claim that behavior, UI appearance, or automated tests were verified without performing the corresponding checks.
 
 ## Commit & Pull Request Guidelines
