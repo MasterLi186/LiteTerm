@@ -3,14 +3,21 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")"
 
 BINARY="native-prototype/target/debug/liteterm-native"
+# Cargo 可能确认新输入无需重新链接；时间戳用于补充二进制时间。
+BUILD_STAMP="native-prototype/target/debug/.liteterm-native-build-stamp"
 
 native_needs_build() {
     if [ ! -x "$BINARY" ]; then
         return 0
     fi
 
+    local build_reference="$BINARY"
+    if [ -f "$BUILD_STAMP" ] && [ "$BUILD_STAMP" -nt "$BINARY" ]; then
+        build_reference="$BUILD_STAMP"
+    fi
+
     for input in native-prototype/Cargo.toml native-prototype/Cargo.lock; do
-        if [ -e "$input" ] && [ "$input" -nt "$BINARY" ]; then
+        if [ ! -f "$input" ] || [ "$input" -nt "$build_reference" ]; then
             return 0
         fi
     done
@@ -31,7 +38,7 @@ native_needs_build() {
     fi
 
     local newer_input
-    if ! newer_input="$(find native-prototype/src native-prototype/assets/icons -newer "$BINARY" -print -quit)"; then
+    if ! newer_input="$(find native-prototype/src native-prototype/assets/icons -newer "$build_reference" -print -quit)"; then
         echo "无法检查 Native 源码或图标目录的更新时间" >&2
         return 0
     fi
@@ -48,6 +55,11 @@ if native_needs_build; then
         echo "Native 构建失败" >&2
         exit 1
     fi
+    if [ ! -x "$BINARY" ]; then
+        echo "未找到 Native 构建产物：$BINARY" >&2
+        exit 1
+    fi
+    touch -- "$BUILD_STAMP"
 fi
 
 if [ ! -x "$BINARY" ]; then
