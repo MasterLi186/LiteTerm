@@ -60,6 +60,7 @@ mod terminal_search;
 mod themes;
 mod tunnel;
 mod tunnel_manager;
+mod window_icon;
 mod workspace_session;
 mod zmodem;
 

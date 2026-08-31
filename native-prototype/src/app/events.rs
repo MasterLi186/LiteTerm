@@ -40,11 +40,32 @@ impl ApplicationHandler<UserEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title("LiteTerm Native")
             .with_decorations(false)
             .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 400.0))
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
+
+        #[cfg(target_os = "linux")]
+        {
+            // Keep the Wayland application ID and the X11 WM_CLASS values in
+            // sync with the desktop entry installed by the Debian package.
+            attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(
+                attrs,
+                "liteterm-native",
+                "liteterm-native",
+            );
+            attrs = winit::platform::x11::WindowAttributesExtX11::with_name(
+                attrs,
+                "liteterm-native",
+                "liteterm-native",
+            );
+        }
+
+        if let Some(icon) = crate::window_icon::load() {
+            attrs = attrs.with_window_icon(Some(icon));
+        }
+
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         // Enable platform IME so Preedit/Commit events are delivered.
         window.set_ime_allowed(true);

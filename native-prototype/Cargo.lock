@@ -2035,6 +2035,7 @@ dependencies = [
  "fs2",
  "hex",
  "hostname",
+ "image",
  "libc",
  "log",
  "openssl",

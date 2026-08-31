@@ -1,9 +1,8 @@
-#!/bin/bash
-set -e
-cd "$(dirname "$0")"
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "$0")"
 
 BINARY="native-prototype/target/debug/liteterm-native"
-BUILD_SCRIPT="native-prototype/build.sh"
 
 native_needs_build() {
     if [ ! -x "$BINARY" ]; then
@@ -25,12 +24,11 @@ native_needs_build() {
 }
 
 if native_needs_build; then
-    if [ ! -x "$BUILD_SCRIPT" ]; then
-        echo "Native 构建脚本不存在或不可执行：$BUILD_SCRIPT" >&2
+    echo "Native 构建产物缺失或已过期，开始构建..."
+    if ! (cd -- native-prototype && cargo build --locked --bin liteterm-native); then
+        echo "Native 构建失败" >&2
         exit 1
     fi
-    echo "Native 构建产物缺失或已过期，开始构建..."
-    "$BUILD_SCRIPT"
 fi
 
 if [ ! -x "$BINARY" ]; then

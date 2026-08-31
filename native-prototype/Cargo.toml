@@ -21,11 +21,12 @@ description = "轻量级跨平台终端、SSH 与串口客户端"
 long-description = "LiteTerm Native 是 LiteTerm 的原生客户端，支持本地终端、SSH、串口、文件管理和系统监控。"
 homepage = "https://github.com/MasterLi186/LiteTerm"
 icons = [
-    "../src-tauri/icons/32x32.png",
-    "../src-tauri/icons/128x128.png",
-    "../src-tauri/icons/128x128@2x.png",
-    "../src-tauri/icons/icon.icns",
-    "../src-tauri/icons/icon.ico",
+    "assets/icons/32x32.png",
+    "assets/icons/128x128.png",
+    "assets/icons/256x256.png",
+    "assets/icons/512x512.png",
+    "assets/icons/1024x1024.png",
+    "assets/icons/icon.ico",
 ]
 out-dir = "dist/installers"
 binaries-dir = "target/release"
@@ -35,9 +36,14 @@ path = "liteterm-native"
 main = true
 
 [package.metadata.packager.nsis]
-installer-icon = "../src-tauri/icons/icon.ico"
+installer-icon = "assets/icons/icon.ico"
 installer-mode = "currentUser"
 languages = ["SimpChinese"]
+
+[package.metadata.packager.deb]
+package-name = "liteterm-native"
+depends = ["libc6", "libgcc-s1", "libudev1", "zlib1g"]
+desktop-template = "packaging/liteterm-native.desktop"
 
 [dependencies]
 winit = "0.30"
@@ -74,6 +80,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 base64 = "0.22"
 tempfile = "3"
 fs2 = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
 serialport = "4"
 crc32fast = "1"
 axum = "0.8"
