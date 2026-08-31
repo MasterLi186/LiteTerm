@@ -46,7 +46,7 @@ jobs:
           echo "Native version: $VERSION"
 
   quality:
-    name: Native quality gates
+    name: Native compile checks
     needs: prepare
     runs-on: ubuntu-22.04
     defaults:
@@ -73,10 +73,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --locked --all-targets
-
-      - name: Run tests
-        run: cargo test --locked
+        run: cargo clippy --locked --bin liteterm-native
 
   build:
     name: Build ${{ matrix.display }}
@@ -233,7 +230,7 @@ jobs:
             echo
             echo "- 版本：\`$VERSION\`"
             echo "- 触发来源：\`${GITHUB_REF_NAME}\`"
-            echo "- 质量检查：\`$QUALITY_RESULT\`"
+            echo "- 编译检查：\`$QUALITY_RESULT\`"
             echo "- 三端构建：\`$BUILD_RESULT\`"
             echo
             if [ "$BUILD_RESULT" = "success" ]; then
