@@ -86,9 +86,15 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "对比: \`${PREV_TAG:-初始}\` → \`${TAG}\` (${TOTAL} 个提交)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          [ -n "$FEAT" ] && echo -e "### 新功能\n${FEAT}" >> $GITHUB_STEP_SUMMARY
-          [ -n "$FIX" ] && echo -e "### 修复\n${FIX}" >> $GITHUB_STEP_SUMMARY
-          [ -n "$OTHER" ] && echo -e "### 其他\n${OTHER}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$FEAT" ]; then
+            echo -e "### 新功能\n${FEAT}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$FIX" ]; then
+            echo -e "### 修复\n${FIX}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$OTHER" ]; then
+            echo -e "### 其他\n${OTHER}" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
