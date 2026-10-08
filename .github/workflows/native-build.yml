@@ -168,6 +168,36 @@ jobs:
         shell: bash
         run: |
           rm -rf dist/installers
+          # Build a proper ICNS bundle from the source PNG. cargo-packager's
+          # ICNS mapper rejects the raw 1024x1024 PNG as an unmatched icon size.
+          SOURCE=assets/icons/1024x1024.png
+          ICONSET=assets/icons/LiteTerm.iconset
+          mkdir -p "$ICONSET"
+          sips -z 16 16 "$SOURCE" --out "$ICONSET/icon_16x16.png" >/dev/null
+          sips -z 32 32 "$SOURCE" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+          sips -z 32 32 "$SOURCE" --out "$ICONSET/icon_32x32.png" >/dev/null
+          sips -z 64 64 "$SOURCE" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+          sips -z 128 128 "$SOURCE" --out "$ICONSET/icon_128x128.png" >/dev/null
+          sips -z 256 256 "$SOURCE" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+          sips -z 256 256 "$SOURCE" --out "$ICONSET/icon_256x256.png" >/dev/null
+          sips -z 512 512 "$SOURCE" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+          sips -z 512 512 "$SOURCE" --out "$ICONSET/icon_512x512.png" >/dev/null
+          sips -z 1024 1024 "$SOURCE" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET" -o assets/icons/icon.icns
+          rm -rf -- "$ICONSET"
+          test -s assets/icons/icon.icns
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cargo_toml = Path("Cargo.toml")
+          contents = cargo_toml.read_text()
+          start = contents.find("icons = [")
+          end = contents.find("]", start)
+          if start < 0 or end < 0:
+              raise SystemExit("Could not locate the Native icon list")
+          contents = contents[:start] + 'icons = ["assets/icons/icon.icns"]' + contents[end + 1:]
+          cargo_toml.write_text(contents)
+          PY
           # cargo-packager's create-dmg helper mounts and ejects a temporary
           # image.  GitHub's macOS Intel runner can intermittently keep that
           # image busy, leaving an otherwise valid build marked as failed.
