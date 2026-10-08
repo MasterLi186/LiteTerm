@@ -1,5 +1,7 @@
 # LiteTerm
 
+**语言 / Language:** 简体中文 | [English](README.en.md)
+
 > **开发状态：Native Only。** 当前唯一开发和运行目标是 `native-prototype/`（Rust + winit + wgpu + egui），通过 `./run-native.sh` 启动。React/Tauri 与旧 GTK 代码仅作历史参考，除非明确要求，否则不再修改。详见 [Native-only 开发约束](docs/NATIVE_ONLY.md)。
 
 轻量级跨平台 SSH 客户端 — FinalShell / Tabby / XShell 开源替代品。

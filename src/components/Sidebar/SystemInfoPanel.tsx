@@ -1,3 +1,4 @@
+import { formatUptime, t as translateUi } from '../../i18n';
 import { useEffect, useState, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import type { MonitorData } from '../../types';
@@ -127,7 +128,7 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager, onOpe
     return (
       <div style={{ padding: '24px 16px', textAlign: 'center' }}>
         <div style={{ color: '#00d4ff', fontSize: '18px', marginBottom: '8px' }}>◎</div>
-        <div style={{ color: '#8b949e', fontSize: '12px' }}>正在采集系统信息...</div>
+        <div style={{ color: '#8b949e', fontSize: '12px' }}>{translateUi("正在采集系统信息...")}</div>
       </div>
     );
   }
@@ -147,7 +148,7 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager, onOpe
     return a.command.localeCompare(b.command);
   });
 
-  const tabLabels: Record<ProcessTab, string> = { mem: '内存', cpu: 'CPU', cmd: '命令' };
+  const tabLabels: Record<ProcessTab, string> = { mem: translateUi('内存'), cpu: 'CPU', cmd: translateUi('命令') };
 
   return (
     <div style={{ fontSize: '12px' }}>
@@ -155,7 +156,7 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager, onOpe
       {/* ── Status ── */}
       <div style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid #21262d' }}>
         <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: sessionId === 'local' ? '#58a6ff' : '#3fb950', boxShadow: sessionId === 'local' ? '0 0 6px rgba(88,166,255,0.5)' : '0 0 6px rgba(63,185,80,0.5)', display: 'inline-block' }} />
-        <span style={{ color: '#e6edf3', fontWeight: 500 }}>{sessionId === 'local' ? '本机' : '已连接'}</span>
+        <span style={{ color: '#e6edf3', fontWeight: 500 }}>{translateUi(sessionId === 'local' ? '本机' : '已连接')}</span>
         {hostIp && <span style={{ color: '#484f58', marginLeft: 'auto', fontSize: '11px' }}>{hostIp}</span>}
       </div>
 
@@ -163,27 +164,27 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager, onOpe
       <Card>
         <div style={{ padding: '10px 12px', display: 'flex', gap: '16px' }}>
           <div style={{ flex: 1 }}>
-            <div style={{ color: '#484f58', fontSize: '10px', marginBottom: '2px' }}>运行时间</div>
-            <div style={{ color: '#e6edf3', fontSize: '12px', fontWeight: 500 }}>{data.uptime_text}</div>
+            <div style={{ color: '#484f58', fontSize: '10px', marginBottom: '2px' }}>{translateUi("运行时间")}</div>
+            <div style={{ color: '#e6edf3', fontSize: '12px', fontWeight: 500 }}>{formatUptime(data.uptime_text)}</div>
           </div>
           <div style={{ flex: 1 }}>
-            <div style={{ color: '#484f58', fontSize: '10px', marginBottom: '2px' }}>系统负载</div>
+            <div style={{ color: '#484f58', fontSize: '10px', marginBottom: '2px' }}>{translateUi("系统负载")}</div>
             <div style={{ color: '#e6edf3', fontSize: '12px', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{data.load_text}</div>
           </div>
         </div>
       </Card>
 
       {/* ── Gauges ── */}
-      <Card title="资源">
+      <Card title={translateUi("资源")}>
         <div style={{ padding: '8px 6px 4px' }}>
           <GaugeBar label={data.cpu_info ? `CPU (${data.cpu_info})` : 'CPU'} value={data.cpu_percent} detail={`${data.cpu_percent.toFixed(1)}%`} />
-          <GaugeBar label="内存" value={data.memory_used_percent} detail={data.memory_text} />
-          <GaugeBar label="交换" value={data.swap_percent} detail={data.swap_text} />
+          <GaugeBar label={translateUi("内存")} value={data.memory_used_percent} detail={data.memory_text} />
+          <GaugeBar label={translateUi("交换")} value={data.swap_percent} detail={data.swap_text} />
         </div>
       </Card>
 
       {/* ── Process List ── */}
-      <Card title="进程" extra={
+      <Card title={translateUi("进程")} extra={
         <div style={{ display: 'flex', gap: '2px' }}>
           {(['mem', 'cpu', 'cmd'] as ProcessTab[]).map((tab) => (
             <button
@@ -235,7 +236,7 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager, onOpe
       </Card>
 
       {/* ── Network ── */}
-      <Card title="网络" extra={
+      <Card title={translateUi("网络")} extra={
         <select
           value={selectedIface || data.net_interface}
           onChange={(e) => { setSelectedIface(e.target.value); netRxHistory.current = []; netTxHistory.current = []; }}
@@ -266,7 +267,7 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager, onOpe
           <div
             onClick={() => onOpenNetworkDetail?.(selectedIface || data.net_interface)}
             style={{ background: '#0d1117', borderRadius: '4px', overflow: 'hidden', padding: '4px 0', cursor: 'pointer' }}
-            title="点击查看网络详情"
+            title={translateUi("点击查看网络详情")}
           >
             <MiniChart data={netTxHistory.current} color="#3fb950" height={28} />
             <MiniChart data={netRxHistory.current} color="#58a6ff" height={28} />
@@ -275,14 +276,14 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager, onOpe
       </Card>
 
       {/* ── Disk ── */}
-      <Card title="磁盘">
+      <Card title={translateUi("磁盘")}>
         <div>
           <div style={{
             display: 'flex', padding: '6px 12px', borderBottom: '1px solid #21262d',
             color: '#484f58', fontSize: '10px', fontWeight: 600, letterSpacing: '0.5px',
           }}>
-            <span style={{ flex: 1 }}>挂载点</span>
-            <span style={{ width: '110px', textAlign: 'right' }}>可用/总量</span>
+            <span style={{ flex: 1 }}>{translateUi("挂载点")}</span>
+            <span style={{ width: '110px', textAlign: 'right' }}>{translateUi("可用/总量")}</span>
           </div>
           {data.disk_items.map((d, i) => (
             <div key={i} style={{

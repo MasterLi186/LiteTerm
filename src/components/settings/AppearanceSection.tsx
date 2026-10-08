@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -35,22 +36,22 @@ export function AppearanceSection({ onApply }: Props) {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-gray-200">外观</h2>
+      <h2 className="text-lg font-semibold text-gray-200">{translateUi("外观")}</h2>
       <div className="space-y-4">
         <label className="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={showSidebar} onChange={e => setShowSidebar(e.target.checked)} className="accent-accent-cyan" />
-          <span className="text-sm text-gray-300">显示侧边栏</span>
+          <span className="text-sm text-gray-300">{translateUi("显示侧边栏")}</span>
         </label>
         <div>
-          <label className="text-sm text-gray-400 block mb-1">侧边栏宽度 ({sidebarWidth}px)</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("侧边栏宽度 (")}{sidebarWidth}px)</label>
           <input type="range" min={100} max={400} value={sidebarWidth} onChange={e => setSidebarWidth(parseInt(e.target.value))} className="w-full max-w-xs" />
         </div>
         <label className="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={showFileBrowser} onChange={e => setShowFileBrowser(e.target.checked)} className="accent-accent-cyan" />
-          <span className="text-sm text-gray-300">显示文件管理器</span>
+          <span className="text-sm text-gray-300">{translateUi("显示文件管理器")}</span>
         </label>
         <div>
-          <label className="text-sm text-gray-400 block mb-1">文件管理器高度 ({fileBrowserHeight}px)</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("文件管理器高度 (")}{fileBrowserHeight}px)</label>
           <input type="range" min={100} max={500} value={fileBrowserHeight} onChange={e => setFileBrowserHeight(parseInt(e.target.value))} className="w-full max-w-xs" />
         </div>
       </div>

@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import type { ProcessFullDetail } from '../../types';
 
 interface Props {
@@ -19,22 +20,22 @@ export function ProcessDetailPanel({ detail, onClose }: Props) {
       <div className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-1.5 mb-4">
         <span className="text-gray-500">PID</span>
         <span>{detail.pid}</span>
-        <span className="text-gray-500">用户</span>
+        <span className="text-gray-500">{translateUi("用户")}</span>
         <span>{detail.user}</span>
-        <span className="text-gray-500">内存</span>
+        <span className="text-gray-500">{translateUi("内存")}</span>
         <span>{detail.mem}</span>
-        <span className="text-gray-500">启动时间</span>
+        <span className="text-gray-500">{translateUi("启动时间")}</span>
         <span>{detail.start_time || '—'}</span>
-        <span className="text-gray-500">可执行文件</span>
+        <span className="text-gray-500">{translateUi("可执行文件")}</span>
         <span className="break-all font-mono text-accent-green">{detail.location || '—'}</span>
-        <span className="text-gray-500">工作目录</span>
+        <span className="text-gray-500">{translateUi("工作目录")}</span>
         <span className="break-all font-mono">{detail.working_dir || '—'}</span>
       </div>
 
       {/* 进程树链 */}
       {detail.ancestors && detail.ancestors.length > 0 && (
         <div className="mb-4">
-          <div className="text-gray-400 mb-1.5 font-semibold">进程树</div>
+          <div className="text-gray-400 mb-1.5 font-semibold">{translateUi("进程树")}</div>
           <div className="bg-surface rounded p-2 font-mono text-[11px]">
             {[...detail.ancestors].reverse().map((a, i) => (
               <div key={a.pid} style={{ paddingLeft: `${i * 16}px` }}>
@@ -53,7 +54,7 @@ export function ProcessDetailPanel({ detail, onClose }: Props) {
 
       {/* 完整命令行 */}
       <div className="mb-4">
-        <div className="text-gray-400 mb-1.5 font-semibold">完整命令行</div>
+        <div className="text-gray-400 mb-1.5 font-semibold">{translateUi("完整命令行")}</div>
         <div className="bg-surface rounded p-2 break-all font-mono text-[11px] text-accent-green select-all">
           {detail.full_command || '—'}
         </div>
@@ -62,7 +63,7 @@ export function ProcessDetailPanel({ detail, onClose }: Props) {
       {/* 环境变量 */}
       {detail.environ.length > 0 && (
         <div>
-          <div className="text-gray-400 mb-1.5 font-semibold">环境变量 ({detail.environ.length})</div>
+          <div className="text-gray-400 mb-1.5 font-semibold">{translateUi("环境变量 (")}{detail.environ.length})</div>
           <div className="bg-surface rounded p-2 max-h-48 overflow-auto">
             <table className="text-[11px] font-mono w-full">
               <tbody>

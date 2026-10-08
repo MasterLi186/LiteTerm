@@ -1,3 +1,4 @@
+import { t as translateUi } from '../i18n';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ConnectionStore, ShellInfo, SerialPortInfo } from '../types';
@@ -59,7 +60,7 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-surface-border">
-          <h2 className="text-sm font-semibold text-gray-200">新建标签页</h2>
+          <h2 className="text-sm font-semibold text-gray-200">{translateUi("新建标签页")}</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-white text-lg leading-none">×</button>
         </div>
 
@@ -68,7 +69,7 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
           <div>
             <div className="text-xs font-semibold text-gray-400 mb-2 flex items-center gap-1.5">
               <span className="text-accent-cyan">$</span>
-              <span>Shell 环境</span>
+              <span>{translateUi("Shell 环境")}</span>
             </div>
             <div className="flex flex-wrap gap-2">
               {shells.map((shell) => (
@@ -81,7 +82,7 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
                 </button>
               ))}
               {shells.length === 0 && (
-                <span className="text-xs text-gray-500">未检测到可用 Shell</span>
+                <span className="text-xs text-gray-500">{translateUi("未检测到可用 Shell")}</span>
               )}
             </div>
           </div>
@@ -90,10 +91,10 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
           <div>
             <div className="text-xs font-semibold text-gray-400 mb-2 flex items-center gap-1.5">
               <span className="text-accent-green">@</span>
-              <span>SSH 连接</span>
+              <span>{translateUi("SSH 连接")}</span>
             </div>
             {groupEntries.length === 0 ? (
-              <div className="text-xs text-gray-500 mb-2">暂无保存的连接</div>
+              <div className="text-xs text-gray-500 mb-2">{translateUi("暂无保存的连接")}</div>
             ) : (
               <div className="space-y-1 mb-2">
                 {groupEntries.map(([groupId, group]) => (
@@ -125,8 +126,7 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
               onClick={() => { onNewSSH(); onClose(); }}
               className="text-xs text-accent-cyan hover:text-white transition-colors"
             >
-              + 新建 SSH 连接
-            </button>
+              {translateUi("+ 新建 SSH 连接")}</button>
           </div>
 
           {/* Serial section */}
@@ -134,17 +134,17 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
             <div className="text-xs font-semibold text-gray-400 mb-2 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <span className="text-accent-yellow">~</span>
-                <span>串口设备</span>
+                <span>{translateUi("串口设备")}</span>
               </span>
               <button
                 onClick={refreshSerialPorts}
                 className="text-[10px] text-gray-500 hover:text-accent-cyan transition-colors"
               >
-                {loadingSerial ? '扫描中...' : '刷新'}
+                {translateUi(loadingSerial ? '扫描中...' : '刷新')}
               </button>
             </div>
             {serialPorts.length === 0 ? (
-              <div className="text-xs text-gray-500">未检测到串口设备</div>
+              <div className="text-xs text-gray-500">{translateUi("未检测到串口设备")}</div>
             ) : (
               <div className="space-y-2">
                 {serialPorts.map((port) => {
@@ -205,8 +205,7 @@ export function NewTabSelector({ onClose, onOpenShell, onConnectSSH, onNewSSH, o
                         }}
                         className="px-2 py-1 text-xs bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30 transition-colors flex-shrink-0"
                       >
-                        连接
-                      </button>
+                        {translateUi("连接")}</button>
                     </div>
                   );
                 })}

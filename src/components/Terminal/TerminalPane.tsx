@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -178,9 +179,9 @@ async function handleZmodemDetection(
         // 弹出保存对话框让用户选择保存位置
         try {
           const savePath = await save({
-            title: '保存下载文件',
+            title: translateUi('保存下载文件'),
             defaultPath: filename,
-            filters: [{ name: '所有文件', extensions: ['*'] }],
+            filters: [{ name: translateUi('所有文件'), extensions: ['*'] }],
           });
           if (savePath) {
             await invoke('save_file', { path: savePath, data: Array.from(merged) });
@@ -1067,9 +1068,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     const defaultName = `terminal_${ts}.log`;
 
     const filePath = await save({
-      title: '选择日志保存位置',
+      title: translateUi('选择日志保存位置'),
       defaultPath: defaultName,
-      filters: [{ name: '日志文件', extensions: ['log', 'txt'] }],
+      filters: [{ name: translateUi('日志文件'), extensions: ['log', 'txt'] }],
     });
 
     if (!filePath) return;
@@ -1101,9 +1102,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     const defaultName = `terminal_${ts}.cast`;
 
     const filePath = await save({
-      title: '选择录屏保存位置',
+      title: translateUi('选择录屏保存位置'),
       defaultPath: defaultName,
-      filters: [{ name: '录屏文件', extensions: ['cast'] }],
+      filters: [{ name: translateUi('录屏文件'), extensions: ['cast'] }],
     });
 
     if (!filePath) return;
@@ -1134,9 +1135,9 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
 
   async function handleOpenRecording() {
     const filePath = await open({
-      title: '选择录屏文件',
+      title: translateUi('选择录屏文件'),
       multiple: false,
-      filters: [{ name: '录屏文件', extensions: ['cast'] }],
+      filters: [{ name: translateUi('录屏文件'), extensions: ['cast'] }],
     });
     if (filePath && onOpenRecording) {
       onOpenRecording(filePath as string);
@@ -1163,32 +1164,32 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
   const currentThemeName = getTerminalThemeName();
 
   const themeSubmenuItems: ContextMenuItem[] = Object.keys(TERMINAL_THEMES).map(name => ({
-    label: name === currentThemeName ? `✓ ${name}` : `   ${name}`,
+    label: name === currentThemeName ? `✓ ${translateUi(name)}` : `   ${translateUi(name)}`,
     onClick: () => handleChangeTheme(name),
   }));
 
   const contextMenuItems: ContextMenuItem[] = [
-    { label: '复制', onClick: handleCopy },
-    { label: '粘贴', onClick: handlePaste },
-    { label: '全选', onClick: handleSelectAll },
-    { label: '清屏', onClick: handleClear },
-    { label: '清空缓存', onClick: handleClearScrollback },
+    { label: translateUi('复制'), onClick: handleCopy },
+    { label: translateUi('粘贴'), onClick: handlePaste },
+    { label: translateUi('全选'), onClick: handleSelectAll },
+    { label: translateUi('清屏'), onClick: handleClear },
+    { label: translateUi('清空缓存'), onClick: handleClearScrollback },
     { label: '', onClick: () => {}, separator: true },
-    { label: '搜索 (Ctrl+Shift+F)', onClick: () => setSearchVisible(true) },
+    { label: translateUi('搜索 (Ctrl+Shift+F)'), onClick: () => setSearchVisible(true) },
     { label: '', onClick: () => {}, separator: true },
-    { label: '终端主题', onClick: () => {}, submenu: themeSubmenuItems },
+    { label: translateUi('终端主题'), onClick: () => {}, submenu: themeSubmenuItems },
     { label: '', onClick: () => {}, separator: true },
     logging
-      ? { label: '⏹ 停止录制日志', onClick: handleStopLog }
-      : { label: '⏺ 开始录制日志', onClick: handleStartLog },
+      ? { label: translateUi('⏹ 停止录制日志'), onClick: handleStopLog }
+      : { label: translateUi('⏺ 开始录制日志'), onClick: handleStartLog },
     recording
-      ? { label: '⏹ 停止录屏', onClick: handleStopRecording }
-      : { label: '⏺ 开始录屏', onClick: handleStartRecording },
-    { label: '▶ 回放录屏', onClick: handleOpenRecording },
+      ? { label: translateUi('⏹ 停止录屏'), onClick: handleStopRecording }
+      : { label: translateUi('⏺ 开始录屏'), onClick: handleStartRecording },
+    { label: translateUi('▶ 回放录屏'), onClick: handleOpenRecording },
     { label: '', onClick: () => {}, separator: true },
-    { label: '水平分屏', onClick: () => onSplit?.('horizontal') },
-    { label: '垂直分屏', onClick: () => onSplit?.('vertical') },
-    ...(onClosePane ? [{ label: '关闭面板', onClick: onClosePane }] : []),
+    { label: translateUi('水平分屏'), onClick: () => onSplit?.('horizontal') },
+    { label: translateUi('垂直分屏'), onClick: () => onSplit?.('vertical') },
+    ...(onClosePane ? [{ label: translateUi('关闭面板'), onClick: onClosePane }] : []),
   ];
 
   // When inside a SplitContainer (onFocus is provided), use relative sizing
@@ -1284,8 +1285,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           cursor: 'pointer',
         }} onClick={handleStopLog}>
           <span style={{ color: '#f85149', animation: 'pulse 1.5s infinite' }}>●</span>
-          <span style={{ color: '#f85149' }}>录制中</span>
-          <span style={{ color: '#8b949e' }}>点击停止</span>
+          <span style={{ color: '#f85149' }}>{translateUi("录制中")}</span>
+          <span style={{ color: '#8b949e' }}>{translateUi("点击停止")}</span>
         </div>
       )}
       {recording && (
@@ -1297,8 +1298,8 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           cursor: 'pointer',
         }} onClick={handleStopRecording}>
           <span style={{ color: '#00d4ff', animation: 'pulse 1.5s infinite' }}>●</span>
-          <span style={{ color: '#00d4ff' }}>录屏中</span>
-          <span style={{ color: '#8b949e' }}>点击停止</span>
+          <span style={{ color: '#00d4ff' }}>{translateUi("录屏中")}</span>
+          <span style={{ color: '#8b949e' }}>{translateUi("点击停止")}</span>
         </div>
       )}
       {searchVisible && (
@@ -1324,7 +1325,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
                 setSearchTerm('');
               }
             }}
-            placeholder="搜索..."
+            placeholder={translateUi("搜索...")}
             style={{
               background: '#0d1117', border: '1px solid #30363d', borderRadius: '4px',
               padding: '3px 8px', color: '#e6edf3', outline: 'none', width: '180px',
@@ -1333,25 +1334,25 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
           />
           <button
             onClick={handleSearchPrevious}
-            title="上一个 (Shift+Enter)"
+            title={translateUi("上一个 (Shift+Enter)")}
             style={{
               background: 'transparent', border: '1px solid #30363d', borderRadius: '4px',
               color: '#8b949e', padding: '3px 8px', cursor: 'pointer', fontSize: '11px',
               whiteSpace: 'nowrap',
             }}
-          >上一个</button>
+          >{translateUi("上一个")}</button>
           <button
             onClick={handleSearchNext}
-            title="下一个 (Enter)"
+            title={translateUi("下一个 (Enter)")}
             style={{
               background: 'transparent', border: '1px solid #30363d', borderRadius: '4px',
               color: '#8b949e', padding: '3px 8px', cursor: 'pointer', fontSize: '11px',
               whiteSpace: 'nowrap',
             }}
-          >下一个</button>
+          >{translateUi("下一个")}</button>
           <button
             onClick={() => { setSearchVisible(false); setSearchTerm(''); }}
-            title="关闭 (Esc)"
+            title={translateUi("关闭 (Esc)")}
             style={{
               background: 'transparent', border: 'none', color: '#8b949e',
               cursor: 'pointer', fontSize: '14px', padding: '0 4px', lineHeight: 1,
@@ -1379,7 +1380,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
               {zmodemTransfer.status === 'sending' ? '↑' : '↓'}
             </span>
             <span style={{ color: '#e6edf3' }}>
-              {zmodemTransfer.filename || '等待传输...'}
+              {zmodemTransfer.filename || translateUi('等待传输...')}
             </span>
             {zmodemTransfer.totalSize > 0 && (
               <>

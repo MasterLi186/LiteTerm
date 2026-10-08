@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useState } from 'react';
 import { TerminalSection } from './TerminalSection';
 import { AppearanceSection } from './AppearanceSection';
@@ -40,7 +41,7 @@ export function SettingsTab({ onApply }: Props) {
             }`}
           >
             <span className="text-base">{s.icon}</span>
-            {s.label}
+            {translateUi(s.label)}
           </button>
         ))}
       </div>

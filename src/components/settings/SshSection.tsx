@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -35,19 +36,19 @@ export function SshSection({ onApply }: Props) {
       <h2 className="text-lg font-semibold text-gray-200">SSH</h2>
       <div className="space-y-4">
         <div>
-          <label className="text-sm text-gray-400 block mb-1">连接超时 (秒)</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("连接超时 (秒)")}</label>
           <input type="number" min={1} max={120} value={connectTimeout}
             onChange={e => setConnectTimeout(Math.max(1, parseInt(e.target.value) || 10))}
             className="bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan w-24" />
         </div>
         <div>
-          <label className="text-sm text-gray-400 block mb-1">Keepalive 间隔 (秒)</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("Keepalive 间隔 (秒)")}</label>
           <input type="number" min={0} max={300} value={keepalive}
             onChange={e => setKeepalive(Math.max(0, parseInt(e.target.value) || 30))}
             className="bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan w-24" />
         </div>
         <div>
-          <label className="text-sm text-gray-400 block mb-1">默认字符集</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("默认字符集")}</label>
           <select value={charset} onChange={e => setCharset(e.target.value)}
             className="bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan">
             <option value="UTF-8">UTF-8</option>

@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -35,27 +36,27 @@ export function TransferSection({ onApply }: Props) {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-gray-200">传输</h2>
+      <h2 className="text-lg font-semibold text-gray-200">{translateUi("传输")}</h2>
       <div className="space-y-4">
         <div>
-          <label className="text-sm text-gray-400 block mb-1">默认下载目录</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("默认下载目录")}</label>
           <input type="text" value={downloadDir} onChange={e => setDownloadDir(e.target.value)}
             className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan max-w-md" />
         </div>
         <div>
-          <label className="text-sm text-gray-400 block mb-1">断点续传阈值 (MB)</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("断点续传阈值 (MB)")}</label>
           <input type="number" min={1} max={1000} value={resumeThreshold}
             onChange={e => setResumeThreshold(Math.max(1, parseInt(e.target.value) || 10))}
             className="bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan w-24" />
         </div>
         <div>
-          <label className="text-sm text-gray-400 block mb-1">最大重试次数</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("最大重试次数")}</label>
           <input type="number" min={0} max={10} value={maxRetries}
             onChange={e => setMaxRetries(Math.max(0, parseInt(e.target.value) || 3))}
             className="bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan w-24" />
         </div>
         <div>
-          <label className="text-sm text-gray-400 block mb-1">并发传输数 (1-8)</label>
+          <label className="text-sm text-gray-400 block mb-1">{translateUi("并发传输数 (1-8)")}</label>
           <input type="number" min={1} max={8} value={concurrent}
             onChange={e => setConcurrent(Math.min(8, Math.max(1, parseInt(e.target.value) || 2)))}
             className="bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan w-24" />

@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ProcessDetailPanel } from './ProcessDetail';
@@ -247,37 +248,34 @@ export function ProcessTable({ sessionId, sshParams, hostLabel, isLocal }: Props
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-1 border-b border-surface-border bg-surface-light flex-wrap">
         <span className="text-gray-400">
-          进程列表 - {hostLabel}
+          {translateUi("进程列表 -")}{' '}{hostLabel}
           {!loading && ` (${processes.length})`}
         </span>
         {procStats && (
           <span className="text-[10px] text-gray-500" style={{ fontVariantNumeric: 'tabular-nums' }}>
-            共 <span className={procStats.total > 10000 ? 'text-accent-red font-bold' : 'text-gray-300'}>{procStats.total}</span>
-            {' '}运行 <span className="text-accent-green">{procStats.running}</span>
-            {' '}休眠 <span className="text-gray-400">{procStats.sleeping}</span>
-            {procStats.zombie > 0 && <>{' '}僵尸 <span className="text-accent-red font-bold">{procStats.zombie}</span></>}
-            {procStats.stopped > 0 && <>{' '}停止 <span className="text-accent-yellow">{procStats.stopped}</span></>}
+            {translateUi("共")}{' '}<span className={procStats.total > 10000 ? 'text-accent-red font-bold' : 'text-gray-300'}>{procStats.total}</span>
+            {' '}{translateUi("运行")}{' '}<span className="text-accent-green">{procStats.running}</span>
+            {' '}{translateUi("休眠")}{' '}<span className="text-gray-400">{procStats.sleeping}</span>
+            {procStats.zombie > 0 && <>{' '}{translateUi("僵尸")}{' '}<span className="text-accent-red font-bold">{procStats.zombie}</span></>}
+            {procStats.stopped > 0 && <>{' '}{translateUi("停止")}{' '}<span className="text-accent-yellow">{procStats.stopped}</span></>}
           </span>
         )}
         {procStats && procStats.total > 10000 && (
           <span className="text-[10px] text-accent-red bg-accent-red/10 px-1.5 py-0.5 rounded">
-            ⚠ 进程数异常({procStats.total}),可能存在进程泄漏
-          </span>
+            {translateUi("⚠ 进程数异常(")}{procStats.total}{translateUi("),可能存在进程泄漏")}</span>
         )}
         {procStats && procStats.zombie > 100 && (
           <span className="text-[10px] text-accent-red bg-accent-red/10 px-1.5 py-0.5 rounded">
-            ⚠ 僵尸进程过多({procStats.zombie}),建议排查父进程
-          </span>
+            {translateUi("⚠ 僵尸进程过多(")}{procStats.zombie}{translateUi("),建议排查父进程")}</span>
         )}
         <div className="flex-1" />
-        {loading && <span className="text-xs text-gray-500">加载中...</span>}
+        {loading && <span className="text-xs text-gray-500">{translateUi("加载中...")}</span>}
         <button
           onClick={loadProcesses}
           disabled={loading}
           className="text-xs text-gray-400 hover:text-white px-2 py-0.5 border border-surface-border rounded disabled:opacity-50"
         >
-          刷新
-        </button>
+          {translateUi("刷新")}</button>
       </div>
 
       {/* Error */}
@@ -293,15 +291,13 @@ export function ProcessTable({ sessionId, sshParams, hostLabel, isLocal }: Props
           <thead className="sticky top-0 bg-surface-light border-b border-surface-border">
             <tr>
               <SortHeader label="PID" sortKey="pid" current={sortKey} asc={sortAsc} onClick={handleSort} width="w-[70px]" />
-              <SortHeader label="用户" sortKey="user" current={sortKey} asc={sortAsc} onClick={handleSort} width="w-[70px]" />
-              <SortHeader label="内存" sortKey="mem" current={sortKey} asc={sortAsc} onClick={handleSort} width="w-[70px]" align="text-right" />
+              <SortHeader label={translateUi("用户")} sortKey="user" current={sortKey} asc={sortAsc} onClick={handleSort} width="w-[70px]" />
+              <SortHeader label={translateUi("内存")} sortKey="mem" current={sortKey} asc={sortAsc} onClick={handleSort} width="w-[70px]" align="text-right" />
               <SortHeader label="CPU" sortKey="cpu" current={sortKey} asc={sortAsc} onClick={handleSort} width="w-[55px]" align="text-right" />
               <th className="text-left px-2 py-1 text-gray-400 font-normal" style={{ width: '40%' }}>
-                名称 | 命令行
-              </th>
+                {translateUi("名称 | 命令行")}</th>
               <th className="text-left px-2 py-1 text-gray-400 font-normal" style={{ width: '20%' }}>
-                启动时间
-              </th>
+                {translateUi("启动时间")}</th>
             </tr>
           </thead>
           <tbody>

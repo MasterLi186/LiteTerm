@@ -1,3 +1,4 @@
+import { t as translateUi } from '../i18n';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -277,8 +278,8 @@ export function RecordingPlayer({ filePath, onClose }: RecordingPlayerProps) {
         alignItems: 'center', justifyContent: 'center',
         background: '#0d1117', color: '#e6edf3',
       }}>
-        <div style={{ color: '#ff7b72', marginBottom: 16 }}>加载失败: {error}</div>
-        <button onClick={onClose} style={closeBtnStyle}>关闭</button>
+        <div style={{ color: '#ff7b72', marginBottom: 16 }}>{translateUi("加载失败:")}{' '}{error}</div>
+        <button onClick={onClose} style={closeBtnStyle}>{translateUi("关闭")}</button>
       </div>
     );
   }
@@ -290,8 +291,7 @@ export function RecordingPlayer({ filePath, onClose }: RecordingPlayerProps) {
         alignItems: 'center', justifyContent: 'center',
         background: '#0d1117', color: '#e6edf3',
       }}>
-        加载中...
-      </div>
+        {translateUi("加载中...")}</div>
     );
   }
 
@@ -312,7 +312,7 @@ export function RecordingPlayer({ filePath, onClose }: RecordingPlayerProps) {
           fontSize: 18, cursor: 'pointer', padding: '2px 8px',
           borderRadius: 4,
         }}
-        title="关闭"
+        title={translateUi("关闭")}
       >
         ✕
       </button>
@@ -333,13 +333,12 @@ export function RecordingPlayer({ filePath, onClose }: RecordingPlayerProps) {
       }}>
         {/* Play/Pause */}
         <button onClick={handlePlayPause} style={controlBtnStyle}>
-          {playing ? '暂停' : '播放'}
+          {translateUi(playing ? '暂停' : '播放')}
         </button>
 
         {/* Restart */}
         <button onClick={handleRestart} style={controlBtnStyle}>
-          重播
-        </button>
+          {translateUi("重播")}</button>
 
         {/* Speed selector */}
         <div style={{ display: 'flex', gap: 2 }}>

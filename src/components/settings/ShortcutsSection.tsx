@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useState } from 'react';
 import { loadShortcuts, saveShortcuts, DEFAULT_SHORTCUTS, type ShortcutConfig } from '../ShortcutSettings';
 
@@ -32,11 +33,11 @@ export function ShortcutsSection({ onApply }: Props) {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-gray-200">快捷键</h2>
+      <h2 className="text-lg font-semibold text-gray-200">{translateUi("快捷键")}</h2>
       <div className="space-y-2">
         {(Object.keys(LABELS) as Array<keyof ShortcutConfig>).map(key => (
           <div key={key} className="flex items-center justify-between py-1.5">
-            <span className="text-sm text-gray-300">{LABELS[key]}</span>
+            <span className="text-sm text-gray-300">{translateUi(LABELS[key])}</span>
             <button
               onKeyDown={e => handleKeyDown(e, key)}
               onClick={() => setRecording(recording === key ? null : key)}
@@ -46,7 +47,7 @@ export function ShortcutsSection({ onApply }: Props) {
                   : 'border-surface-border text-gray-400 hover:border-gray-500'
               }`}
             >
-              {recording === key ? '按下快捷键...' : shortcuts[key]}
+              {recording === key ? translateUi('按下快捷键...') : shortcuts[key]}
             </button>
           </div>
         ))}
@@ -55,8 +56,7 @@ export function ShortcutsSection({ onApply }: Props) {
         onClick={() => { setShortcuts({ ...DEFAULT_SHORTCUTS }); saveShortcuts(DEFAULT_SHORTCUTS); onApply(); }}
         className="text-xs text-gray-500 hover:text-gray-300"
       >
-        恢复默认快捷键
-      </button>
+        {translateUi("恢复默认快捷键")}</button>
     </div>
   );
 }

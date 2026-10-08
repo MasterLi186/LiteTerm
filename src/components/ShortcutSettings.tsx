@@ -1,3 +1,4 @@
+import { t as translateUi } from '../i18n';
 import { useState, useEffect } from 'react';
 
 export interface ShortcutConfig {
@@ -171,7 +172,7 @@ export function ShortcutSettings({ onClose }: Props) {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-surface-border">
-          <h2 className="text-sm font-semibold text-gray-200">快捷键设置</h2>
+          <h2 className="text-sm font-semibold text-gray-200">{translateUi("快捷键设置")}</h2>
           <button
             onClick={onClose}
             className="text-gray-500 hover:text-white text-lg leading-none"
@@ -187,7 +188,7 @@ export function ShortcutSettings({ onClose }: Props) {
                 className="flex items-center justify-between px-3 py-2 bg-surface rounded border border-surface-border hover:border-gray-600"
               >
                 <div className="text-xs text-gray-200 w-28 flex-shrink-0">
-                  {ACTION_LABELS[key]}
+                  {translateUi(ACTION_LABELS[key])}
                 </div>
                 <div className="flex-1 flex items-center justify-center">
                   {editingKey === key ? (
@@ -197,8 +198,7 @@ export function ShortcutSettings({ onClose }: Props) {
                       </span>
                     ) : (
                       <span className="text-xs text-gray-400 animate-pulse">
-                        请按下新的快捷键...
-                      </span>
+                        {translateUi("请按下新的快捷键...")}</span>
                     )
                   ) : (
                     <span className="px-2 py-0.5 bg-surface border border-surface-border rounded text-xs text-gray-300 font-mono">
@@ -213,17 +213,17 @@ export function ShortcutSettings({ onClose }: Props) {
                         onClick={handleConfirm}
                         disabled={!recordedCombo}
                         className="text-[10px] px-2 py-0.5 bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30 disabled:opacity-50"
-                      >确认</button>
+                      >{translateUi("确认")}</button>
                       <button
                         onClick={handleCancel}
                         className="text-[10px] px-2 py-0.5 border border-surface-border rounded text-gray-400 hover:text-white hover:border-gray-500"
-                      >取消</button>
+                      >{translateUi("取消")}</button>
                     </>
                   ) : (
                     <button
                       onClick={() => handleEdit(key)}
                       className="text-[10px] px-2 py-0.5 border border-surface-border rounded text-gray-400 hover:text-accent-cyan hover:border-accent-cyan/50"
-                    >修改</button>
+                    >{translateUi("修改")}</button>
                   )}
                 </div>
               </div>
@@ -236,11 +236,11 @@ export function ShortcutSettings({ onClose }: Props) {
           <button
             onClick={handleResetAll}
             className="px-3 py-1 text-xs text-gray-400 hover:text-white border border-surface-border rounded hover:border-gray-500"
-          >恢复默认</button>
+          >{translateUi("恢复默认")}</button>
           <button
             onClick={onClose}
             className="px-3 py-1 text-xs text-gray-400 hover:text-white"
-          >关闭</button>
+          >{translateUi("关闭")}</button>
         </div>
       </div>
     </div>

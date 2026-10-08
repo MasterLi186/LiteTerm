@@ -1,3 +1,4 @@
+import { t as translateUi } from '../i18n';
 import { useRef, useState } from 'react';
 
 export interface QuickCommand {
@@ -83,8 +84,8 @@ export function QuickCommandBar({ sendCommand }: Props) {
 
   const handleSaveEdit = () => {
     if (!editForm) return;
-    if (!editForm.label.trim()) { setEditError('请输入标签名称'); return; }
-    if (!editForm.command.trim()) { setEditError('请输入命令内容'); return; }
+    if (!editForm.label.trim()) { setEditError(translateUi('请输入标签名称')); return; }
+    if (!editForm.command.trim()) { setEditError(translateUi('请输入命令内容')); return; }
     if (editForm.index === null) {
       updateCommands([...commands, { label: editForm.label.trim(), command: editForm.command.trim() }]);
     } else {
@@ -118,7 +119,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
     >
       <button
         className="flex-shrink-0 w-6 h-5 bg-surface border border-surface-border rounded text-xs text-gray-400 hover:bg-surface-lighter hover:text-white"
-        title="添加快捷命令"
+        title={translateUi("添加快捷命令")}
         onClick={() => openEditForm({ label: '', command: '', index: null })}
       >
         +
@@ -135,7 +136,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
             setContextMenu({ x: e.clientX, y: e.clientY, index: i });
           }}
         >
-          {cmd.label}
+          {cmd.system ? translateUi(cmd.label) : cmd.label}
         </button>
       ))}
       {/* 右键菜单(fixed,不受 overflow 影响) */}
@@ -161,7 +162,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
                     openEditForm({ label: cmd.label, command: cmd.command, index: contextMenu.index });
                     setContextMenu(null);
                   }}
-                >编辑</button>
+                >{translateUi("编辑")}</button>
                 <button
                   className="w-full text-left px-3 py-1 text-xs text-accent-red hover:bg-surface-lighter"
                   onClick={() => {
@@ -169,7 +170,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
                     setConfirmDelete(contextMenu.index);
                     setContextMenu(null);
                   }}
-                >删除</button>
+                >{translateUi("删除")}</button>
               </>
             ) : (
               <>
@@ -179,14 +180,14 @@ export function QuickCommandBar({ sendCommand }: Props) {
                     openEditForm({ label: '', command: '', index: null });
                     setContextMenu(null);
                   }}
-                >新增</button>
+                >{translateUi("新增")}</button>
                 <button
                   className="w-full text-left px-3 py-1 text-xs text-gray-300 hover:bg-surface-lighter hover:text-white"
                   onClick={() => {
                     setShowManage(true);
                     setContextMenu(null);
                   }}
-                >管理</button>
+                >{translateUi("管理")}</button>
               </>
             )}
           </div>
@@ -197,16 +198,16 @@ export function QuickCommandBar({ sendCommand }: Props) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowManage(false)}>
           <div className="bg-surface-light border border-surface-border rounded-lg shadow-xl w-[480px] max-h-[60vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-2 border-b border-surface-border">
-              <span className="text-sm text-gray-200">管理快捷命令</span>
+              <span className="text-sm text-gray-200">{translateUi("管理快捷命令")}</span>
               <button onClick={() => setShowManage(false)} className="text-gray-400 hover:text-white text-lg">×</button>
             </div>
             <div className="flex-1 overflow-y-auto">
               {commands.length === 0 ? (
-                <div className="px-4 py-8 text-xs text-gray-500 text-center">暂无快捷命令</div>
+                <div className="px-4 py-8 text-xs text-gray-500 text-center">{translateUi("暂无快捷命令")}</div>
               ) : (
                 commands.map((cmd, i) => (
                   <div key={i} className="flex items-center px-4 py-1.5 border-b border-surface-border/30 hover:bg-surface-lighter group">
-                    <span className="w-24 text-xs text-gray-300 truncate flex-shrink-0">{cmd.label}{cmd.system && <span className="text-[9px] text-gray-600 ml-1">内置</span>}</span>
+                    <span className="w-24 text-xs text-gray-300 truncate flex-shrink-0">{cmd.system ? translateUi(cmd.label) : cmd.label}{cmd.system && <span className="text-[9px] text-gray-600 ml-1">{translateUi("内置")}</span>}</span>
                     <span className="flex-1 text-xs text-gray-500 font-mono truncate min-w-0 px-2">{cmd.command}</span>
                     <button
                       className="px-1.5 text-gray-500 hover:text-accent-cyan text-xs opacity-0 group-hover:opacity-100"
@@ -214,11 +215,11 @@ export function QuickCommandBar({ sendCommand }: Props) {
                         openEditForm({ label: cmd.label, command: cmd.command, index: i });
                         setShowManage(false);
                       }}
-                    >编辑</button>
+                    >{translateUi("编辑")}</button>
                     <button
                       className="px-1.5 text-gray-500 hover:text-accent-red text-xs opacity-0 group-hover:opacity-100"
                       onClick={() => { setConfirmDelete(i); setShowManage(false); }}
-                    >删除</button>
+                    >{translateUi("删除")}</button>
                   </div>
                 ))
               )}
@@ -230,7 +231,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
                   openEditForm({ label: '', command: '', index: null });
                   setShowManage(false);
                 }}
-              >+ 添加</button>
+              >{translateUi("+ 添加")}</button>
             </div>
           </div>
         </div>
@@ -240,20 +241,20 @@ export function QuickCommandBar({ sendCommand }: Props) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setConfirmDelete(null)}>
           <div className="bg-surface-light border border-surface-border rounded-lg shadow-xl p-4 w-80" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm text-gray-200 mb-4 text-center">
-              确认删除快捷命令「<span className="text-accent-red font-bold">{commands[confirmDelete].label}</span>」？
+              {translateUi("确认删除快捷命令「")}<span className="text-accent-red font-bold">{commands[confirmDelete].label}</span>」？
             </div>
             <div className="flex justify-center gap-3">
               <button
                 onClick={() => setConfirmDelete(null)}
                 className="px-4 py-1 text-xs text-gray-400 hover:text-white border border-surface-border rounded"
-              >取消</button>
+              >{translateUi("取消")}</button>
               <button
                 onClick={() => {
                   updateCommands(commands.filter((_, j) => j !== confirmDelete), commands[confirmDelete]);
                   setConfirmDelete(null);
                 }}
                 className="px-4 py-1 text-xs bg-accent-red/20 text-accent-red rounded hover:bg-accent-red/30"
-              >删除</button>
+              >{translateUi("删除")}</button>
             </div>
           </div>
         </div>
@@ -270,7 +271,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
               <input
                 autoFocus
                 className="bg-surface border border-surface-border rounded px-2 py-1 text-xs text-gray-200 outline-none focus:border-accent-cyan"
-                placeholder="标签名称(必填,最多20字)"
+                placeholder={translateUi("标签名称(必填,最多20字)")}
                 maxLength={20}
                 value={editForm.label}
                 onChange={(e) => { setEditForm({ ...editForm, label: e.target.value }); setEditError(''); }}
@@ -281,7 +282,7 @@ export function QuickCommandBar({ sendCommand }: Props) {
               />
               <input
                 className="bg-surface border border-surface-border rounded px-2 py-1 text-xs text-gray-200 outline-none focus:border-accent-cyan font-mono"
-                placeholder="命令内容(必填)"
+                placeholder={translateUi("命令内容(必填)")}
                 value={editForm.command}
                 onChange={(e) => { setEditForm({ ...editForm, command: e.target.value }); setEditError(''); }}
                 onKeyDown={(e) => {
@@ -294,11 +295,11 @@ export function QuickCommandBar({ sendCommand }: Props) {
                 <button
                   onClick={() => setEditForm(null)}
                   className="px-2 py-0.5 text-xs text-gray-400 hover:text-white"
-                >取消</button>
+                >{translateUi("取消")}</button>
                 <button
                   onClick={handleSaveEdit}
                   className="px-2 py-0.5 text-xs bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30"
-                >确定</button>
+                >{translateUi("确定")}</button>
               </div>
             </div>
           </div>

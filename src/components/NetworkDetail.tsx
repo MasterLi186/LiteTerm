@@ -1,3 +1,4 @@
+import { t as translateUi } from '../i18n';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -176,7 +177,7 @@ export function NetworkDetail({ sessionId, hostLabel, isLocal, initialIface }: P
       {/* 顶栏 */}
       <div className="flex items-center gap-4 px-4 py-2 border-b border-surface-border bg-surface-light flex-shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-gray-400">网卡:</span>
+          <span className="text-gray-400">{translateUi("网卡:")}</span>
           <select
             value={selectedIface}
             onChange={(e) => selectIface(e.target.value)}
@@ -194,33 +195,33 @@ export function NetworkDetail({ sessionId, hostLabel, isLocal, initialIface }: P
         </div>
 
         <div className="flex items-center gap-2 ml-auto">
-          <span className="text-gray-400">刷新:</span>
+          <span className="text-gray-400">{translateUi("刷新:")}</span>
           <select
             value={refreshInterval}
             onChange={(e) => setRefreshInterval(Number(e.target.value))}
             className="bg-surface border border-surface-border rounded px-2 py-1 text-xs text-gray-300 outline-none focus:border-accent-cyan"
           >
             {REFRESH_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
+              <option key={opt.value} value={opt.value}>{translateUi(opt.label)}</option>
             ))}
           </select>
-          <span className="text-gray-500">{connections.length} 条连接</span>
+          <span className="text-gray-500">{connections.length} {translateUi("条连接")}</span>
         </div>
       </div>
 
       {/* 连接表格 */}
       <div className="flex-1 overflow-auto min-h-0">
         {loading && !hasDataRef.current ? (
-          <div className="flex items-center justify-center h-full text-gray-500">加载中...</div>
+          <div className="flex items-center justify-center h-full text-gray-500">{translateUi("加载中...")}</div>
         ) : (
           <table className="w-full border-collapse table-fixed">
             <thead className="sticky top-0 bg-surface-light z-10">
               <tr className="text-[11px]">
-                <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none w-[60px]" onClick={() => handleSort('state')}>状态{arrow('state')}</th>
-                <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none w-[28%]" onClick={() => handleSort('local')}>本地地址{arrow('local')}</th>
-                <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none w-[28%]" onClick={() => handleSort('peer')}>远程地址{arrow('peer')}</th>
+                <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none w-[60px]" onClick={() => handleSort('state')}>{translateUi("状态")}{arrow('state')}</th>
+                <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none w-[28%]" onClick={() => handleSort('local')}>{translateUi("本地地址")}{arrow('local')}</th>
+                <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none w-[28%]" onClick={() => handleSort('peer')}>{translateUi("远程地址")}{arrow('peer')}</th>
                 <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none w-[70px]" onClick={() => handleSort('pid')}>PID{arrow('pid')}</th>
-                <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none" onClick={() => handleSort('process')}>进程{arrow('process')}</th>
+                <th className="text-left px-3 py-1.5 text-gray-400 font-normal cursor-pointer hover:text-gray-200 select-none" onClick={() => handleSort('process')}>{translateUi("进程")}{arrow('process')}</th>
               </tr>
             </thead>
             <tbody>
@@ -240,7 +241,7 @@ export function NetworkDetail({ sessionId, hostLabel, isLocal, initialIface }: P
               {sorted.length === 0 && (
                 <tr>
                   <td colSpan={5} className="text-center py-8 text-gray-500">
-                    {selectedIface ? `${selectedIface} 上没有活跃连接` : '没有活跃连接'}
+                    {selectedIface ? `${selectedIface}${translateUi('上没有活跃连接')}` : translateUi('没有活跃连接')}
                   </td>
                 </tr>
               )}

@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -117,7 +118,7 @@ function RenameDialog({ name, onConfirm, onCancel }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onCancel}>
       <div className="bg-surface-light border border-surface-border rounded-lg p-4 min-w-[300px] shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="text-sm text-gray-200 mb-3">重命名</div>
+        <div className="text-sm text-gray-200 mb-3">{translateUi("重命名")}</div>
         <input
           ref={inputRef}
           value={value}
@@ -129,11 +130,11 @@ function RenameDialog({ name, onConfirm, onCancel }: {
           className="w-full bg-surface border border-surface-border rounded px-2 py-1 text-sm text-gray-200 outline-none focus:border-accent-cyan"
         />
         <div className="flex justify-end gap-2 mt-3">
-          <button onClick={onCancel} className="px-3 py-1 text-xs text-gray-400 hover:text-white">取消</button>
+          <button onClick={onCancel} className="px-3 py-1 text-xs text-gray-400 hover:text-white">{translateUi("取消")}</button>
           <button
             onClick={() => value.trim() && onConfirm(value.trim())}
             className="px-3 py-1 text-xs bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30"
-          >确定</button>
+          >{translateUi("确定")}</button>
         </div>
       </div>
     </div>
@@ -265,7 +266,7 @@ function FilePane({
         <button
           onClick={() => { setSearchVisible(prev => !prev); if (searchVisible) setSearchQuery(''); }}
           className={`text-[11px] px-1 rounded ${searchVisible ? 'text-accent-cyan' : 'text-gray-500 hover:text-gray-300'}`}
-          title="搜索 (Ctrl+F)"
+          title={translateUi("搜索 (Ctrl+F)")}
         ><IconSearch size={12} /></button>
       </div>
       {/* Search bar */}
@@ -277,11 +278,11 @@ function FilePane({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape') { setSearchVisible(false); setSearchQuery(''); } }}
-            placeholder="搜索文件名..."
+            placeholder={translateUi("搜索文件名...")}
             className="flex-1 bg-surface-light border border-surface-border rounded px-1.5 py-0.5 text-[11px] text-gray-300 outline-none focus:border-accent-cyan min-w-0"
           />
           {searchQuery && (
-            <span className="text-[10px] text-gray-500">{visibleFiles.length} 项</span>
+            <span className="text-[10px] text-gray-500">{visibleFiles.length} {translateUi("项")}</span>
           )}
           <button
             onClick={() => { setSearchVisible(false); setSearchQuery(''); }}
@@ -298,8 +299,8 @@ function FilePane({
           onKeyDown={(e) => { if (e.key === 'Enter') handlePathSubmit(); }}
           className="flex-1 bg-surface border border-surface-border rounded px-1.5 py-0.5 text-[11px] text-gray-300 outline-none focus:border-accent-cyan min-w-0"
         />
-        <button onClick={onRefresh} className="text-gray-400 hover:text-white px-0.5" title="刷新"><IconRefresh size={12} /></button>
-        <button onClick={handleGoUp} className="text-gray-400 hover:text-white px-0.5" title="上级目录"><IconFolderUp size={12} /></button>
+        <button onClick={onRefresh} className="text-gray-400 hover:text-white px-0.5" title={translateUi("刷新")}><IconRefresh size={12} /></button>
+        <button onClick={handleGoUp} className="text-gray-400 hover:text-white px-0.5" title={translateUi("上级目录")}><IconFolderUp size={12} /></button>
       </div>
       {/* Error */}
       {error && (
@@ -308,14 +309,14 @@ function FilePane({
       {/* Column headers */}
       <div className="flex text-[10px] text-gray-500 border-b border-surface-border bg-surface-light px-2 py-0.5 flex-shrink-0">
         <span className="flex-1 cursor-pointer hover:text-gray-300" onClick={() => handleSort('name')}>
-          文件名{sortIndicator('name')}
+          {translateUi("文件名")}{sortIndicator('name')}
         </span>
         <span className="w-14 text-right cursor-pointer hover:text-gray-300" onClick={() => handleSort('size')}>
-          大小{sortIndicator('size')}
+          {translateUi("大小")}{sortIndicator('size')}
         </span>
-        <span className="w-12 text-gray-500">类型</span>
+        <span className="w-12 text-gray-500">{translateUi("类型")}</span>
         <span className="w-20 cursor-pointer hover:text-gray-300" onClick={() => handleSort('mtime')}>
-          修改时间{sortIndicator('mtime')}
+          {translateUi("修改时间")}{sortIndicator('mtime')}
         </span>
       </div>
       {/* ".." row */}
@@ -328,7 +329,7 @@ function FilePane({
       {/* File list */}
       <div className="flex-1 overflow-y-auto">
         {loading && files.length === 0 && (
-          <div className="px-2 py-2 text-[10px] text-gray-500 text-center">加载中...</div>
+          <div className="px-2 py-2 text-[10px] text-gray-500 text-center">{translateUi("加载中...")}</div>
         )}
         {sorted.map((f) => (
           <div
@@ -349,7 +350,7 @@ function FilePane({
               <span className="inline-flex mr-1 align-text-bottom">{f.is_dir ? <IconFolder size={12} className="text-accent-yellow" /> : <IconFile size={12} className="text-gray-500" />}</span>{f.name}
             </span>
             <span className="w-14 text-right text-gray-500">{f.is_dir ? '' : formatSize(f.size)}</span>
-            <span className="w-12 text-gray-500">{f.is_dir ? '文件夹' : getExtType(f.name)}</span>
+            <span className="w-12 text-gray-500">{f.is_dir ? translateUi('文件夹') : getExtType(f.name)}</span>
             <span className="w-20 text-gray-500">{formatTime(f.mtime)}</span>
           </div>
         ))}
@@ -486,7 +487,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
       return;
     }
 
-    setRemoteError('无法读取远程目录，请手动输入路径');
+        setRemoteError(translateUi('无法读取远程目录，请手动输入路径'));
     setRemoteFiles([]);
     remoteFilesRef.current = [];
     setRemoteLoading(false);
@@ -715,7 +716,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
         await invoke('local_delete', { path: fullPath });
         loadLocalFiles(localPath);
       } catch (e) {
-        setLocalError(`删除失败: ${e}`);
+        setLocalError(`${translateUi('删除失败:')} ${e}`);
       }
     } else {
       if (!sessionId) return;
@@ -724,7 +725,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
         await invoke('sftp_delete', { sessionId, path: fullPath, isDir: entry.is_dir });
         loadRemoteFiles(remotePath);
       } catch (e) {
-        setRemoteError(`删除失败: ${e}`);
+        setRemoteError(`${translateUi('删除失败:')} ${e}`);
       }
     }
   }
@@ -738,7 +739,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
         await invoke('sftp_rename', { sessionId, oldPath, newPath });
         loadRemoteFiles(remotePath);
       } catch (e) {
-        setRemoteError(`重命名失败: ${e}`);
+        setRemoteError(`${translateUi('重命名失败:')} ${e}`);
       }
     } else {
       const oldPath = joinPath(localPath, entry.name);
@@ -747,7 +748,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
         await invoke('local_rename', { oldPath, newPath });
         loadLocalFiles(localPath);
       } catch (e) {
-        setLocalError(`重命名失败: ${e}`);
+        setLocalError(`${translateUi('重命名失败:')} ${e}`);
       }
     }
     setRenameDialog(null);
@@ -764,34 +765,34 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
     if (side === 'remote') {
       return [
         {
-          label: `下载到本地 (${baseName(localPath)})`,
+          label: `${translateUi('下载到本地 (')}${baseName(localPath)})`,
           onClick: () => handleDownload(entry),
           disabled: entry.is_dir,
         },
         { label: '', onClick: () => {}, separator: true },
         {
-          label: '重命名',
+          label: translateUi('重命名'),
           onClick: () => setRenameDialog({ side: 'remote', entry }),
         },
         {
-          label: '删除',
+          label: translateUi('删除'),
           onClick: () => handleDelete('remote', entry),
         },
       ];
     } else {
       return [
         {
-          label: `上传到远程 (${baseName(remotePath)})`,
+          label: `${translateUi('上传到远程 (')}${baseName(remotePath)})`,
           onClick: () => handleUpload(entry),
           disabled: !sessionId || entry.is_dir,
         },
         { label: '', onClick: () => {}, separator: true },
         {
-          label: '重命名',
+          label: translateUi('重命名'),
           onClick: () => setRenameDialog({ side: 'local', entry }),
         },
         {
-          label: '删除',
+          label: translateUi('删除'),
           onClick: () => handleDelete('local', entry),
         },
       ];
@@ -808,28 +809,26 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
             activeTab === 'file' ? 'bg-surface-lighter text-gray-200' : 'text-gray-500 hover:text-gray-300'
           }`}
         >
-          文件
-        </button>
+          {translateUi("文件")}</button>
         <button
           onClick={() => setActiveTab('cmd')}
           className={`px-2 py-0.5 text-xs rounded ${
             activeTab === 'cmd' ? 'bg-surface-lighter text-gray-200' : 'text-gray-500 hover:text-gray-300'
           }`}
         >
-          命令
-        </button>
+          {translateUi("命令")}</button>
         <div className="flex-1" />
         <button
           onClick={() => setShowHidden(!showHidden)}
           className={`px-2 py-0.5 text-[10px] rounded mr-1 ${showHidden ? 'bg-accent-cyan/15 text-accent-cyan' : 'text-gray-500 hover:text-gray-300'}`}
-          title={showHidden ? '隐藏隐藏文件' : '显示隐藏文件'}
+          title={showHidden ? translateUi('隐藏隐藏文件') : translateUi('显示隐藏文件')}
         >
-          {showHidden ? '隐藏.' : '显示.'}
+          {translateUi(showHidden ? '隐藏.' : '显示.')}
         </button>
         {sessionId ? (
-          <span className="text-[10px] text-accent-green mr-1">已连接</span>
+          <span className="text-[10px] text-accent-green mr-1">{translateUi("已连接")}</span>
         ) : (
-          <span className="text-[10px] text-gray-500 mr-1">未连接</span>
+          <span className="text-[10px] text-gray-500 mr-1">{translateUi("未连接")}</span>
         )}
       </div>
 
@@ -840,7 +839,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
             {/* Left: Local */}
             <FilePane
               side="local"
-              title="本地文件"
+              title={translateUi("本地文件")}
               path={localPath}
               files={localFiles}
               error={localError}
@@ -859,7 +858,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
             {sessionId ? (
               <FilePane
                 side="remote"
-                title="远程文件"
+                title={translateUi("远程文件")}
                 path={remotePath}
                 files={remoteFiles}
                 error={remoteError}
@@ -874,8 +873,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
               />
             ) : (
               <div className="flex-1 flex items-center justify-center text-xs text-gray-500">
-                未连接远程主机 — 连接SSH后显示远程文件
-              </div>
+                {translateUi("未连接远程主机 — 连接SSH后显示远程文件")}</div>
             )}
           </div>
           {/* 传输进度统一显示在右上角浮窗，此处不再渲染底部进度条 */}
@@ -961,13 +959,13 @@ function CommandSnippets({ activeTerminalId }: { activeTerminalId: string | null
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Toolbar */}
       <div className="flex items-center px-2 py-1 border-b border-surface-border flex-shrink-0">
-        <span className="text-xs text-gray-400">命令收藏 -- 点击直接发送到终端</span>
+          <span className="text-xs text-gray-400">{translateUi("命令收藏 -- 点击直接发送到终端")}</span>
         <div className="flex-1" />
         <button
           onClick={() => setShowAdd(!showAdd)}
           className="text-xs text-accent-cyan hover:text-white px-2"
         >
-          {showAdd ? '取消' : '+ 添加'}
+          {translateUi(showAdd ? '取消' : '+ 添加')}
         </button>
       </div>
 
@@ -977,17 +975,17 @@ function CommandSnippets({ activeTerminalId }: { activeTerminalId: string | null
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder="名称"
+            placeholder={translateUi("名称")}
             className="w-24 bg-surface-light border border-surface-border rounded px-2 py-0.5 text-xs text-gray-200 outline-none"
           />
           <input
             value={newCmd}
             onChange={(e) => setNewCmd(e.target.value)}
-            placeholder="命令"
+            placeholder={translateUi("命令")}
             onKeyDown={(e) => e.key === 'Enter' && addSnippet()}
             className="flex-1 bg-surface-light border border-surface-border rounded px-2 py-0.5 text-xs text-gray-200 outline-none"
           />
-          <button onClick={addSnippet} className="text-xs text-accent-cyan hover:text-white px-2">保存</button>
+          <button onClick={addSnippet} className="text-xs text-accent-cyan hover:text-white px-2">{translateUi("保存")}</button>
         </div>
       )}
 
@@ -1010,7 +1008,7 @@ function CommandSnippets({ activeTerminalId }: { activeTerminalId: string | null
           </div>
         ))}
         {snippets.length === 0 && (
-          <div className="px-3 py-4 text-xs text-gray-500 text-center">暂无收藏命令，点击"添加"创建</div>
+          <div className="px-3 py-4 text-xs text-gray-500 text-center">{translateUi("暂无收藏命令，点击\"添加\"创建")}</div>
         )}
       </div>
     </div>

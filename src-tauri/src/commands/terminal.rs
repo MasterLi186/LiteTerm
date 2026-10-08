@@ -6,6 +6,15 @@ use tauri::{AppHandle, Emitter, State};
 use crate::app_log;
 use crate::state::{AppState, LocalTerminal};
 
+#[tauri::command]
+pub fn get_system_locale() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    })
+}
+
 fn default_shell() -> String {
     #[cfg(unix)]
     {

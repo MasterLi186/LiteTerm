@@ -1,3 +1,4 @@
+import { t as translateUi } from './i18n';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -89,19 +90,19 @@ function PasswordPrompt({ hostLabel, onSubmit, onCancel }: {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
       <div className="bg-surface-light border border-surface-border rounded-lg p-6 w-80">
-        <h3 className="text-sm font-semibold mb-3">连接到 {hostLabel}</h3>
+        <h3 className="text-sm font-semibold mb-3">{translateUi("连接到")}{' '}{hostLabel}</h3>
         <input
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && onSubmit(password)}
-          placeholder="请输入密码"
+          placeholder={translateUi("请输入密码")}
           autoFocus
           className="w-full bg-surface border border-surface-border rounded px-3 py-2 text-sm mb-4 outline-none focus:border-accent-cyan"
         />
         <div className="flex justify-end gap-2">
-          <button onClick={onCancel} className="px-3 py-1 text-sm text-gray-400 hover:text-white">取消</button>
-          <button onClick={() => onSubmit(password)} className="px-3 py-1 text-sm bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30">连接</button>
+          <button onClick={onCancel} className="px-3 py-1 text-sm text-gray-400 hover:text-white">{translateUi("取消")}</button>
+          <button onClick={() => onSubmit(password)} className="px-3 py-1 text-sm bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30">{translateUi("连接")}</button>
         </div>
       </div>
     </div>
@@ -152,11 +153,11 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
 
   return (
     <div className="h-8 bg-surface-light border-t border-b border-surface-border flex items-center px-2 gap-2 relative">
-      <span className="text-xs text-gray-500 flex-shrink-0">命令输入:</span>
+      <span className="text-xs text-gray-500 flex-shrink-0">{translateUi("命令输入:")}</span>
       <input
         ref={inputRef}
         className="flex-1 bg-surface border border-surface-border rounded px-2 py-0.5 text-xs outline-none focus:border-accent-cyan text-gray-200 min-w-0"
-        placeholder="输入命令后回车发送到终端"
+        placeholder={translateUi("输入命令后回车发送到终端")}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && e.currentTarget.value) {
             sendCommand(e.currentTarget.value);
@@ -177,14 +178,14 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
       <button
         onClick={() => { setShowHistory(!showHistory); setShowFavorites(false); }}
         className={`px-1.5 py-0.5 border border-surface-border rounded flex-shrink-0 ${showHistory ? 'text-accent-cyan bg-accent-cyan/10' : 'text-gray-400 hover:text-white'}`}
-        title="命令历史"
+        title={translateUi("命令历史")}
       >
         <IconHistory size={14} />
       </button>
       <button
         onClick={() => { setShowFavorites(!showFavorites); setShowHistory(false); }}
         className={`px-1.5 py-0.5 border border-surface-border rounded flex-shrink-0 ${showFavorites ? 'text-accent-yellow bg-accent-yellow/10' : 'text-gray-400 hover:text-white'}`}
-        title="收藏命令"
+        title={translateUi("收藏命令")}
       >
         <IconStar size={14} />
       </button>
@@ -195,21 +196,21 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
           <div className="fixed inset-0 z-30" onClick={() => setShowHistory(false)} />
           <div className="absolute bottom-9 right-16 z-40 bg-surface-light border border-surface-border rounded shadow-lg w-96 max-h-72 overflow-y-auto">
             <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface-border">
-              <span className="text-xs text-gray-400">命令历史 ({history.length})</span>
+              <span className="text-xs text-gray-400">{translateUi("命令历史 (")}{history.length})</span>
               {history.length > 0 && (
                 <button
                   onClick={() => {
-                    if (window.confirm('确认清空所有命令历史？')) {
+                    if (window.confirm(translateUi('确认清空所有命令历史？'))) {
                       setHistory([]);
                       localStorage.removeItem('guishell_cmd_history');
                     }
                   }}
                   className="text-[10px] text-gray-500 hover:text-accent-red"
-                >清空</button>
+                >{translateUi("清空")}</button>
               )}
             </div>
             {history.length === 0 ? (
-              <div className="px-3 py-4 text-xs text-gray-500 text-center">暂无历史记录</div>
+              <div className="px-3 py-4 text-xs text-gray-500 text-center">{translateUi("暂无历史记录")}</div>
             ) : (
               history.map((cmd, i) => (
                 <div
@@ -219,35 +220,35 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
                   <span
                     className="flex-1 px-3 py-1.5 text-xs text-gray-300 truncate font-mono min-w-0 cursor-pointer"
                     onClick={() => { if (inputRef.current) inputRef.current.value = cmd; }}
-                    title="点击填入输入框"
+                    title={translateUi("点击填入输入框")}
                   >
                     {cmd}
                   </span>
                   <button
                     onClick={() => { sendCommand(cmd); if (inputRef.current) inputRef.current.value = ''; setShowHistory(false); }}
                     className="px-1 text-accent-green hover:brightness-125 flex-shrink-0"
-                    title="执行"
+                    title={translateUi("执行")}
                   >
                     <IconPlay size={13} />
                   </button>
                   <button
                     onClick={() => navigator.clipboard.writeText(cmd)}
                     className="px-1 text-accent-cyan hover:brightness-125 flex-shrink-0"
-                    title="复制"
+                    title={translateUi("复制")}
                   >
                     <IconCopy size={13} />
                   </button>
                   <button
                     onClick={() => toggleFavorite(cmd)}
                     className={`px-1 flex-shrink-0 ${favorites.includes(cmd) ? 'text-accent-yellow' : 'text-gray-500 hover:text-accent-yellow'}`}
-                    title={favorites.includes(cmd) ? '取消收藏' : '收藏'}
+                    title={translateUi(favorites.includes(cmd) ? '取消收藏' : '收藏')}
                   >
                     {favorites.includes(cmd) ? <IconStarFilled size={13} /> : <IconStar size={13} />}
                   </button>
                   <button
                     onClick={() => removeHistory(cmd)}
                     className="px-1 text-accent-red hover:brightness-125 flex-shrink-0 mr-1"
-                    title="删除"
+                    title={translateUi("删除")}
                   >
                     <IconClose size={13} />
                   </button>
@@ -264,10 +265,10 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
           <div className="fixed inset-0 z-30" onClick={() => setShowFavorites(false)} />
           <div className="absolute bottom-9 right-2 z-40 bg-surface-light border border-surface-border rounded shadow-lg w-96 max-h-72 overflow-y-auto">
             <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface-border">
-              <span className="text-xs text-gray-400">收藏命令 ({favorites.length})</span>
+              <span className="text-xs text-gray-400">{translateUi("收藏命令 (")}{favorites.length})</span>
             </div>
             {favorites.length === 0 ? (
-              <div className="px-3 py-4 text-xs text-gray-500 text-center">暂无收藏，在历史记录中点击星标收藏</div>
+              <div className="px-3 py-4 text-xs text-gray-500 text-center">{translateUi("暂无收藏，在历史记录中点击星标收藏")}</div>
             ) : (
               favorites.map((cmd, i) => (
                 <div
@@ -277,28 +278,28 @@ function CommandInputBar({ terminalId }: { terminalId: string | null }) {
                   <span
                     className="flex-1 px-3 py-1.5 text-xs text-gray-300 truncate font-mono min-w-0 cursor-pointer"
                     onClick={() => { if (inputRef.current) inputRef.current.value = cmd; }}
-                    title="点击填入输入框"
+                    title={translateUi("点击填入输入框")}
                   >
                     {cmd}
                   </span>
                   <button
                     onClick={() => { sendCommand(cmd); if (inputRef.current) inputRef.current.value = ''; setShowFavorites(false); }}
                     className="px-1 text-accent-green hover:brightness-125 flex-shrink-0"
-                    title="执行"
+                    title={translateUi("执行")}
                   >
                     <IconPlay size={13} />
                   </button>
                   <button
                     onClick={() => navigator.clipboard.writeText(cmd)}
                     className="px-1 text-accent-cyan hover:brightness-125 flex-shrink-0"
-                    title="复制"
+                    title={translateUi("复制")}
                   >
                     <IconCopy size={13} />
                   </button>
                   <button
                     onClick={() => removeFavorite(cmd)}
                     className="px-1 text-accent-red hover:brightness-125 flex-shrink-0 mr-1"
-                    title="删除"
+                    title={translateUi("删除")}
                   >
                     <IconClose size={13} />
                   </button>
@@ -538,7 +539,7 @@ function App() {
         const tab = prev.find(t => t.id === closedId);
         if (tab?.type === 'ssh' && tab.sshParams) {
           // SSH 断开:保留标签,显示断开提示(不自动重连)
-          setReconnecting(r => ({ ...r, [closedId]: { attempts: 0, status: '连接已断开' } }));
+          setReconnecting(r => ({ ...r, [closedId]: { attempts: 0, status: translateUi('连接已断开') } }));
           return prev;
         }
         // 非 SSH 标签(本地终端等):直接移除
@@ -604,9 +605,9 @@ function App() {
     try {
       const id = await invoke<string>('open_local_terminal');
       const localCount = tabs.filter((t) => t.type === 'local').length + 1;
-      const tab: Tab = { id, label: `终端 ${localCount}`, type: 'local' };
+      const tab: Tab = { id, label: `${translateUi('终端')} ${localCount}`, type: 'local' };
       setTabs((prev) => [...prev, tab]);
-      invoke('register_tab', { id, label: `终端 ${localCount}`, tabType: 'local' }).catch(() => {});
+      invoke('register_tab', { id, label: `${translateUi('终端')} ${localCount}`, tabType: 'local' }).catch(() => {});
       setActiveTabId(id);
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
@@ -615,7 +616,7 @@ function App() {
         invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
       }, 300);
     } catch (e) {
-      setError(`打开终端失败: ${e}`);
+      setError(`${translateUi('打开终端失败:')} ${e}`);
     }
   }
 
@@ -632,21 +633,21 @@ function App() {
         invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
       }, 300);
     } catch (e) {
-      setError(`打开终端失败: ${e}`);
+      setError(`${translateUi('打开终端失败:')} ${e}`);
     }
   }
 
   async function openSerialTerminal(device: string, baudRate: number, name: string) {
     try {
       const id = await invoke<string>('open_serial_terminal', { device, baudRate });
-      const tab: Tab = { id, label: `串口: ${name}`, type: 'serial', serialParams: { device, baudRate } };
+      const tab: Tab = { id, label: `${translateUi('串口:')} ${name}`, type: 'serial', serialParams: { device, baudRate } };
       setTabs((prev) => [...prev, tab]);
       // 串口标签暂不注册到 HTTP API（第一期不支持串口操作）
       setActiveTabId(id);
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
     } catch (e) {
-      setError(`打开串口失败: ${e}`);
+      setError(`${translateUi('打开串口失败:')} ${e}`);
     }
   }
 
@@ -764,7 +765,7 @@ function App() {
   function openRecordingTab(filePath: string) {
     const id = `recording-${Date.now()}`;
     const fileName = filePath.split('/').pop() || '录屏回放';
-    const tab: Tab = { id, label: `回放: ${fileName}`, type: 'recording', recordingPath: filePath };
+    const tab: Tab = { id, label: `${translateUi('回放:')} ${fileName}`, type: 'recording', recordingPath: filePath };
     setTabs(prev => [...prev, tab]);
     setActiveTabId(id);
   }
@@ -776,7 +777,7 @@ function App() {
       return;
     }
     const id = `settings-${Date.now()}`;
-    const tab: Tab = { id, label: '设置', type: 'settings' };
+    const tab: Tab = { id, label: translateUi('设置'), type: 'settings' };
     setTabs(prev => [...prev, tab]);
     setActiveTabId(id);
   }
@@ -880,7 +881,7 @@ function App() {
         params.keyPath || null,
       );
     } catch (e) {
-      setError(`连接失败: ${e}`);
+      setError(`${translateUi('连接失败:')} ${e}`);
     }
   }
 
@@ -984,7 +985,7 @@ function App() {
         hostConfig.key_path || null,
       );
     } catch (e) {
-      setError(`连接失败: ${e}`);
+      setError(`${translateUi('连接失败:')} ${e}`);
     }
   }
 
@@ -1002,25 +1003,25 @@ function App() {
     try {
       const content = await invoke<string>('export_config');
       const filePath = await save({
-        title: '导出配置',
+        title: translateUi('导出配置'),
         defaultPath: 'guishell_connections.toml',
-        filters: [{ name: 'TOML 文件', extensions: ['toml'] }],
+        filters: [{ name: translateUi('TOML 文件'), extensions: ['toml'] }],
       });
       if (filePath) {
         const bytes = Array.from(new TextEncoder().encode(content));
         await invoke('save_file', { path: filePath, data: bytes });
       }
     } catch (e) {
-      setError(`导出配置失败: ${e}`);
+      setError(`${translateUi('导出配置失败:')} ${e}`);
     }
   }
 
   async function handleImportConfig() {
     try {
       const filePath = await open({
-        title: '导入配置',
+        title: translateUi('导入配置'),
         multiple: false,
-        filters: [{ name: 'TOML 文件', extensions: ['toml'] }],
+        filters: [{ name: translateUi('TOML 文件'), extensions: ['toml'] }],
       });
       if (filePath) {
         const content = await invoke<string>('read_text_file', { path: filePath as string });
@@ -1028,7 +1029,7 @@ function App() {
         await loadConnections();
       }
     } catch (e) {
-      setError(`导入配置失败: ${e}`);
+      setError(`${translateUi('导入配置失败:')} ${e}`);
     }
   }
 
@@ -1135,7 +1136,7 @@ function App() {
           tab.sshParams.keyPath,
         );
       } catch (e) {
-        setError(`复制连接失败: ${e}`);
+        setError(`${translateUi('复制连接失败:')} ${e}`);
       }
     } else if (tab.type === 'serial' && tab.serialParams) {
       openSerialTerminal(tab.serialParams.device, tab.serialParams.baudRate, tab.label.replace('串口: ', ''));
@@ -1163,7 +1164,7 @@ function App() {
     }
     const tab: Tab = {
       id,
-      label: activeTab.sshParams ? `进程 - ${activeTab.label}` : '进程 - 本机',
+      label: activeTab.sshParams ? `${translateUi('进程 -')} ${activeTab.label}` : translateUi('进程 - 本机'),
       type: 'process',
       sshParams: activeTab.sshParams,
     };
@@ -1181,7 +1182,7 @@ function App() {
     }
     const tab: Tab = {
       id,
-      label: activeTab.sshParams ? `网络 - ${activeTab.label}` : '网络 - 本机',
+      label: activeTab.sshParams ? `${translateUi('网络 -')} ${activeTab.label}` : translateUi('网络 - 本机'),
       type: 'network',
       sshParams: activeTab.sshParams,
       networkIface: iface,
@@ -1227,7 +1228,7 @@ function App() {
 
       setFocusedTerminalId(newTerminalId);
     } catch (e) {
-      setError(`分屏失败: ${e}`);
+      setError(`${translateUi('分屏失败:')} ${e}`);
     }
   }
 
@@ -1298,7 +1299,7 @@ function App() {
           .then(() => log('拖拽上传', '完成'))
           .catch((e) => {
             log('拖拽上传', `失败: ${e}`);
-            setError(`上传失败: ${e}`);
+            setError(`${translateUi('上传失败:')} ${e}`);
             // 清理失败/中断后遗留在浮窗里的未完成上传条目（仅完成项会自动消失）
             setGlobalTransfers(prev => {
               const n: typeof prev = {};
@@ -1367,28 +1368,28 @@ function App() {
               className="flex items-center gap-1 hover:text-gray-200"
             >
               {sidebarConnectionsOpen ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
-              <span>连接管理</span>
+              <span>{translateUi("连接管理")}</span>
             </button>
             <div className="flex items-center gap-1">
               <button
                 onClick={handleImportConfig}
                 className="text-gray-500 hover:text-accent-cyan p-0.5"
-                title="导入配置"
+                title={translateUi("导入配置")}
               ><IconImport size={13} /></button>
               <button
                 onClick={handleExportConfig}
                 className="text-gray-500 hover:text-accent-cyan p-0.5"
-                title="导出配置"
+                title={translateUi("导出配置")}
               ><IconExport size={13} /></button>
               <button
                 onClick={() => setShowSshKeyManager(true)}
                 className="text-gray-500 hover:text-accent-cyan p-0.5"
-                title="SSH 密钥管理"
+                title={translateUi("SSH 密钥管理")}
               ><IconKey size={13} /></button>
               <button
                 onClick={() => setShowDialog(true)}
                 className="text-accent-cyan hover:text-white p-0.5"
-                title="新建连接"
+                title={translateUi("新建连接")}
               >
                 <IconPlus size={15} />
               </button>
@@ -1397,7 +1398,7 @@ function App() {
           {sidebarConnectionsOpen && (
             <div className="px-2 pb-2">
               {Object.keys(connections.groups).length === 0 ? (
-                <div className="text-gray-500 text-xs px-2">暂无连接</div>
+                <div className="text-gray-500 text-xs px-2">{translateUi("暂无连接")}</div>
               ) : (
                 Object.entries(connections.groups).map(([groupId, group]) => (
                   <div key={groupId} className="mb-0.5">
@@ -1425,7 +1426,7 @@ function App() {
                             setConnContextMenu({ x: e.clientX, y: e.clientY, groupId, hostId });
                           }}
                           className="w-full text-left pl-6 pr-2 py-0.5 text-xs text-gray-300 hover:bg-surface-lighter rounded truncate"
-                          title={`点击连接 ${host.host}:${host.port}`}
+                          title={`${translateUi('点击连接')} ${host.host}:${host.port}`}
                         >
                           {host.label}
                         </button>
@@ -1449,21 +1450,18 @@ function App() {
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
                 onClick={() => { handleConnectExisting(connContextMenu.groupId, connContextMenu.hostId); setConnContextMenu(null); }}
               >
-                连接
-              </button>
+                {translateUi("连接")}</button>
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
                 onClick={() => { setShowDialog(true); setConnContextMenu(null); }}
               >
-                新建会话
-              </button>
+                {translateUi("新建会话")}</button>
               <div className="border-t border-surface-border my-1" />
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
                 onClick={() => { setEditingConn({ groupId: connContextMenu.groupId, hostId: connContextMenu.hostId }); setShowDialog(true); setConnContextMenu(null); }}
               >
-                编辑属性
-              </button>
+                {translateUi("编辑属性")}</button>
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-accent-red"
                 onClick={async () => {
@@ -1471,12 +1469,11 @@ function App() {
                   try {
                     await invoke('delete_connection', { groupId, hostId });
                     await loadConnections();
-                  } catch (e) { setError(`删除失败: ${e}`); }
+                  } catch (e) { setError(`${translateUi('删除失败:')} ${e}`); }
                   setConnContextMenu(null);
                 }}
               >
-                删除
-              </button>
+                {translateUi("删除")}</button>
             </div>
           </>
         )}
@@ -1484,7 +1481,7 @@ function App() {
         {/* System info — local or remote */}
         <SystemInfoPanel
           sessionId={activeTab?.sshParams ? `${activeTab.sshParams.user}@${activeTab.sshParams.host}:${activeTab.sshParams.port}` : 'local'}
-          hostIp={activeSshSessionId ? activeTab?.sshParams?.host : '本机'}
+          hostIp={activeSshSessionId ? activeTab?.sshParams?.host : translateUi('本机')}
           onOpenProcessManager={openProcessManager}
           onOpenNetworkDetail={openNetworkDetail}
         />
@@ -1614,7 +1611,7 @@ function App() {
                   closeTab(tab.id);
                 }}
                 className="ml-1 text-gray-500 hover:text-white cursor-pointer"
-                title="关闭"
+                title={translateUi("关闭")}
               >
                 {'×'}
               </span>
@@ -1623,7 +1620,7 @@ function App() {
           <button
             onClick={() => setShowNewTab(true)}
             className="px-2 py-1 text-gray-500 hover:text-white text-sm flex-shrink-0"
-            title="新建标签页"
+            title={translateUi("新建标签页")}
           >
             <IconPlus size={14} />
           </button>
@@ -1631,21 +1628,21 @@ function App() {
           <button
             onClick={() => setShowBatchCommand(true)}
             className="px-2 py-1.5 text-gray-500 hover:text-accent-cyan flex-shrink-0"
-            title="批量命令"
+            title={translateUi("批量命令")}
           >
             <IconBatchCmd size={16} />
           </button>
           <button
             onClick={() => setShowTunnelManager(true)}
             className="px-2 py-1.5 text-gray-500 hover:text-accent-cyan flex-shrink-0"
-            title="SSH 隧道"
+            title={translateUi("SSH 隧道")}
           >
             <IconTunnel size={16} />
           </button>
           <button
             onClick={openSettingsTab}
             className="px-2 py-1.5 text-gray-500 hover:text-accent-cyan flex-shrink-0"
-            title="设置"
+            title={translateUi("设置")}
           >
             <IconSettings size={16} />
           </button>
@@ -1653,7 +1650,7 @@ function App() {
             <button
               onClick={() => setShowLogPanel(prev => !prev)}
               className={`px-2 py-1.5 flex-shrink-0 ${showLogPanel ? 'text-accent-cyan' : 'text-gray-500 hover:text-accent-cyan'}`}
-              title="调试日志"
+              title={translateUi("调试日志")}
             >
               <IconLog size={16} />
             </button>
@@ -1676,14 +1673,12 @@ function App() {
                   setTabContextMenu(null);
                 }}
               >
-                重命名
-              </button>
+                {translateUi("重命名")}</button>
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
                 onClick={() => { duplicateTab(tabContextMenu.tabId); setTabContextMenu(null); }}
               >
-                复制标签页
-              </button>
+                {translateUi("复制标签页")}</button>
               {(() => {
                 const t = tabs.find(t => t.id === tabContextMenu.tabId);
                 return t?.type === 'ssh' && t.sshParams ? (
@@ -1740,12 +1735,11 @@ function App() {
                         startMonitorAndSftp(newId, sp.host, sp.port, sp.user, pw, sp.authMethod, sp.keyPath);
                       } catch (e) {
                         log('重连', `失败: ${e}`);
-                        setError(`重连失败: ${e}`);
+                        setError(`${translateUi('重连失败:')} ${e}`);
                       }
                     }}
                   >
-                    重新连接
-                  </button>
+                    {translateUi("重新连接")}</button>
                 ) : null;
               })()}
               <div className="border-t border-surface-border my-1" />
@@ -1753,21 +1747,18 @@ function App() {
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
                 onClick={() => { closeTab(tabContextMenu.tabId); setTabContextMenu(null); }}
               >
-                关闭
-              </button>
+                {translateUi("关闭")}</button>
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
                 onClick={() => { closeOtherTabs(tabContextMenu.tabId); setTabContextMenu(null); }}
               >
-                关闭其他
-              </button>
+                {translateUi("关闭其他")}</button>
               <div className="border-t border-surface-border my-1" />
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-lighter text-gray-200"
                 onClick={() => { openLocalTerminal(); setTabContextMenu(null); }}
               >
-                新建本地终端
-              </button>
+                {translateUi("新建本地终端")}</button>
             </div>
           </>
         )}
@@ -1776,7 +1767,7 @@ function App() {
         {renameTab && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setRenameTab(null)}>
             <div className="bg-surface-light border border-surface-border rounded-lg p-4 min-w-[300px] shadow-xl" onClick={(e) => e.stopPropagation()}>
-              <div className="text-sm text-gray-200 mb-3">重命名标签页</div>
+              <div className="text-sm text-gray-200 mb-3">{translateUi("重命名标签页")}</div>
               <input
                 autoFocus
                 defaultValue={renameTab.name}
@@ -1793,7 +1784,7 @@ function App() {
                 className="w-full bg-surface border border-surface-border rounded px-2 py-1 text-sm text-gray-200 outline-none focus:border-accent-cyan"
               />
               <div className="flex justify-end gap-2 mt-3">
-                <button onClick={() => setRenameTab(null)} className="px-3 py-1 text-xs text-gray-400 hover:text-white">取消</button>
+                <button onClick={() => setRenameTab(null)} className="px-3 py-1 text-xs text-gray-400 hover:text-white">{translateUi("取消")}</button>
                 <button
                   onClick={() => {
                     const input = document.querySelector<HTMLInputElement>('.bg-surface-light input');
@@ -1804,7 +1795,7 @@ function App() {
                     }
                   }}
                   className="px-3 py-1 text-xs bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30"
-                >确定</button>
+                >{translateUi("确定")}</button>
               </div>
             </div>
           </div>
@@ -1824,8 +1815,7 @@ function App() {
         <div data-terminal-area className="flex-1 bg-surface relative" style={{ minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
           {tabs.length === 0 ? (
             <div className="p-4 text-gray-500 font-mono text-sm">
-              暂无终端。点击 + 新建一个。
-            </div>
+              {translateUi("暂无终端。点击 + 新建一个。")}</div>
           ) : (
             tabs.map((tab) =>
               tab.type === 'process' ? (
@@ -1919,8 +1909,7 @@ function App() {
                       pointerEvents: 'none',
                     }}>
                       <span style={{ color: '#00d4ff', fontSize: '14px', fontWeight: 600 }}>
-                        释放文件上传到远程服务器
-                      </span>
+                        {translateUi("释放文件上传到远程服务器")}</span>
                     </div>
                   )}
                   {reconnecting[tab.id] && (
@@ -1943,8 +1932,7 @@ function App() {
                         {reconnecting[tab.id].status}
                       </div>
                       <div style={{ color: '#8b949e', fontSize: '13px', marginBottom: '16px' }}>
-                        按 Enter 重新连接
-                      </div>
+                        {translateUi("按 Enter 重新连接")}</div>
                       <div style={{ display: 'flex', gap: '8px' }}>
                         <button
                           onClick={() => attemptReconnect(tab, 1)}
@@ -1952,7 +1940,7 @@ function App() {
                             background: '#00d4ff', color: '#0d1117', border: 'none',
                             borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
                           }}
-                        >重新连接</button>
+                        >{translateUi("重新连接")}</button>
                         <button
                           onClick={() => {
                             setReconnecting(prev => { const n = { ...prev }; delete n[tab.id]; return n; });
@@ -1962,7 +1950,7 @@ function App() {
                             background: '#30363d', color: '#e6edf3', border: 'none',
                             borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
                           }}
-                        >关闭标签</button>
+                        >{translateUi("关闭标签")}</button>
                       </div>
                       <button
                         onClick={() => {
@@ -1974,8 +1962,7 @@ function App() {
                           background: 'none', border: 'none',
                         }}
                       >
-                        取消重连
-                      </button>
+                        {translateUi("取消重连")}</button>
                     </div>
                   )}
                 </div>
@@ -2014,8 +2001,7 @@ function App() {
                         {reconnecting[tab.id].status}
                       </div>
                       <div style={{ color: '#8b949e', fontSize: '13px', marginBottom: '16px' }}>
-                        按 Enter 重新连接
-                      </div>
+                        {translateUi("按 Enter 重新连接")}</div>
                       <div style={{ display: 'flex', gap: '8px' }}>
                         <button
                           onClick={() => attemptReconnect(tab, 1)}
@@ -2023,7 +2009,7 @@ function App() {
                             background: '#00d4ff', color: '#0d1117', border: 'none',
                             borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
                           }}
-                        >重新连接</button>
+                        >{translateUi("重新连接")}</button>
                         <button
                           onClick={() => {
                             setReconnecting(prev => { const n = { ...prev }; delete n[tab.id]; return n; });
@@ -2033,7 +2019,7 @@ function App() {
                             background: '#30363d', color: '#e6edf3', border: 'none',
                             borderRadius: '4px', padding: '4px 16px', cursor: 'pointer', fontSize: '13px',
                           }}
-                        >关闭标签</button>
+                        >{translateUi("关闭标签")}</button>
                       </div>
                       <button
                         onClick={() => {
@@ -2045,8 +2031,7 @@ function App() {
                           background: 'none', border: 'none',
                         }}
                       >
-                        取消重连
-                      </button>
+                        {translateUi("取消重连")}</button>
                     </div>
                   )}
                 </div>
@@ -2108,7 +2093,7 @@ function App() {
             }
           }}
         >
-          <span className="text-xs text-gray-500">{fileBrowserOpen ? '▼ 隐藏文件管理器' : '▲ 显示文件管理器'}</span>
+          <span className="text-xs text-gray-500">{translateUi(fileBrowserOpen ? '▼ 隐藏文件管理器' : '▲ 显示文件管理器')}</span>
         </div>
         {fileBrowserOpen && !(activeTabId && reconnecting[activeTabId]) && (
           <div
@@ -2162,7 +2147,7 @@ function App() {
                     .catch((e) => log('连接', `新建连接 keyring store 失败: ${e}`));
                 }
                 loadConnections();
-              }).catch(e => setError(`保存失败: ${e}`));
+              }).catch(e => setError(`${translateUi('保存失败:')} ${e}`));
               setShowDialog(false);
               setEditingConn(null);
             } else {
@@ -2182,7 +2167,7 @@ function App() {
                   .catch((e) => log('连接', `仅保存 keyring store 失败: ${e}`));
               }
               loadConnections();
-            }).catch(e => setError(`保存失败: ${e}`));
+            }).catch(e => setError(`${translateUi('保存失败:')} ${e}`));
             setShowDialog(false);
           }}
           editData={editingConn ? (() => {
@@ -2233,7 +2218,7 @@ function App() {
         transferPanelVisible ? (
           <div className="fixed top-12 right-4 w-72 bg-surface-light border border-surface-border rounded-lg shadow-xl z-50 overflow-hidden">
             <div className="flex items-center justify-between px-3 py-1.5 border-b border-surface-border bg-surface">
-              <span className="text-xs text-gray-400">文件传输 ({activeTransfers.length})</span>
+              <span className="text-xs text-gray-400">{translateUi("文件传输 (")}{activeTransfers.length})</span>
               <button onClick={() => setTransferPanelVisible(false)} className="text-gray-500 hover:text-white text-xs">—</button>
             </div>
             <div className="max-h-48 overflow-y-auto">
@@ -2264,7 +2249,7 @@ function App() {
                             setGlobalTransfers(prev => { const n = { ...prev }; delete n[cancelKey]; return n; });
                           }}
                           className="text-gray-500 hover:text-accent-red flex-shrink-0 ml-1"
-                          title="取消传输"
+                          title={translateUi("取消传输")}
                         ><IconClose size={11} /></button>
                       )}
                     </div>
@@ -2280,7 +2265,7 @@ function App() {
                     </div>
                     {/* 大小 / 速率 / 百分比 */}
                     <div className="flex items-center justify-between text-[10px] text-gray-500 mt-0.5">
-                      <span>{done ? '完成' : sizeStr}</span>
+                      <span>{done ? translateUi('完成') : sizeStr}</span>
                       <span>{done ? '' : `${spd} · ${pct}%`}</span>
                     </div>
                   </div>
@@ -2293,7 +2278,7 @@ function App() {
             onClick={() => setTransferPanelVisible(true)}
             className="fixed top-12 right-4 z-50 px-3 py-1.5 bg-surface-light border border-surface-border rounded-lg shadow-lg text-xs text-accent-cyan hover:bg-surface-lighter"
           >
-            ↑↓ 传输中 ({activeTransfers.length})
+            {translateUi("↑↓ 传输中 (")}{activeTransfers.length})
           </button>
         )
       )}
@@ -2302,9 +2287,9 @@ function App() {
       {showLogPanel && (
         <div className="fixed bottom-0 right-0 w-[600px] h-[300px] bg-surface-light border border-surface-border rounded-tl-lg shadow-xl z-50 flex flex-col">
           <div className="flex items-center justify-between px-3 py-1 border-b border-surface-border">
-            <span className="text-xs text-gray-400">调试日志</span>
+            <span className="text-xs text-gray-400">{translateUi("调试日志")}</span>
             <div className="flex gap-2">
-              <button onClick={() => navigator.clipboard.writeText(getLogText())} className="text-[10px] text-gray-500 hover:text-white">复制</button>
+              <button onClick={() => navigator.clipboard.writeText(getLogText())} className="text-[10px] text-gray-500 hover:text-white">{translateUi("复制")}</button>
               <button onClick={() => setShowLogPanel(false)} className="text-gray-500 hover:text-white text-sm">×</button>
             </div>
           </div>

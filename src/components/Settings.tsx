@@ -1,3 +1,4 @@
+import { t as translateUi } from '../i18n';
 import { useState, useEffect } from 'react';
 import { TERMINAL_THEMES } from '../themes';
 
@@ -72,7 +73,7 @@ export function SettingsPanel({ onClose, onApply }: Props) {
       <div className="bg-surface-light border border-surface-border rounded-lg shadow-xl w-[480px] max-h-[80vh] overflow-auto" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-surface-border">
-          <h2 className="text-base font-semibold text-gray-200">系统设置</h2>
+          <h2 className="text-base font-semibold text-gray-200">{translateUi("系统设置")}</h2>
           <span onClick={onClose} className="text-gray-500 hover:text-white cursor-pointer text-lg">×</span>
         </div>
 
@@ -85,13 +86,13 @@ export function SettingsPanel({ onClose, onApply }: Props) {
               onChange={e => setUseSystemFont(e.target.checked)}
               className="accent-accent-cyan"
             />
-            <span className="text-sm text-gray-300">使用系统字体</span>
-            <span className="text-xs text-gray-500">勾选后使用操作系统默认等宽字体</span>
+            <span className="text-sm text-gray-300">{translateUi("使用系统字体")}</span>
+            <span className="text-xs text-gray-500">{translateUi("勾选后使用操作系统默认等宽字体")}</span>
           </label>
 
           {/* 终端字体 */}
           <div style={{ opacity: useSystemFont ? 0.4 : 1, pointerEvents: useSystemFont ? 'none' : 'auto' }}>
-            <label className="text-sm text-gray-400 block mb-1.5">终端字体</label>
+            <label className="text-sm text-gray-400 block mb-1.5">{translateUi("终端字体")}</label>
             <select
               value={font}
               onChange={e => setFont(e.target.value)}
@@ -106,7 +107,7 @@ export function SettingsPanel({ onClose, onApply }: Props) {
 
           {/* 字号 */}
           <div style={{ opacity: useSystemFont ? 0.4 : 1, pointerEvents: useSystemFont ? 'none' : 'auto' }}>
-            <label className="text-sm text-gray-400 block mb-1.5">字号 (8-48)</label>
+            <label className="text-sm text-gray-400 block mb-1.5">{translateUi("字号 (8-48)")}</label>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setFontSize(s => Math.max(8, s - 1))}
@@ -146,11 +147,11 @@ export function SettingsPanel({ onClose, onApply }: Props) {
 
           {/* 终端主题 */}
           <div>
-            <label className="text-sm text-gray-400 block mb-1.5">终端配色 ({allThemeNames.length} 套)</label>
+            <label className="text-sm text-gray-400 block mb-1.5">{translateUi("终端配色 (")}{allThemeNames.length} {translateUi("套)")}</label>
             <input
               value={themeSearch}
               onChange={e => setThemeSearch(e.target.value)}
-              placeholder="搜索配色方案..."
+              placeholder={translateUi("搜索配色方案...")}
               className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan mb-2"
             />
             <div className="max-h-40 overflow-auto border border-surface-border rounded">
@@ -164,7 +165,7 @@ export function SettingsPanel({ onClose, onApply }: Props) {
                       : 'text-gray-400'
                   }`}
                 >
-                  {name}
+                  {translateUi(name)}
                 </button>
               ))}
             </div>
@@ -172,7 +173,7 @@ export function SettingsPanel({ onClose, onApply }: Props) {
 
           {/* 预览 */}
           <div>
-            <label className="text-sm text-gray-400 block mb-1.5">预览</label>
+            <label className="text-sm text-gray-400 block mb-1.5">{translateUi("预览")}</label>
             <div
               style={{
                 fontFamily: useSystemFont ? 'monospace' : `'${font}', monospace`,
@@ -205,8 +206,7 @@ export function SettingsPanel({ onClose, onApply }: Props) {
         {/* Footer */}
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-surface-border">
           <button onClick={onClose} className="px-4 py-1.5 text-sm text-gray-400 hover:text-white">
-            关闭
-          </button>
+            {translateUi("关闭")}</button>
         </div>
       </div>
     </div>

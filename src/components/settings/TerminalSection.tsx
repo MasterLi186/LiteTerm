@@ -1,3 +1,4 @@
+import { t as translateUi } from '../../i18n';
 import { useState, useEffect } from 'react';
 import { TERMINAL_THEMES } from '../../themes';
 import { ThemePreview } from './ThemePreview';
@@ -39,13 +40,13 @@ export function TerminalSection({ onApply }: Props) {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-gray-200">终端</h2>
+      <h2 className="text-lg font-semibold text-gray-200">{translateUi("终端")}</h2>
 
       {/* 当前配色 */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm text-gray-400">当前配色方案: <span className="text-accent-cyan">{theme}</span></span>
-          <span className="text-xs text-gray-500">{allThemeNames.length} 套</span>
+          <span className="text-sm text-gray-400">{translateUi("当前配色方案:")}{' '}<span className="text-accent-cyan">{translateUi(theme)}</span></span>
+          <span className="text-xs text-gray-500">{allThemeNames.length} {translateUi("套")}</span>
         </div>
         <ThemePreview
           name={theme}
@@ -59,7 +60,7 @@ export function TerminalSection({ onApply }: Props) {
       <input
         value={search}
         onChange={e => setSearch(e.target.value)}
-        placeholder="搜索配色方案..."
+        placeholder={translateUi("搜索配色方案...")}
         className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-accent-cyan"
       />
 
@@ -68,7 +69,7 @@ export function TerminalSection({ onApply }: Props) {
         {filteredNames.map(name => (
           <ThemePreview
             key={name}
-            name={name}
+            name={translateUi(name)}
             theme={TERMINAL_THEMES[name]}
             selected={theme === name}
             onClick={() => setTheme(name)}
@@ -85,13 +86,13 @@ export function TerminalSection({ onApply }: Props) {
             onChange={e => setUseSystemFont(e.target.checked)}
             className="accent-accent-cyan"
           />
-          <span className="text-sm text-gray-300">使用系统字体</span>
+          <span className="text-sm text-gray-300">{translateUi("使用系统字体")}</span>
         </label>
 
         <div style={{ opacity: useSystemFont ? 0.4 : 1, pointerEvents: useSystemFont ? 'none' : 'auto' }}
              className="space-y-3">
           <div>
-            <label className="text-sm text-gray-400 block mb-1">终端字体</label>
+            <label className="text-sm text-gray-400 block mb-1">{translateUi("终端字体")}</label>
             <select
               value={font}
               onChange={e => setFont(e.target.value)}
@@ -101,7 +102,7 @@ export function TerminalSection({ onApply }: Props) {
             </select>
           </div>
           <div>
-            <label className="text-sm text-gray-400 block mb-1">字号 (8-48)</label>
+            <label className="text-sm text-gray-400 block mb-1">{translateUi("字号 (8-48)")}</label>
             <div className="flex items-center gap-2">
               <button onClick={() => setFontSize(s => Math.max(8, s - 1))}
                 className="w-7 h-7 flex items-center justify-center border border-surface-border rounded text-gray-300 hover:bg-surface-lighter">−</button>

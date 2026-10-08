@@ -1,3 +1,4 @@
+import { t as translateUi } from '../i18n';
 import { useState } from 'react';
 import type { AuthMethod, HostConfig } from '../types';
 
@@ -68,23 +69,23 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
         onSubmit={handleSubmit}
         className="bg-surface-light border border-surface-border rounded-lg p-6 w-96 shadow-2xl"
       >
-        <h2 className="text-lg font-semibold text-gray-200 mb-4">{isEdit ? '编辑连接' : '新建连接'}</h2>
+        <h2 className="text-lg font-semibold text-gray-200 mb-4">{translateUi(isEdit ? '编辑连接' : '新建连接')}</h2>
 
         <div className="space-y-3">
           <div>
-            <label className="block text-xs text-gray-400 mb-1">名称</label>
+            <label className="block text-xs text-gray-400 mb-1">{translateUi("名称")}</label>
             <input
               type="text"
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              placeholder="我的服务器"
+              placeholder={translateUi("我的服务器")}
               className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-accent-cyan"
             />
           </div>
 
           <div className="flex gap-2">
             <div className="flex-1">
-              <label className="block text-xs text-gray-400 mb-1">主机地址</label>
+              <label className="block text-xs text-gray-400 mb-1">{translateUi("主机地址")}</label>
               <input
                 type="text"
                 value={host}
@@ -95,7 +96,7 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
               />
             </div>
             <div className="w-20">
-              <label className="block text-xs text-gray-400 mb-1">端口</label>
+              <label className="block text-xs text-gray-400 mb-1">{translateUi("端口")}</label>
               <input
                 type="text"
                 value={port}
@@ -106,7 +107,7 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">用户名</label>
+            <label className="block text-xs text-gray-400 mb-1">{translateUi("用户名")}</label>
             <input
               type="text"
               value={user}
@@ -117,21 +118,21 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">认证方式</label>
+            <label className="block text-xs text-gray-400 mb-1">{translateUi("认证方式")}</label>
             <select
               value={authMethod}
               onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}
               className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-accent-cyan"
             >
-              <option value="keyring">密码</option>
-              <option value="key">密钥文件</option>
+              <option value="keyring">{translateUi("密码")}</option>
+              <option value="key">{translateUi("密钥文件")}</option>
               <option value="agent">SSH Agent</option>
             </select>
           </div>
 
           {authMethod === 'keyring' && (
             <div>
-              <label className="block text-xs text-gray-400 mb-1">密码{isEdit ? ' (留空则不修改)' : ''}</label>
+              <label className="block text-xs text-gray-400 mb-1">{translateUi("密码")}{isEdit ? ` ${translateUi('(留空则不修改)')}` : ''}</label>
               <input
                 type="password"
                 value={password}
@@ -144,7 +145,7 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
           {authMethod === 'key' && (
             <>
               <div>
-                <label className="block text-xs text-gray-400 mb-1">密钥文件</label>
+                <label className="block text-xs text-gray-400 mb-1">{translateUi("密钥文件")}</label>
                 <input
                   type="text"
                   value={keyPath}
@@ -153,7 +154,7 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
                 />
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1">密钥密码 (可选)</label>
+                <label className="block text-xs text-gray-400 mb-1">{translateUi("密钥密码 (可选)")}</label>
                 <input
                   type="password"
                   value={password}
@@ -165,7 +166,7 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
           )}
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">分组</label>
+            <label className="block text-xs text-gray-400 mb-1">{translateUi("分组")}</label>
             <input
               type="text"
               value={group}
@@ -175,12 +176,12 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">跳板机 (ProxyJump)</label>
+            <label className="block text-xs text-gray-400 mb-1">{translateUi("跳板机 (ProxyJump)")}</label>
             <input
               type="text"
               value={proxyJump}
               onChange={(e) => setProxyJump(e.target.value)}
-              placeholder="user@bastion:22 (可选)"
+              placeholder={translateUi("user@bastion:22 (可选)")}
               className="w-full bg-surface border border-surface-border rounded px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-accent-cyan"
             />
           </div>
@@ -192,8 +193,7 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
             onClick={onClose}
             className="px-4 py-1.5 text-sm text-gray-400 hover:text-white border border-surface-border rounded hover:bg-surface-lighter"
           >
-            取消
-          </button>
+            {translateUi("取消")}</button>
           {!isEdit && onSaveOnly && (
             <button
               type="button"
@@ -203,14 +203,13 @@ export function ConnectionDialog({ onClose, onConnect, onSaveOnly, editData }: P
               }}
               className="px-4 py-1.5 text-sm text-gray-300 border border-surface-border rounded hover:bg-surface-lighter"
             >
-              只保存
-            </button>
+              {translateUi("只保存")}</button>
           )}
           <button
             type="submit"
             className="px-4 py-1.5 text-sm text-white bg-accent-cyan/20 border border-accent-cyan/50 rounded hover:bg-accent-cyan/30"
           >
-            {isEdit ? '保存' : '保存并连接'}
+            {translateUi(isEdit ? '保存' : '保存并连接')}
           </button>
         </div>
       </form>

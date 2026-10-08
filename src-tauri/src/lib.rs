@@ -41,6 +41,7 @@ pub fn run() {
             tab_registry: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
+            commands::terminal::get_system_locale,
             commands::terminal::open_local_terminal,
             commands::terminal::terminal_write,
             commands::terminal::terminal_resize,
