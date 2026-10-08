@@ -158,14 +158,14 @@ fn render_navigation(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
             ui.painter().text(
                 egui::pos2(rect.left() + 15.0, rect.top() + 17.0),
                 egui::Align2::LEFT_CENTER,
-                *title,
+                crate::i18n::tr(title).as_ref(),
                 egui::FontId::proportional(14.0),
                 if selected { CYAN_HOVER } else { TEXT },
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 15.0, rect.top() + 39.0),
                 egui::Align2::LEFT_CENTER,
-                *subtitle,
+                crate::i18n::tr(subtitle).as_ref(),
                 egui::FontId::proportional(11.0),
                 DIM,
             );
@@ -229,15 +229,31 @@ fn render_header(
     let (title, description) = section_heading(panel.section);
     if compact {
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new(title).size(26.0).color(TEXT));
-            ui.label(egui::RichText::new(description).size(13.0).color(MUTED));
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(title).into_owned())
+                    .size(26.0)
+                    .color(TEXT),
+            );
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(description).into_owned())
+                    .size(13.0)
+                    .color(MUTED),
+            );
             ui.horizontal(|ui| render_header_actions(ui, panel, action));
         });
     } else {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(title).size(26.0).color(TEXT));
-                ui.label(egui::RichText::new(description).size(13.0).color(MUTED));
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(title).into_owned())
+                        .size(26.0)
+                        .color(TEXT),
+                );
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(description).into_owned())
+                        .size(13.0)
+                        .color(MUTED),
+                );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 render_header_actions(ui, panel, action);
@@ -246,12 +262,20 @@ fn render_header(
     }
     ui.add_space(6.0);
     if let Some(error) = &panel.error {
-        ui.label(egui::RichText::new(error).size(12.5).color(RED));
+        ui.label(
+            egui::RichText::new(crate::i18n::tr(error).into_owned())
+                .size(12.5)
+                .color(RED),
+        );
     } else if let Some(feedback) = &panel.feedback {
-        ui.label(egui::RichText::new(feedback).size(12.5).color(GREEN));
+        ui.label(
+            egui::RichText::new(crate::i18n::tr(feedback).into_owned())
+                .size(12.5)
+                .color(GREEN),
+        );
     } else if panel.is_dirty() {
         ui.label(
-            egui::RichText::new("● 有尚未保存的修改")
+            egui::RichText::new(crate::i18n::tr("● 有尚未保存的修改").into_owned())
                 .size(11.5)
                 .color(egui::Color32::from_rgb(0xd2, 0x99, 0x22)),
         );
@@ -267,11 +291,15 @@ fn render_header_actions(
     if ui
         .add_enabled(
             dirty,
-            egui::Button::new(egui::RichText::new("保存设置").size(13.0).color(BACKGROUND))
-                .fill(CYAN)
-                .stroke(egui::Stroke::NONE)
-                .corner_radius(6.0)
-                .min_size(egui::vec2(100.0, 36.0)),
+            egui::Button::new(
+                egui::RichText::new(crate::i18n::tr("保存设置").into_owned())
+                    .size(13.0)
+                    .color(BACKGROUND),
+            )
+            .fill(CYAN)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(6.0)
+            .min_size(egui::vec2(100.0, 36.0)),
         )
         .clicked()
     {
@@ -283,11 +311,15 @@ fn render_header_actions(
     if ui
         .add_enabled(
             dirty,
-            egui::Button::new(egui::RichText::new("撤销修改").size(13.0).color(MUTED))
-                .fill(PANEL)
-                .stroke(egui::Stroke::new(1.0, BORDER))
-                .corner_radius(6.0)
-                .min_size(egui::vec2(96.0, 36.0)),
+            egui::Button::new(
+                egui::RichText::new(crate::i18n::tr("撤销修改").into_owned())
+                    .size(13.0)
+                    .color(MUTED),
+            )
+            .fill(PANEL)
+            .stroke(egui::Stroke::new(1.0, BORDER))
+            .corner_radius(6.0)
+            .min_size(egui::vec2(96.0, 36.0)),
         )
         .clicked()
     {
@@ -320,8 +352,16 @@ fn card<R>(
         .inner_margin(egui::Margin::same(20))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new(title).size(16.0).color(TEXT));
-            ui.label(egui::RichText::new(description).size(12.5).color(MUTED));
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(title).into_owned())
+                    .size(16.0)
+                    .color(TEXT),
+            );
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(description).into_owned())
+                    .size(12.5)
+                    .color(MUTED),
+            );
             ui.add_space(16.0);
             add_contents(ui)
         });
@@ -373,7 +413,7 @@ fn render_terminal(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
             ui.add_sized(
                 [ui.available_width().min(420.0), 36.0],
                 egui::TextEdit::singleline(&mut panel.theme_filter)
-                    .hint_text("搜索配色方案…")
+                    .hint_text(crate::i18n::tr("搜索配色方案…").into_owned())
                     .vertical_align(egui::Align::Center)
                     .margin(egui::Margin::symmetric(10, 7)),
             );
@@ -382,7 +422,11 @@ fn render_terminal(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
             let themes = all_themes()
                 .iter()
                 .filter(|theme| {
-                    filter.is_empty() || theme.name.to_ascii_lowercase().contains(&filter)
+                    filter.is_empty()
+                        || theme.name.to_ascii_lowercase().contains(&filter)
+                        || crate::i18n::tr(theme.name)
+                            .to_ascii_lowercase()
+                            .contains(&filter)
                 })
                 .collect::<Vec<_>>();
             let columns = if ui.available_width() >= 700.0 { 2 } else { 1 };
@@ -412,7 +456,7 @@ fn render_terminal(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
                     ui.add(
                         egui::DragValue::new(&mut panel.draft.scrollback_lines)
                             .range(MIN_SCROLLBACK_LINES..=MAX_SCROLLBACK_LINES)
-                            .suffix(" 行"),
+                            .suffix(crate::i18n::tr(" 行").into_owned()),
                     );
                 },
             );
@@ -433,20 +477,20 @@ fn render_appearance(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
                 &mut panel.draft.show_sidebar,
             );
             divider(ui);
-            value_row(
-                ui,
-                "侧边栏宽度",
-                &format!("可调范围 {MIN_SIDEBAR_WIDTH}–{MAX_SIDEBAR_WIDTH} px"),
-                |ui| {
-                    ui.add(
-                        egui::Slider::new(
-                            &mut panel.draft.sidebar_width,
-                            MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH,
-                        )
-                        .suffix(" px"),
-                    );
-                },
-            );
+            let width_description = if crate::i18n::is_english() {
+                format!("Range {MIN_SIDEBAR_WIDTH}–{MAX_SIDEBAR_WIDTH} px")
+            } else {
+                format!("可调范围 {MIN_SIDEBAR_WIDTH}–{MAX_SIDEBAR_WIDTH} px")
+            };
+            value_row(ui, "侧边栏宽度", &width_description, |ui| {
+                ui.add(
+                    egui::Slider::new(
+                        &mut panel.draft.sidebar_width,
+                        MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH,
+                    )
+                    .suffix(" px"),
+                );
+            });
             divider(ui);
             toggle_row(
                 ui,
@@ -491,11 +535,9 @@ fn render_shortcuts(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new(label).size(12.5).color(if capturing {
-                                        CYAN
-                                    } else {
-                                        TEXT
-                                    }),
+                                    egui::RichText::new(crate::i18n::tr(label).into_owned())
+                                        .size(12.5)
+                                        .color(if capturing { CYAN } else { TEXT }),
                                 )
                                 .fill(if capturing { PANEL_RAISED } else { INPUT })
                                 .stroke(egui::Stroke::new(
@@ -532,7 +574,7 @@ fn render_ssh(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
                     ui.add(
                         egui::DragValue::new(&mut panel.draft.connect_timeout_secs)
                             .range(1..=300)
-                            .suffix(" 秒"),
+                            .suffix(crate::i18n::tr(" 秒").into_owned()),
                     );
                 },
             );
@@ -541,7 +583,7 @@ fn render_ssh(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
                 ui.add(
                     egui::DragValue::new(&mut panel.draft.keepalive_interval_secs)
                         .range(0..=3600)
-                        .suffix(" 秒"),
+                        .suffix(crate::i18n::tr(" 秒").into_owned()),
                 );
             });
             divider(ui);
@@ -641,7 +683,7 @@ fn render_zmodem(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
                     ui.add(
                         egui::DragValue::new(&mut panel.draft.zmodem_timeout_secs)
                             .range(MIN_ZMODEM_TIMEOUT_SECS..=MAX_ZMODEM_TIMEOUT_SECS)
-                            .suffix(" 秒"),
+                            .suffix(crate::i18n::tr(" 秒").into_owned()),
                     );
                 });
             });
@@ -674,9 +716,13 @@ fn render_about(ui: &mut egui::Ui) {
                 );
                 ui.vertical(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("版本 {}", env!("CARGO_PKG_VERSION")))
-                            .size(15.0)
-                            .color(TEXT),
+                        egui::RichText::new(if crate::i18n::is_english() {
+                            format!("Version {}", env!("CARGO_PKG_VERSION"))
+                        } else {
+                            format!("版本 {}", env!("CARGO_PKG_VERSION"))
+                        })
+                        .size(15.0)
+                        .color(TEXT),
                     );
                     ui.label(
                         egui::RichText::new(format!(
@@ -696,7 +742,7 @@ fn render_about(ui: &mut egui::Ui) {
             });
             ui.add_space(14.0);
             ui.label(
-            egui::RichText::new("配置保存在用户配置目录中，写入采用临时文件与原子替换，避免异常退出造成配置损坏。")
+            egui::RichText::new(crate::i18n::tr("配置保存在用户配置目录中，写入采用临时文件与原子替换，避免异常退出造成配置损坏。").into_owned())
                 .size(13.0)
                 .color(MUTED),
         );
@@ -755,9 +801,9 @@ fn theme_preview(ui: &mut egui::Ui, theme: &crate::themes::TerminalTheme, select
         egui::pos2(rect.left() + 12.0, rect.top() + 16.0),
         egui::Align2::LEFT_CENTER,
         if selected {
-            format!("✓ {}", theme.name)
+            format!("✓ {}", crate::i18n::tr(theme.name))
         } else {
-            theme.name.to_string()
+            crate::i18n::tr(theme.name).into_owned()
         },
         egui::FontId::proportional(13.0),
         if selected { CYAN } else { TEXT },
@@ -844,8 +890,16 @@ fn handle_shortcut_capture(panel: &mut SettingsPanel, ctx: &egui::Context) {
 }
 
 fn setting_label(ui: &mut egui::Ui, title: &str, description: &str) {
-    ui.label(egui::RichText::new(title).size(14.0).color(TEXT));
-    ui.label(egui::RichText::new(description).size(11.5).color(MUTED));
+    ui.label(
+        egui::RichText::new(crate::i18n::tr(title).into_owned())
+            .size(14.0)
+            .color(TEXT),
+    );
+    ui.label(
+        egui::RichText::new(crate::i18n::tr(description).into_owned())
+            .size(11.5)
+            .color(MUTED),
+    );
     ui.add_space(6.0);
 }
 
@@ -861,7 +915,7 @@ fn font_family_picker(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
             ui.add_sized(
                 [ui.available_width(), 34.0],
                 egui::TextEdit::singleline(&mut panel.font_filter)
-                    .hint_text("搜索已安装的等宽字体…")
+                    .hint_text(crate::i18n::tr("搜索已安装的等宽字体…").into_owned())
                     .vertical_align(egui::Align::Center)
                     .margin(egui::Margin::symmetric(9, 6)),
             );
@@ -876,7 +930,7 @@ fn font_family_picker(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
                 .collect::<Vec<_>>();
             if visible.is_empty() {
                 ui.label(
-                    egui::RichText::new("没有匹配的系统等宽字体")
+                    egui::RichText::new(crate::i18n::tr("没有匹配的系统等宽字体").into_owned())
                         .size(12.0)
                         .color(MUTED),
                 );
@@ -895,17 +949,23 @@ fn font_family_picker(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
 
             ui.separator();
             ui.label(
-                egui::RichText::new("自定义字体族（系统列表未收录时使用）")
-                    .size(11.5)
-                    .color(MUTED),
+                egui::RichText::new(
+                    crate::i18n::tr("自定义字体族（系统列表未收录时使用）").into_owned(),
+                )
+                .size(11.5)
+                .color(MUTED),
             );
             ui.add_sized(
                 [ui.available_width(), 34.0],
                 egui::TextEdit::singleline(&mut panel.draft.font_family)
-                    .hint_text(format!(
-                        "例如 {}",
-                        crate::settings::DEFAULT_TERMINAL_FONT_FAMILY
-                    ))
+                    .hint_text(if crate::i18n::is_english() {
+                        format!(
+                            "For example, {}",
+                            crate::settings::DEFAULT_TERMINAL_FONT_FAMILY
+                        )
+                    } else {
+                        format!("例如 {}", crate::settings::DEFAULT_TERMINAL_FONT_FAMILY)
+                    })
                     .vertical_align(egui::Align::Center)
                     .margin(egui::Margin::symmetric(9, 6)),
             );
@@ -982,12 +1042,15 @@ fn path_picker(ui: &mut egui::Ui, value: &mut String, title: &str) {
         ui.add_sized(
             [(ui.available_width() - button_width - 8.0).max(100.0), 36.0],
             egui::TextEdit::singleline(value)
-                .hint_text("选择一个已存在的目录")
+                .hint_text(crate::i18n::tr("选择一个已存在的目录").into_owned())
                 .vertical_align(egui::Align::Center)
                 .margin(egui::Margin::symmetric(10, 7)),
         );
         if ui
-            .add_sized([button_width, 36.0], egui::Button::new("浏览…"))
+            .add_sized(
+                [button_width, 36.0],
+                egui::Button::new(crate::i18n::tr("浏览…").into_owned()),
+            )
             .clicked()
         {
             let current = shellexpand::tilde(value).into_owned();

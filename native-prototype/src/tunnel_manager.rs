@@ -134,7 +134,7 @@ impl TunnelManager {
         let mut window_open = true;
         let mut action = TunnelManagerAction::None;
         let mut create_clicked = false;
-        egui::Window::new("SSH 本地隧道")
+        egui::Window::new(crate::i18n::tr("SSH 本地隧道").into_owned())
             .id(egui::Id::new("tunnel_manager_window"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -167,10 +167,14 @@ impl TunnelManager {
                 ui.separator();
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new(format!("隧道列表 · {}", tunnels.len()))
-                        .size(12.0)
-                        .strong()
-                        .color(MUTED_TEXT),
+                    egui::RichText::new(if crate::i18n::is_english() {
+                        format!("Tunnels · {}", tunnels.len())
+                    } else {
+                        format!("隧道列表 · {}", tunnels.len())
+                    })
+                    .size(12.0)
+                    .strong()
+                    .color(MUTED_TEXT),
                 );
                 egui::ScrollArea::vertical()
                     .id_salt("tunnel_manager_list")
@@ -179,7 +183,7 @@ impl TunnelManager {
                     .show(ui, |ui| {
                         if tunnels.is_empty() {
                             ui.label(
-                                egui::RichText::new("尚未创建隧道")
+                                egui::RichText::new(crate::i18n::tr("尚未创建隧道").into_owned())
                                     .size(12.0)
                                     .color(MUTED_TEXT),
                             );
@@ -214,7 +218,7 @@ impl TunnelManager {
     fn create_action(&self, connections: &[SshConnection]) -> Result<TunnelManagerAction, String> {
         let connection = connections
             .get(self.draft.connection_index)
-            .ok_or_else(|| "请选择一个已保存的 SSH 主机".to_string())?;
+            .ok_or_else(|| crate::i18n::tr("请选择一个已保存的 SSH 主机").into_owned())?;
         let local_port = parse_port(&self.draft.local_port, "本地端口")?;
         let remote_port = parse_port(&self.draft.remote_port, "远端端口")?;
         let spec = TunnelSpec {
@@ -232,11 +236,19 @@ fn parse_port(value: &str, label: &str) -> Result<u16, String> {
     let trimmed = value.trim();
     let port = trimmed
         .parse::<u16>()
-        .map_err(|_| format!("{label}必须在 1-65535 之间"))?;
+        .map_err(|_| port_range_error(label))?;
     if port == 0 {
-        return Err(format!("{label}必须在 1-65535 之间"));
+        return Err(port_range_error(label));
     }
     Ok(port)
+}
+
+fn port_range_error(label: &str) -> String {
+    if crate::i18n::is_english() {
+        format!("{} must be between 1 and 65535", crate::i18n::tr(label))
+    } else {
+        format!("{label}必须在 1-65535 之间")
+    }
 }
 
 fn safe_ui_text(value: &str, max_chars: usize) -> String {
@@ -254,7 +266,7 @@ fn draw_create_form(
     create_clicked: &mut bool,
 ) {
     ui.label(
-        egui::RichText::new("创建本地端口转发")
+        egui::RichText::new(crate::i18n::tr("创建本地端口转发").into_owned())
             .size(12.0)
             .strong()
             .color(MUTED_TEXT),
@@ -263,11 +275,11 @@ fn draw_create_form(
         .num_columns(2)
         .spacing([10.0, 7.0])
         .show(ui, |ui| {
-            ui.label("SSH 主机");
+            ui.label(crate::i18n::tr("SSH 主机").into_owned());
             let selected = connections
                 .get(draft.connection_index)
                 .map(connection_label)
-                .unwrap_or_else(|| "无可用主机".to_string());
+                .unwrap_or_else(|| crate::i18n::tr("无可用主机").into_owned());
             egui::ComboBox::from_id_salt("tunnel_manager_host")
                 .selected_text(selected)
                 .width(300.0)
@@ -282,15 +294,15 @@ fn draw_create_form(
                 });
             ui.end_row();
 
-            ui.label("本地端口");
+            ui.label(crate::i18n::tr("本地端口").into_owned());
             ui.add(
                 egui::TextEdit::singleline(&mut draft.local_port)
                     .desired_width(300.0)
-                    .hint_text("例如 8080"),
+                    .hint_text(crate::i18n::tr("例如 8080").into_owned()),
             );
             ui.end_row();
 
-            ui.label("远端主机");
+            ui.label(crate::i18n::tr("远端主机").into_owned());
             ui.add(
                 egui::TextEdit::singleline(&mut draft.remote_host)
                     .desired_width(300.0)
@@ -298,23 +310,25 @@ fn draw_create_form(
             );
             ui.end_row();
 
-            ui.label("远端端口");
+            ui.label(crate::i18n::tr("远端端口").into_owned());
             ui.add(
                 egui::TextEdit::singleline(&mut draft.remote_port)
                     .desired_width(300.0)
-                    .hint_text("例如 80"),
+                    .hint_text(crate::i18n::tr("例如 80").into_owned()),
             );
             ui.end_row();
         });
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("仅监听 127.0.0.1")
+            egui::RichText::new(crate::i18n::tr("仅监听 127.0.0.1").into_owned())
                 .size(11.0)
                 .color(MUTED_TEXT),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let button = egui::Button::new(egui::RichText::new("创建").color(ACCENT))
-                .min_size(egui::vec2(72.0, 24.0));
+            let button = egui::Button::new(
+                egui::RichText::new(crate::i18n::tr("创建").into_owned()).color(ACCENT),
+            )
+            .min_size(egui::vec2(72.0, 24.0));
             if ui.add_enabled(!connections.is_empty(), button).clicked() {
                 *create_clicked = true;
             }
@@ -356,9 +370,13 @@ fn draw_tunnel_row(ui: &mut egui::Ui, tunnel: &TunnelInfo) -> Option<TunnelId> {
                     );
                     let status = match tunnel.status.error() {
                         Some(error) => {
-                            format!("{} · {}", tunnel.status.label(), safe_ui_text(error, 140))
+                            format!(
+                                "{} · {}",
+                                crate::i18n::tr(tunnel.status.label()),
+                                safe_ui_text(error, 140)
+                            )
                         }
-                        None => tunnel.status.label().to_string(),
+                        None => crate::i18n::tr(tunnel.status.label()).into_owned(),
                     };
                     ui.label(egui::RichText::new(status).size(11.0).color(color));
                 });
@@ -370,7 +388,10 @@ fn draw_tunnel_row(ui: &mut egui::Ui, tunnel: &TunnelInfo) -> Option<TunnelId> {
                         "关闭"
                     };
                     if ui
-                        .add_enabled(enabled, egui::Button::new(label).small())
+                        .add_enabled(
+                            enabled,
+                            egui::Button::new(crate::i18n::tr(label).into_owned()).small(),
+                        )
                         .clicked()
                     {
                         close = Some(tunnel.id);

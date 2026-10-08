@@ -275,12 +275,15 @@ pub fn render_playback_controls(
                     ui.set_width(width - 20.0);
                     ui.horizontal(|ui| {
                         if ui
-                            .button(if state.playing { "暂停" } else { "播放" })
+                            .button(
+                                crate::i18n::tr(if state.playing { "暂停" } else { "播放" })
+                                    .into_owned(),
+                            )
                             .clicked()
                         {
                             action = PlaybackAction::Toggle;
                         }
-                        if ui.button("重播").clicked() {
+                        if ui.button(crate::i18n::tr("重播").into_owned()).clicked() {
                             action = PlaybackAction::Restart;
                         }
                         for speed in [1.0, 2.0, 5.0, 10.0] {
@@ -462,15 +465,18 @@ impl RecordingDialog {
         };
         let mut confirm = false;
         let mut cancel = false;
-        egui::Window::new(match mode {
-            RecordingDialogMode::Start => "开始录屏",
-            RecordingDialogMode::Playback => "回放录屏",
-        })
+        egui::Window::new(
+            crate::i18n::tr(match mode {
+                RecordingDialogMode::Start => "开始录屏",
+                RecordingDialogMode::Playback => "回放录屏",
+            })
+            .into_owned(),
+        )
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.label("录屏文件路径");
+            ui.label(crate::i18n::tr("录屏文件路径").into_owned());
             let response = ui
                 .horizontal(|ui| {
                     let response = ui.add(
@@ -478,24 +484,25 @@ impl RecordingDialog {
                             .desired_width(340.0)
                             .hint_text("/path/to/session.cast"),
                     );
-                    if ui.button("浏览…").clicked() {
+                    if ui.button(crate::i18n::tr("浏览…").into_owned()).clicked() {
                         let current = PathBuf::from(self.path.trim());
-                        let mut dialog =
-                            rfd::FileDialog::new().add_filter("asciicast 录屏", &["cast"]);
+                        let mut dialog = rfd::FileDialog::new()
+                            .add_filter(crate::i18n::tr("asciicast 录屏").into_owned(), &["cast"]);
                         if let Some(parent) = current.parent().filter(|path| path.is_dir()) {
                             dialog = dialog.set_directory(parent);
                         }
                         let selected = match mode {
                             RecordingDialogMode::Start => {
-                                dialog = dialog.set_title("选择录屏保存位置");
+                                dialog = dialog
+                                    .set_title(crate::i18n::tr("选择录屏保存位置").into_owned());
                                 if let Some(name) = current.file_name() {
                                     dialog = dialog.set_file_name(name.to_string_lossy());
                                 }
                                 dialog.save_file()
                             }
-                            RecordingDialogMode::Playback => {
-                                dialog.set_title("选择 asciicast 录屏文件").pick_file()
-                            }
+                            RecordingDialogMode::Playback => dialog
+                                .set_title(crate::i18n::tr("选择 asciicast 录屏文件").into_owned())
+                                .pick_file(),
                         };
                         if let Some(path) = selected {
                             self.path = path.to_string_lossy().into_owned();
@@ -510,13 +517,16 @@ impl RecordingDialog {
                 self.request_focus = false;
             }
             if !self.error.is_empty() {
-                ui.colored_label(egui::Color32::from_rgb(0xf8, 0x51, 0x49), &self.error);
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xf8, 0x51, 0x49),
+                    crate::i18n::tr(&self.error).into_owned(),
+                );
             }
             ui.horizontal(|ui| {
-                if ui.button("取消").clicked() {
+                if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
                     cancel = true;
                 }
-                if ui.button("确定").clicked() {
+                if ui.button(crate::i18n::tr("确定").into_owned()).clicked() {
                     confirm = true;
                 }
             });

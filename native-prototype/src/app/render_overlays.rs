@@ -28,7 +28,7 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_width((width - 32.0).max(228.0));
                         ui.label(
-                            egui::RichText::new("串口连接失败")
+                            egui::RichText::new(crate::i18n::tr("串口连接失败").into_owned())
                                 .size(17.0)
                                 .strong()
                                 .color(egui::Color32::from_rgb(0xff, 0x7b, 0x72)),
@@ -40,7 +40,10 @@ impl App {
                                 .color(egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)),
                         );
                         ui.add_space(12.0);
-                        if ui.button("重新连接串口").clicked() {
+                        if ui
+                            .button(crate::i18n::tr("重新连接串口").into_owned())
+                            .clicked()
+                        {
                             retry = true;
                         }
                     });
@@ -89,7 +92,7 @@ impl App {
                         ui.painter().text(
                             rect.left_center() + egui::vec2(8.0, 0.0),
                             egui::Align2::LEFT_CENTER,
-                            label,
+                            crate::i18n::tr(label).as_ref(),
                             egui::FontId::proportional(12.0),
                             color,
                         );
@@ -194,7 +197,7 @@ impl App {
         if self.sidebar.password_prompt.is_some() {
             let mut do_connect = false;
             let mut do_cancel = false;
-            egui::Window::new("输入 SSH 密码")
+            egui::Window::new(crate::i18n::tr("输入 SSH 密码").into_owned())
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .resizable(false)
                 .collapsible(false)
@@ -229,7 +232,7 @@ impl App {
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        ui.label("密码:");
+                        ui.label(crate::i18n::tr("密码:").into_owned());
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.sidebar.password_input)
                                 .password(true)
@@ -242,10 +245,10 @@ impl App {
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("连接").clicked() {
+                        if ui.button(crate::i18n::tr("连接").into_owned()).clicked() {
                             do_connect = true;
                         }
-                        if ui.button("取消").clicked() {
+                        if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
                             do_cancel = true;
                         }
                     });
@@ -315,7 +318,7 @@ impl App {
                         ui.painter().text(
                             rect.left_center() + egui::vec2(8.0, 0.0),
                             egui::Align2::LEFT_CENTER,
-                            label,
+                            crate::i18n::tr(label).as_ref(),
                             egui::FontId::proportional(12.0),
                             if enabled {
                                 egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)

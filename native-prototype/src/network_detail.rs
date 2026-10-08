@@ -529,9 +529,13 @@ fn render_toolbar(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new(format!("网络连接 - {}", state.target.status_text()))
-                        .strong()
-                        .color(TEXT),
+                    egui::RichText::new(if crate::i18n::is_english() {
+                        format!("Network connections - {}", state.target.status_text())
+                    } else {
+                        format!("网络连接 - {}", state.target.status_text())
+                    })
+                    .strong()
+                    .color(TEXT),
                 );
 
                 let interfaces = state
@@ -545,13 +549,25 @@ fn render_toolbar(
                     })
                     .unwrap_or_default();
                 if !interfaces.is_empty() {
-                    ui.label(egui::RichText::new("网卡").size(10.0).color(MUTED));
-                    let selected = state.selected_interface.as_deref().unwrap_or("全部");
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr("网卡").into_owned())
+                            .size(10.0)
+                            .color(MUTED),
+                    );
+                    let selected = state
+                        .selected_interface
+                        .as_deref()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| crate::i18n::tr("全部").into_owned());
                     egui::ComboBox::from_id_salt("network_detail_interface")
                         .selected_text(selected)
                         .width(130.0)
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut state.selected_interface, None, "全部");
+                            ui.selectable_value(
+                                &mut state.selected_interface,
+                                None,
+                                crate::i18n::tr("全部").into_owned(),
+                            );
                             for interface in interfaces {
                                 let label = state
                                     .snapshot
@@ -589,19 +605,29 @@ fn render_toolbar(
 
                 let count = state.visible_connections().len();
                 ui.label(
-                    egui::RichText::new(format!("{count} 条连接"))
-                        .size(10.0)
-                        .color(DIM),
+                    egui::RichText::new(if crate::i18n::is_english() {
+                        format!("{count} connections")
+                    } else {
+                        format!("{count} 条连接")
+                    })
+                    .size(10.0)
+                    .color(DIM),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let refresh = ui.add_enabled(
                         state.pending_request_id.is_none(),
-                        egui::Button::new(egui::RichText::new("刷新").size(11.0).color(MUTED))
-                            .fill(PANEL_ALT)
-                            .stroke(egui::Stroke::new(1.0, BORDER)),
+                        egui::Button::new(
+                            egui::RichText::new(crate::i18n::tr("刷新").into_owned())
+                                .size(11.0)
+                                .color(MUTED),
+                        )
+                        .fill(PANEL_ALT)
+                        .stroke(egui::Stroke::new(1.0, BORDER)),
                     );
                     if refresh
-                        .on_hover_text("通过当前监控连接立即刷新网络详情")
+                        .on_hover_text(
+                            crate::i18n::tr("通过当前监控连接立即刷新网络详情").into_owned(),
+                        )
                         .clicked()
                     {
                         if let Some(action) = state.request_refresh() {
@@ -638,20 +664,28 @@ fn render_request_state(ui: &mut egui::Ui, state: &NetworkDetailState) {
         (None, Some(_), _) => {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(egui::RichText::new("正在加载网络连接…").color(MUTED));
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr("正在加载网络连接…").into_owned())
+                        .color(MUTED),
+                );
             });
         }
         (None, None, Some(error)) => {
-            state_banner(ui, RED, format!("加载网络连接失败：{error}"));
+            state_banner(
+                ui,
+                RED,
+                crate::i18n::tr(&format!("加载网络连接失败：{error}")).into_owned(),
+            );
         }
         (Some(_), Some(_), _) => {
-            state_banner(ui, CYAN, "正在刷新网络连接…".to_string());
+            state_banner(ui, CYAN, crate::i18n::tr("正在刷新网络连接…").into_owned());
         }
         (Some(_), None, Some(error)) => {
             state_banner(
                 ui,
                 YELLOW,
-                format!("⚠ 当前显示的是上次成功结果，刷新失败：{error}"),
+                crate::i18n::tr(&format!("⚠ 当前显示的是上次成功结果，刷新失败：{error}"))
+                    .into_owned(),
             );
         }
         _ => {}
@@ -664,7 +698,11 @@ fn state_banner(ui: &mut egui::Ui, color: egui::Color32, text: String) {
         .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.45)))
         .inner_margin(egui::Margin::symmetric(10, 5))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(10.0).color(color));
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(&text).into_owned())
+                    .size(10.0)
+                    .color(color),
+            );
         });
 }
 
@@ -679,11 +717,19 @@ fn render_table(ui: &mut egui::Ui, state: &mut NetworkDetailState) {
             if state.snapshot.is_some() && rows.is_empty() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(32.0);
-                    let message = state
-                        .selected_interface
-                        .as_deref()
-                        .map(|interface| format!("{interface} 上没有活跃 TCP 连接"))
-                        .unwrap_or_else(|| "没有活跃 TCP 连接".to_string());
+                    let message = if crate::i18n::is_english() {
+                        state
+                            .selected_interface
+                            .as_deref()
+                            .map(|interface| format!("No active TCP connections on {interface}"))
+                            .unwrap_or_else(|| "No active TCP connections".to_string())
+                    } else {
+                        state
+                            .selected_interface
+                            .as_deref()
+                            .map(|interface| format!("{interface} 上没有活跃 TCP 连接"))
+                            .unwrap_or_else(|| "没有活跃 TCP 连接".to_string())
+                    };
                     ui.label(egui::RichText::new(message).color(MUTED));
                 });
                 return;
@@ -736,7 +782,7 @@ fn sort_header(
         .add_sized(
             egui::vec2(width, 20.0),
             egui::Button::new(
-                egui::RichText::new(format!("{label}{arrow}"))
+                egui::RichText::new(format!("{}{arrow}", crate::i18n::tr(label)))
                     .size(10.0)
                     .color(if state.sort_key == key { CYAN } else { MUTED }),
             )

@@ -265,9 +265,11 @@ pub fn render(
                                     .size(11.0),
                             );
                             ui.label(
-                                egui::RichText::new(transfer.direction.label())
-                                    .color(MUTED)
-                                    .size(10.0),
+                                egui::RichText::new(
+                                    crate::i18n::tr(transfer.direction.label()).into_owned(),
+                                )
+                                .color(MUTED)
+                                .size(10.0),
                             );
                             ui.add(
                                 egui::ProgressBar::new(transfer.progress_fraction())
@@ -283,16 +285,24 @@ pub fn render(
                                 .color(MUTED)
                                 .size(10.0),
                             );
-                            ui.colored_label(transfer.status.color(), transfer.status.label());
+                            ui.colored_label(
+                                transfer.status.color(),
+                                crate::i18n::tr(transfer.status.label()).into_owned(),
+                            );
 
                             if transfer.status.is_active()
                                 && transfer.status != TransferStatus::Cancelling
                             {
-                                if ui.small_button("取消").clicked() {
+                                if ui
+                                    .small_button(crate::i18n::tr("取消").into_owned())
+                                    .clicked()
+                                {
                                     cancel = Some(transfer.transfer_id);
                                 }
                             } else if !transfer.status.is_active()
-                                && ui.small_button("关闭").clicked()
+                                && ui
+                                    .small_button(crate::i18n::tr("关闭").into_owned())
+                                    .clicked()
                             {
                                 dismiss = Some(transfer.transfer_id);
                             }
@@ -307,7 +317,10 @@ pub fn render(
                     if let Some(error) = &state.send_error {
                         ui.horizontal(|ui| {
                             ui.colored_label(RED, error);
-                            if ui.small_button("关闭").clicked() {
+                            if ui
+                                .small_button(crate::i18n::tr("关闭").into_owned())
+                                .clicked()
+                            {
                                 dismiss_send_error = true;
                             }
                         });

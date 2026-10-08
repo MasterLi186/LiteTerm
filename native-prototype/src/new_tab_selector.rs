@@ -244,7 +244,7 @@ impl NewTabSelector {
                                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                             );
                             title_ui.add(egui::Label::new(
-                                egui::RichText::new("新建标签页")
+                                egui::RichText::new(crate::i18n::tr("新建标签页").into_owned())
                                     .size(14.0)
                                     .strong()
                                     .color(MODAL_TEXT),
@@ -351,7 +351,7 @@ fn draw_section_header(ui: &mut egui::Ui, marker: &str, marker_color: egui::Colo
                 .color(marker_color),
         );
         ui.label(
-            egui::RichText::new(label)
+            egui::RichText::new(crate::i18n::tr(label).into_owned())
                 .size(12.0)
                 .strong()
                 .color(MUTED_TEXT),
@@ -381,7 +381,7 @@ fn draw_collapsible_section_header(
     ui.painter().text(
         egui::pos2(rect.left() + 20.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        label,
+        crate::i18n::tr(label).as_ref(),
         egui::FontId::proportional(12.0),
         if response.hovered() {
             MODAL_TEXT
@@ -424,7 +424,7 @@ fn draw_shell_section(ui: &mut egui::Ui, shells: &[PathBuf], action: &mut NewTab
 
     if shells.is_empty() {
         ui.label(
-            egui::RichText::new("未检测到可用 Shell")
+            egui::RichText::new(crate::i18n::tr("未检测到可用 Shell").into_owned())
                 .size(12.0)
                 .color(WEAK_TEXT),
         );
@@ -500,7 +500,7 @@ fn draw_ssh_section_body(
     let groups = group_ssh_connections(connections);
     if groups.is_empty() {
         ui.label(
-            egui::RichText::new("暂无保存的连接")
+            egui::RichText::new(crate::i18n::tr("暂无保存的连接").into_owned())
                 .size(12.0)
                 .color(WEAK_TEXT),
         );
@@ -529,7 +529,11 @@ fn draw_ssh_section_body(
             visuals.inactive.fg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
             visuals.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
             visuals.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
-            ui.add(egui::Button::new("+ 新建 SSH 连接").small().frame(false))
+            ui.add(
+                egui::Button::new(crate::i18n::tr("+ 新建 SSH 连接").into_owned())
+                    .small()
+                    .frame(false),
+            )
         })
         .inner;
     if response.clicked() {
@@ -647,7 +651,11 @@ fn draw_serial_section_body(
     action: &mut NewTabAction,
 ) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("波特率").size(11.0).color(MUTED_TEXT));
+        ui.label(
+            egui::RichText::new(crate::i18n::tr("波特率").into_owned())
+                .size(11.0)
+                .color(MUTED_TEXT),
+        );
         egui::ComboBox::from_id_salt("serial_baud_rate")
             .selected_text(baud_rate.to_string())
             .show_ui(ui, |ui| {
@@ -662,7 +670,7 @@ fn draw_serial_section_body(
     match scan {
         SerialScanState::Idle | SerialScanState::Loading => {
             ui.label(
-                egui::RichText::new("正在扫描串口…")
+                egui::RichText::new(crate::i18n::tr("正在扫描串口…").into_owned())
                     .size(12.0)
                     .color(WEAK_TEXT),
             );
@@ -676,7 +684,7 @@ fn draw_serial_section_body(
         }
         SerialScanState::Ready(ports) if ports.is_empty() => {
             ui.label(
-                egui::RichText::new("未发现串口设备")
+                egui::RichText::new(crate::i18n::tr("未发现串口设备").into_owned())
                     .size(12.0)
                     .color(WEAK_TEXT),
             );
@@ -731,10 +739,11 @@ fn serial_column_rects(rect: egui::Rect) -> SerialColumnRects {
 
 fn paint_serial_cell(ui: &egui::Ui, rect: egui::Rect, text: &str, size: f32, color: egui::Color32) {
     let clip = rect.shrink2(egui::vec2(4.0, 0.0));
+    let text = crate::i18n::tr(text);
     ui.painter().with_clip_rect(clip).text(
         clip.left_center(),
         egui::Align2::LEFT_CENTER,
-        text,
+        text.as_ref(),
         egui::FontId::proportional(size),
         color,
     );
@@ -786,12 +795,21 @@ fn draw_serial_row(ui: &mut egui::Ui, port: &crate::serial::SerialPortInfo) -> e
     );
     paint_serial_cell(ui, columns.kind, &port.port_type, 10.5, MUTED_TEXT);
 
-    response.on_hover_text(format!(
-        "{}\n{}\n硬件 SN：{}",
-        port.path,
-        port.name,
-        port.serial_number.as_deref().unwrap_or("无")
-    ))
+    response.on_hover_text(if crate::i18n::is_english() {
+        format!(
+            "{}\n{}\nHardware SN: {}",
+            port.path,
+            port.name,
+            port.serial_number.as_deref().unwrap_or("None")
+        )
+    } else {
+        format!(
+            "{}\n{}\n硬件 SN：{}",
+            port.path,
+            port.name,
+            port.serial_number.as_deref().unwrap_or("无")
+        )
+    })
 }
 
 fn shell_display_name(path: &Path) -> String {
@@ -818,7 +836,7 @@ fn shell_display_name(path: &Path) -> String {
             return "Windows PowerShell".to_owned();
         }
         if stem.eq_ignore_ascii_case("cmd") {
-            return "命令提示符".to_owned();
+            return crate::i18n::tr("命令提示符").into_owned();
         }
     }
 

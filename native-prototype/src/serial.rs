@@ -192,6 +192,25 @@ pub fn open(spec: SerialSpec) -> Result<SerialHandle, String> {
 
 pub fn user_open_error_message(error: &str) -> String {
     let normalized = error.to_ascii_lowercase();
+    if crate::i18n::is_english() {
+        let hint = if normalized.contains("resource busy")
+            || normalized.contains("device busy")
+            || normalized.contains("being used")
+            || normalized.contains("access is denied")
+        {
+            "This serial port is in use by another application. Disconnect it there, then try again."
+        } else if normalized.contains("permission denied") || normalized.contains("access denied") {
+            "The current user does not have permission to access this serial port. Check the dialout group or device permissions."
+        } else if normalized.contains("no such file")
+            || normalized.contains("not found")
+            || normalized.contains("cannot find")
+        {
+            "The serial device was removed or its path changed. Reconnect the device, then try again."
+        } else {
+            "Could not open this serial port. Check the device connection, whether it is in use, and access permissions."
+        };
+        return format!("{hint}\n\nSystem response: {error}");
+    }
     let hint = if normalized.contains("resource busy")
         || normalized.contains("device busy")
         || normalized.contains("being used")

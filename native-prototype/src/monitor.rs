@@ -35,7 +35,7 @@ impl MonitorKey {
 
     pub fn status_text(&self) -> String {
         match self {
-            Self::Local => "本机".to_string(),
+            Self::Local => crate::i18n::tr("本机").into_owned(),
             Self::Remote { user, host, port } => {
                 let host = if host.contains(':') && !(host.starts_with('[') && host.ends_with(']'))
                 {
@@ -292,7 +292,15 @@ pub(crate) fn format_uptime(secs: u64) -> String {
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
     let mins = (secs % 3600) / 60;
-    if days > 0 {
+    if crate::i18n::is_english() {
+        if days > 0 {
+            format!("{days}d {hours}h {mins}m")
+        } else if hours > 0 {
+            format!("{hours}h {mins}m")
+        } else {
+            format!("{mins}m")
+        }
+    } else if days > 0 {
         format!("{}天{}小时{}分钟", days, hours, mins)
     } else if hours > 0 {
         format!("{}小时{}分钟", hours, mins)

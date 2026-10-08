@@ -317,17 +317,27 @@ fn render_toolbar(
                 let count = processes.map(<[ProcessInfo]>::len);
                 let filtered_count =
                     processes.map(|items| filtered_processes(items, &state.search_query).len());
-                let title = match count {
-                    Some(count) if !state.search_query.trim().is_empty() => format!(
+                let title = match (crate::i18n::is_english(), count) {
+                    (true, Some(count)) if !state.search_query.trim().is_empty() => format!(
+                        "Processes - {} (filtered {}/{count})",
+                        state.target.status_text(),
+                        filtered_count.unwrap_or(0),
+                    ),
+                    (true, Some(count)) => format!(
+                        "Processes - {} (showing {count})",
+                        state.target.status_text()
+                    ),
+                    (true, None) => format!("Processes - {}", state.target.status_text()),
+                    (false, Some(count)) if !state.search_query.trim().is_empty() => format!(
                         "进程列表 - {}（筛选 {}/{count}）",
                         state.target.status_text(),
                         filtered_count.unwrap_or(0),
                     ),
-                    Some(count) => format!(
+                    (false, Some(count)) => format!(
                         "进程列表 - {}（当前显示 {count}）",
                         state.target.status_text()
                     ),
-                    None => format!("进程列表 - {}", state.target.status_text()),
+                    (false, None) => format!("进程列表 - {}", state.target.status_text()),
                 };
                 ui.label(egui::RichText::new(title).strong().color(TEXT));
                 if let Some(stats) = stats {
@@ -337,14 +347,14 @@ fn render_toolbar(
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new("刷新")
+                                egui::RichText::new(crate::i18n::tr("刷新").into_owned())
                                     .size(PROCESS_TEXT_SIZE)
                                     .color(MUTED),
                             )
                             .fill(PANEL_ALT)
                             .stroke(egui::Stroke::new(1.0, BORDER)),
                         )
-                        .on_hover_text("立即刷新当前目标的进程快照")
+                        .on_hover_text(crate::i18n::tr("立即刷新当前目标的进程快照").into_owned())
                         .clicked()
                     {
                         actions.push(ProcessManagerAction::Refresh);
@@ -352,7 +362,7 @@ fn render_toolbar(
                     let search = ui.add_sized(
                         [240.0_f32.min(ui.available_width().max(120.0)), 30.0],
                         egui::TextEdit::singleline(&mut state.search_query)
-                            .hint_text("搜索进程、命令、PID 或用户…"),
+                            .hint_text(crate::i18n::tr("搜索进程、命令、PID 或用户…").into_owned()),
                     );
                     if state.search_request_focus {
                         search.request_focus();
@@ -375,13 +385,27 @@ fn render_toolbar(
                 if stats.total > 10_000 {
                     ui.colored_label(
                         RED,
-                        format!("⚠ 进程数异常（{}），可能存在进程泄漏", stats.total),
+                        if crate::i18n::is_english() {
+                            format!(
+                                "⚠ Unusually high process count ({}); a process may be leaking",
+                                stats.total
+                            )
+                        } else {
+                            format!("⚠ 进程数异常（{}），可能存在进程泄漏", stats.total)
+                        },
                     );
                 }
                 if stats.zombie > 100 {
                     ui.colored_label(
                         RED,
-                        format!("⚠ 僵尸进程过多（{}），建议排查父进程", stats.zombie),
+                        if crate::i18n::is_english() {
+                            format!(
+                                "⚠ Too many zombie processes ({}); check the parent process",
+                                stats.zombie
+                            )
+                        } else {
+                            format!("⚠ 僵尸进程过多（{}），建议排查父进程", stats.zombie)
+                        },
                     );
                 }
             }
@@ -389,14 +413,18 @@ fn render_toolbar(
 }
 
 fn render_stats(ui: &mut egui::Ui, state: &mut ProcessManagerState, stats: &ProcessStats) {
-    ui.label(egui::RichText::new("共").size(PROCESS_META_SIZE).color(DIM));
+    ui.label(
+        egui::RichText::new(crate::i18n::tr("共").into_owned())
+            .size(PROCESS_META_SIZE)
+            .color(DIM),
+    );
     ui.label(
         egui::RichText::new(stats.total.to_string())
             .size(PROCESS_META_SIZE)
             .color(if stats.total > 10_000 { RED } else { TEXT }),
     );
     ui.label(
-        egui::RichText::new("运行")
+        egui::RichText::new(crate::i18n::tr("运行").into_owned())
             .size(PROCESS_META_SIZE)
             .color(DIM),
     );
@@ -406,7 +434,7 @@ fn render_stats(ui: &mut egui::Ui, state: &mut ProcessManagerState, stats: &Proc
             .color(GREEN),
     );
     ui.label(
-        egui::RichText::new("休眠")
+        egui::RichText::new(crate::i18n::tr("休眠").into_owned())
             .size(PROCESS_META_SIZE)
             .color(DIM),
     );
@@ -417,7 +445,7 @@ fn render_stats(ui: &mut egui::Ui, state: &mut ProcessManagerState, stats: &Proc
     );
     let zombie_color = if stats.zombie > 0 { RED } else { DIM };
     let zombie_button = egui::Button::new(
-        egui::RichText::new(format!("僵尸 {}", stats.zombie))
+        egui::RichText::new(format!("{} {}", crate::i18n::tr("僵尸"), stats.zombie))
             .size(PROCESS_META_SIZE)
             .color(zombie_color),
     )
@@ -425,13 +453,13 @@ fn render_stats(ui: &mut egui::Ui, state: &mut ProcessManagerState, stats: &Proc
     .stroke(egui::Stroke::new(1.0, BORDER));
     let zombie_response = ui
         .add_enabled(stats.zombie > 0, zombie_button)
-        .on_hover_text("在独立弹窗中查看僵尸进程");
+        .on_hover_text(crate::i18n::tr("在独立弹窗中查看僵尸进程").into_owned());
     if zombie_response.clicked() {
         state.show_zombie_dialog = true;
     }
     if stats.stopped > 0 {
         ui.label(
-            egui::RichText::new("停止")
+            egui::RichText::new(crate::i18n::tr("停止").into_owned())
                 .size(PROCESS_META_SIZE)
                 .color(DIM),
         );
@@ -460,7 +488,7 @@ fn render_zombie_dialog(
     let total = stats.map(|value| value.zombie).unwrap_or(0);
     let mut open = true;
     let mut close_requested = false;
-    egui::Window::new("僵尸进程")
+    egui::Window::new(crate::i18n::tr("僵尸进程").into_owned())
         .id(egui::Id::new("process_manager_zombie_dialog"))
         .open(&mut open)
         .collapsible(false)
@@ -474,15 +502,22 @@ fn render_zombie_dialog(
         )
         .show(ctx, |ui| {
             ui.label(
-                egui::RichText::new(format!("检测到 {total} 个僵尸进程"))
-                    .size(14.0)
-                    .strong()
-                    .color(if total > 0 { RED } else { MUTED }),
+                egui::RichText::new(if crate::i18n::is_english() {
+                    format!("Detected {total} zombie processes")
+                } else {
+                    format!("检测到 {total} 个僵尸进程")
+                })
+                .size(14.0)
+                .strong()
+                .color(if total > 0 { RED } else { MUTED }),
             );
             ui.label(
-                egui::RichText::new("僵尸进程已经退出，但仍等待父进程回收。请优先检查其父进程。")
-                    .size(PROCESS_META_SIZE)
-                    .color(MUTED),
+                egui::RichText::new(
+                    crate::i18n::tr("僵尸进程已经退出，但仍等待父进程回收。请优先检查其父进程。")
+                        .into_owned(),
+                )
+                .size(PROCESS_META_SIZE)
+                .color(MUTED),
             );
             ui.add_space(6.0);
 
@@ -490,26 +525,41 @@ fn render_zombie_dialog(
                 None => {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(egui::RichText::new("正在加载僵尸进程快照…").color(MUTED));
+                        ui.label(
+                            egui::RichText::new(
+                                crate::i18n::tr("正在加载僵尸进程快照…").into_owned(),
+                            )
+                            .color(MUTED),
+                        );
                     });
                 }
                 Some(processes) if processes.is_empty() => {
                     ui.label(
-                        egui::RichText::new(if total == 0 {
-                            "当前没有僵尸进程"
-                        } else {
-                            "统计已检测到僵尸进程，详细列表将在下一次监控刷新后显示"
-                        })
+                        egui::RichText::new(
+                            crate::i18n::tr(if total == 0 {
+                                "当前没有僵尸进程"
+                            } else {
+                                "统计已检测到僵尸进程，详细列表将在下一次监控刷新后显示"
+                            })
+                            .into_owned(),
+                        )
                         .color(MUTED),
                     );
                 }
                 Some(processes) => {
                     if processes.len() < total as usize {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "当前展示 {} / {total} 个，单次快照最多保留 200 个",
-                                processes.len()
-                            ))
+                            egui::RichText::new(if crate::i18n::is_english() {
+                                format!(
+                                    "Showing {} / {total}; each snapshot keeps up to 200",
+                                    processes.len()
+                                )
+                            } else {
+                                format!(
+                                    "当前展示 {} / {total} 个，单次快照最多保留 200 个",
+                                    processes.len()
+                                )
+                            })
                             .size(PROCESS_META_SIZE)
                             .color(YELLOW),
                         );
@@ -520,7 +570,7 @@ fn render_zombie_dialog(
 
             ui.add_space(6.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("关闭").clicked() {
+                if ui.button(crate::i18n::tr("关闭").into_owned()).clicked() {
                     close_requested = true;
                 }
             });
@@ -552,7 +602,7 @@ fn render_zombie_table(ui: &mut egui::Ui, processes: &[ProcessInfo]) {
                             ui.add_sized(
                                 [width, 24.0],
                                 egui::Label::new(
-                                    egui::RichText::new(label)
+                                    egui::RichText::new(crate::i18n::tr(label).into_owned())
                                         .size(PROCESS_META_SIZE)
                                         .strong()
                                         .color(MUTED),
@@ -613,17 +663,26 @@ fn render_monitor_state(
         (None, None) => {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label(egui::RichText::new("正在加载进程…").color(MUTED));
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr("正在加载进程…").into_owned()).color(MUTED),
+                );
             });
         }
         (None, Some(error)) => {
-            state_banner(ui, RED, format!("加载进程列表失败：{error}"));
+            state_banner(
+                ui,
+                RED,
+                crate::i18n::tr(&format!("加载进程列表失败：{error}")).into_owned(),
+            );
         }
         (Some(_), Some(error)) => {
             state_banner(
                 ui,
                 YELLOW,
-                format!("⚠ 当前显示的是上次成功快照，数据可能已过期：{error}"),
+                crate::i18n::tr(&format!(
+                    "⚠ 当前显示的是上次成功快照，数据可能已过期：{error}"
+                ))
+                .into_owned(),
             );
         }
         (Some(_), None) => {}
@@ -637,7 +696,7 @@ fn state_banner(ui: &mut egui::Ui, color: egui::Color32, text: String) {
         .inner_margin(egui::Margin::symmetric(10, 5))
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new(text)
+                egui::RichText::new(crate::i18n::tr(&text).into_owned())
                     .size(PROCESS_META_SIZE)
                     .color(color),
             );
@@ -666,11 +725,16 @@ fn render_processes(
             if processes.is_empty() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(32.0);
-                    ui.label(egui::RichText::new("暂无进程数据").color(MUTED));
                     ui.label(
-                        egui::RichText::new("进程采集已成功，但当前列表为空")
-                            .size(PROCESS_META_SIZE)
-                            .color(DIM),
+                        egui::RichText::new(crate::i18n::tr("暂无进程数据").into_owned())
+                            .color(MUTED),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            crate::i18n::tr("进程采集已成功，但当前列表为空").into_owned(),
+                        )
+                        .size(PROCESS_META_SIZE)
+                        .color(DIM),
                     );
                 });
                 return;
@@ -680,7 +744,10 @@ fn render_processes(
             if filtered.is_empty() && !state.search_query.trim().is_empty() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(24.0);
-                    ui.label(egui::RichText::new("没有匹配的进程").color(MUTED));
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr("没有匹配的进程").into_owned())
+                            .color(MUTED),
+                    );
                 });
                 return;
             }
@@ -745,7 +812,7 @@ fn sort_header(
         .add_sized(
             egui::vec2(width, 24.0),
             egui::Button::new(
-                egui::RichText::new(format!("{label}{arrow}"))
+                egui::RichText::new(format!("{}{arrow}", crate::i18n::tr(label)))
                     .size(PROCESS_META_SIZE)
                     .color(if state.sort_key == key { CYAN } else { MUTED }),
             )
@@ -907,12 +974,21 @@ fn render_detail(
         ui.separator();
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(egui::RichText::new("正在加载进程详情…").color(MUTED));
+            ui.label(
+                egui::RichText::new(crate::i18n::tr("正在加载进程详情…").into_owned()).color(MUTED),
+            );
         });
     }
     if let Some(error) = state.detail_error.as_deref() {
-        state_banner(ui, RED, format!("加载进程详情失败：{error}"));
-        if ui.small_button("关闭").clicked() {
+        state_banner(
+            ui,
+            RED,
+            crate::i18n::tr(&format!("加载进程详情失败：{error}")).into_owned(),
+        );
+        if ui
+            .small_button(crate::i18n::tr("关闭").into_owned())
+            .clicked()
+        {
             state.clear_detail();
             actions.push(ProcessManagerAction::CloseDetail);
         }
@@ -938,7 +1014,7 @@ fn render_detail(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add(egui::Button::new(egui::RichText::new("×").size(16.0)).frame(false))
-                        .on_hover_text("关闭详情并清理敏感数据")
+                        .on_hover_text(crate::i18n::tr("关闭详情并清理敏感数据").into_owned())
                         .clicked()
                     {
                         close = true;
@@ -946,14 +1022,16 @@ fn render_detail(
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new("复制全部")
+                                egui::RichText::new(crate::i18n::tr("复制全部").into_owned())
                                     .size(PROCESS_TEXT_SIZE)
                                     .color(TEXT),
                             )
                             .fill(PANEL_ALT)
                             .stroke(egui::Stroke::new(1.0, BORDER)),
                         )
-                        .on_hover_text("复制当前进程展示的全部取证信息")
+                        .on_hover_text(
+                            crate::i18n::tr("复制当前进程展示的全部取证信息").into_owned(),
+                        )
                         .clicked()
                     {
                         actions.push(ProcessManagerAction::CopyText(copy_all.clone()));
@@ -969,22 +1047,28 @@ fn render_detail(
                     render_ancestors(ui, detail);
                     render_copyable_section(
                         ui,
-                        "完整命令行",
+                        crate::i18n::tr("完整命令行").as_ref(),
                         value_or_dash(&detail.command),
                         GREEN,
                     );
                     if detail.environ.is_empty() {
                         ui.label(
-                            egui::RichText::new("环境变量不可用或无读取权限")
-                                .size(PROCESS_META_SIZE)
-                                .color(DIM),
+                            egui::RichText::new(
+                                crate::i18n::tr("环境变量不可用或无读取权限").into_owned(),
+                            )
+                            .size(PROCESS_META_SIZE)
+                            .color(DIM),
                         );
                     } else {
                         ui.add_space(6.0);
                         ui.label(
-                            egui::RichText::new(format!("环境变量（{}）", detail.environ.len()))
-                                .strong()
-                                .color(MUTED),
+                            egui::RichText::new(if crate::i18n::is_english() {
+                                format!("Environment variables ({})", detail.environ.len())
+                            } else {
+                                format!("环境变量（{}）", detail.environ.len())
+                            })
+                            .strong()
+                            .color(MUTED),
                         );
                         let environment = detail
                             .environ
@@ -1004,7 +1088,11 @@ fn render_detail(
 
 fn render_basic_detail(ui: &mut egui::Ui, detail: &ProcessDetail) {
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("基本信息").strong().color(MUTED));
+    ui.label(
+        egui::RichText::new(crate::i18n::tr("基本信息").into_owned())
+            .strong()
+            .color(MUTED),
+    );
     egui::Grid::new("process_manager_basic_detail")
         .num_columns(2)
         .spacing(egui::vec2(14.0, 3.0))
@@ -1028,11 +1116,11 @@ fn render_basic_detail(ui: &mut egui::Ui, detail: &ProcessDetail) {
 
 fn detail_row(ui: &mut egui::Ui, label: &str, value: impl Into<String>, color: egui::Color32) {
     ui.label(
-        egui::RichText::new(label)
+        egui::RichText::new(crate::i18n::tr(label).into_owned())
             .size(PROCESS_META_SIZE)
             .color(DIM),
     );
-    let value = value.into();
+    let value = crate::i18n::tr(&value.into()).into_owned();
     let response = ui.add(
         egui::Label::new(
             egui::RichText::new(&value)
@@ -1043,7 +1131,7 @@ fn detail_row(ui: &mut egui::Ui, label: &str, value: impl Into<String>, color: e
         .selectable(true),
     );
     response.context_menu(|ui| {
-        if ui.button("复制").clicked() {
+        if ui.button(crate::i18n::tr("复制").into_owned()).clicked() {
             ui.ctx().copy_text(value.clone());
             ui.close_menu();
         }
@@ -1056,7 +1144,11 @@ fn render_ancestors(ui: &mut egui::Ui, detail: &ProcessDetail) {
         return;
     }
     ui.add_space(6.0);
-    ui.label(egui::RichText::new("祖先链").strong().color(MUTED));
+    ui.label(
+        egui::RichText::new(crate::i18n::tr("祖先链").into_owned())
+            .strong()
+            .color(MUTED),
+    );
     for (depth, ancestor) in detail.ancestors.iter().rev().enumerate() {
         ui.horizontal(|ui| {
             ui.add_space(depth as f32 * 14.0);

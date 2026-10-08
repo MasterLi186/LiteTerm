@@ -92,7 +92,7 @@ impl BatchCommandDialog {
 
         let mut action = BatchCommandAction::None;
         let mut close_clicked = false;
-        egui::Window::new("批量命令")
+        egui::Window::new(crate::i18n::tr("批量命令").into_owned())
             .id(egui::Id::new("batch_command_dialog"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -110,10 +110,11 @@ impl BatchCommandDialog {
                 let connected = targets.iter().filter(|target| target.connected).count();
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "目标终端 ({}/{connected})",
-                            self.selected.len()
-                        ))
+                        egui::RichText::new(if crate::i18n::is_english() {
+                            format!("Target terminals ({}/{connected})", self.selected.len())
+                        } else {
+                            format!("目标终端 ({}/{connected})", self.selected.len())
+                        })
                         .size(12.0)
                         .strong()
                         .color(TEXT),
@@ -121,11 +122,14 @@ impl BatchCommandDialog {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let all_selected = connected > 0 && self.selected.len() == connected;
                         if ui
-                            .small_button(if all_selected {
-                                "取消全选"
-                            } else {
-                                "全选"
-                            })
+                            .small_button(
+                                crate::i18n::tr(if all_selected {
+                                    "取消全选"
+                                } else {
+                                    "全选"
+                                })
+                                .into_owned(),
+                            )
                             .clicked()
                         {
                             if all_selected {
@@ -149,7 +153,12 @@ impl BatchCommandDialog {
                     .show(ui, |ui| {
                         if targets.is_empty() {
                             ui.centered_and_justified(|ui| {
-                                ui.label(egui::RichText::new("暂无打开的 SSH 连接").color(MUTED));
+                                ui.label(
+                                    egui::RichText::new(
+                                        crate::i18n::tr("暂无打开的 SSH 连接").into_owned(),
+                                    )
+                                    .color(MUTED),
+                                );
                             });
                         }
                         for target in targets {
@@ -175,14 +184,15 @@ impl BatchCommandDialog {
                                                         .size(12.0)
                                                         .color(TEXT),
                                                 );
+                                                let connection_status = if target.connected {
+                                                    target.identity.clone()
+                                                } else {
+                                                    crate::i18n::tr("尚未连接").into_owned()
+                                                };
                                                 ui.label(
-                                                    egui::RichText::new(if target.connected {
-                                                        target.identity.as_str()
-                                                    } else {
-                                                        "尚未连接"
-                                                    })
-                                                    .size(10.0)
-                                                    .color(MUTED),
+                                                    egui::RichText::new(connection_status)
+                                                        .size(10.0)
+                                                        .color(MUTED),
                                                 );
                                             });
                                         });
@@ -193,11 +203,15 @@ impl BatchCommandDialog {
                     });
 
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new("命令").size(12.0).color(MUTED));
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr("命令").into_owned())
+                        .size(12.0)
+                        .color(MUTED),
+                );
                 let edit = ui.add_sized(
                     [ui.available_width(), 28.0],
                     egui::TextEdit::singleline(&mut self.command)
-                        .hint_text("输入要发送的命令…")
+                        .hint_text(crate::i18n::tr("输入要发送的命令…").into_owned())
                         .text_color(TEXT),
                 );
                 if self.request_focus {
@@ -205,9 +219,11 @@ impl BatchCommandDialog {
                     self.request_focus = false;
                 }
                 ui.label(
-                    egui::RichText::new("命令会立即写入目标终端当前交互行并执行")
-                        .size(10.0)
-                        .color(egui::Color32::from_rgb(0xf1, 0xfa, 0x8c)),
+                    egui::RichText::new(
+                        crate::i18n::tr("命令会立即写入目标终端当前交互行并执行").into_owned(),
+                    )
+                    .size(10.0)
+                    .color(egui::Color32::from_rgb(0xf1, 0xfa, 0x8c)),
                 );
 
                 let valid = !self.command.trim().is_empty() && !self.selected.is_empty();
@@ -226,8 +242,12 @@ impl BatchCommandDialog {
                 let execute_clicked = ui
                     .add_enabled(
                         valid,
-                        egui::Button::new(egui::RichText::new("发送").strong().color(ACCENT))
-                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                        egui::Button::new(
+                            egui::RichText::new(crate::i18n::tr("发送").into_owned())
+                                .strong()
+                                .color(ACCENT),
+                        )
+                        .min_size(egui::vec2(ui.available_width(), 28.0)),
                     )
                     .clicked();
                 if valid && (enter || execute_clicked) {
@@ -237,21 +257,29 @@ impl BatchCommandDialog {
                 if let Some(result) = &self.result {
                     ui.add_space(6.0);
                     ui.label(
-                        egui::RichText::new(format!("已发送到 {} 个终端", result.sent.len()))
-                            .size(11.0)
-                            .color(TEXT),
+                        egui::RichText::new(if crate::i18n::is_english() {
+                            format!("Sent to {} terminals", result.sent.len())
+                        } else {
+                            format!("已发送到 {} 个终端", result.sent.len())
+                        })
+                        .size(11.0)
+                        .color(TEXT),
                     );
                     if !result.failed.is_empty() {
                         ui.label(
-                            egui::RichText::new(format!("发送失败：{}", result.failed.join("、")))
-                                .size(10.0)
-                                .color(egui::Color32::from_rgb(0xff, 0x6b, 0x6b)),
+                            egui::RichText::new(if crate::i18n::is_english() {
+                                format!("Failed to send: {}", result.failed.join(", "))
+                            } else {
+                                format!("发送失败：{}", result.failed.join("、"))
+                            })
+                            .size(10.0)
+                            .color(egui::Color32::from_rgb(0xff, 0x6b, 0x6b)),
                         );
                     }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    close_clicked = ui.button("关闭").clicked();
+                    close_clicked = ui.button(crate::i18n::tr("关闭").into_owned()).clicked();
                 });
             });
 

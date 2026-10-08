@@ -11,11 +11,13 @@ impl App {
         match mode {
             recording::RecordingDialogMode::Start => {
                 let Some(tab) = self.tab_manager.active() else {
-                    self.terminal_notice = Some("当前没有可录制的终端".into());
+                    self.terminal_notice =
+                        Some(crate::i18n::tr("当前没有可录制的终端").into_owned());
                     return;
                 };
                 if matches!(tab.tab_type, TabType::Recording { .. }) {
-                    self.terminal_notice = Some("录屏回放标签不能再次录制".into());
+                    self.terminal_notice =
+                        Some(crate::i18n::tr("录屏回放标签不能再次录制").into_owned());
                     return;
                 }
                 let pane_id = tab.active_pane_id().to_string();
@@ -212,9 +214,9 @@ impl App {
                             chrono::Local::now().format("%Y%m%d_%H%M%S")
                         );
                         if let Some(path) = rfd::FileDialog::new()
-                            .set_title("选择日志保存位置")
+                            .set_title(crate::i18n::tr("选择日志保存位置").into_owned())
                             .set_file_name(default_name)
-                            .add_filter("文本日志", &["txt", "log"])
+                            .add_filter(crate::i18n::tr("文本日志").into_owned(), &["txt", "log"])
                             .save_file()
                         {
                             self.terminal_notice =

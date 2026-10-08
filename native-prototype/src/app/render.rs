@@ -251,13 +251,13 @@ impl App {
                 );
             }
             if let Some(message) = terminal_notice.as_deref() {
-                egui::Window::new("终端面板")
+                egui::Window::new(crate::i18n::tr("终端面板").into_owned())
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                     .show(ctx, |ui| {
-                        ui.label(message);
-                        if ui.button("知道了").clicked() {
+                        ui.label(crate::i18n::tr(message).into_owned());
+                        if ui.button(crate::i18n::tr("知道了").into_owned()).clicked() {
                             dismiss_terminal_notice = true;
                         }
                     });
@@ -419,7 +419,7 @@ impl App {
                                         let te = egui::TextEdit::singleline(&mut query_buf)
                                             .id(query_id)
                                             .desired_width(180.0)
-                                            .hint_text("搜索...")
+                                            .hint_text(crate::i18n::tr("搜索...").into_owned())
                                             .font(egui::TextStyle::Body)
                                             .text_color(egui::Color32::from_rgb(0xe6, 0xed, 0xf3))
                                             .frame(true);
@@ -449,17 +449,22 @@ impl App {
                                             |ui| {
                                                 ui.set_min_width(240.0);
                                                 ui.label(
-                                                    egui::RichText::new("搜索历史")
-                                                        .size(12.0)
-                                                        .color(egui::Color32::from_rgb(
-                                                            0x8b, 0x94, 0x9e,
-                                                        )),
+                                                    egui::RichText::new(
+                                                        crate::i18n::tr("搜索历史").into_owned(),
+                                                    )
+                                                    .size(12.0)
+                                                    .color(egui::Color32::from_rgb(
+                                                        0x8b, 0x94, 0x9e,
+                                                    )),
                                                 );
                                                 ui.separator();
                                                 if history.is_empty() {
                                                     ui.add_enabled(
                                                         false,
-                                                        egui::Label::new("暂无历史记录"),
+                                                        egui::Label::new(
+                                                            crate::i18n::tr("暂无历史记录")
+                                                                .into_owned(),
+                                                        ),
                                                     );
                                                 } else {
                                                     egui::ScrollArea::vertical()
@@ -486,7 +491,9 @@ impl App {
                                             },
                                         )
                                         .response
-                                        .on_hover_text("选择历史搜索项");
+                                        .on_hover_text(
+                                            crate::i18n::tr("选择历史搜索项").into_owned(),
+                                        );
 
                                         // Status current/total
                                         ui.label(
@@ -522,7 +529,9 @@ impl App {
                                                     egui::Color32::from_rgb(0x30, 0x36, 0x3d),
                                                 )),
                                             )
-                                            .on_hover_text("区分大小写");
+                                            .on_hover_text(
+                                                crate::i18n::tr("区分大小写").into_owned(),
+                                            );
                                         if case_btn.clicked() {
                                             case_sensitive = !case_sensitive;
                                             let idx = self.tab_manager.active_idx;
@@ -532,23 +541,29 @@ impl App {
                                             case_changed = true;
                                         }
 
-                                        let btn_style =
-                                            |label: &str| {
-                                                egui::Button::new(
-                                                    egui::RichText::new(label).size(11.0).color(
-                                                        egui::Color32::from_rgb(0x8b, 0x94, 0x9e),
-                                                    ),
+                                        let btn_style = |label: &str| {
+                                            egui::Button::new(
+                                                egui::RichText::new(
+                                                    crate::i18n::tr(label).into_owned(),
                                                 )
-                                                .fill(egui::Color32::TRANSPARENT)
-                                                .stroke(egui::Stroke::new(
+                                                .size(11.0)
+                                                .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                                            )
+                                            .fill(egui::Color32::TRANSPARENT)
+                                            .stroke(
+                                                egui::Stroke::new(
                                                     1.0,
                                                     egui::Color32::from_rgb(0x30, 0x36, 0x3d),
-                                                ))
-                                            };
+                                                ),
+                                            )
+                                        };
 
                                         if ui
                                             .add(btn_style("上一个"))
-                                            .on_hover_text("上一个 (Shift+Enter)")
+                                            .on_hover_text(
+                                                crate::i18n::tr("上一个 (Shift+Enter)")
+                                                    .into_owned(),
+                                            )
                                             .clicked()
                                         {
                                             nav_action =
@@ -556,7 +571,9 @@ impl App {
                                         }
                                         if ui
                                             .add(btn_style("下一个"))
-                                            .on_hover_text("下一个 (Enter)")
+                                            .on_hover_text(
+                                                crate::i18n::tr("下一个 (Enter)").into_owned(),
+                                            )
                                             .clicked()
                                         {
                                             nav_action =
@@ -572,7 +589,9 @@ impl App {
                                                 .fill(egui::Color32::TRANSPARENT)
                                                 .frame(false),
                                             )
-                                            .on_hover_text("关闭 (Esc)")
+                                            .on_hover_text(
+                                                crate::i18n::tr("关闭 (Esc)").into_owned(),
+                                            )
                                             .clicked()
                                         {
                                             close_clicked = true;
@@ -677,7 +696,7 @@ impl App {
             // 设置加载警告 banner（非 modal）：在设置面板之前渲染
             if let Some(warning) = self.settings_load_warning.as_ref() {
                 let mut dismiss = false;
-                egui::Window::new("设置提示")
+                egui::Window::new(crate::i18n::tr("设置提示").into_owned())
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_TOP, [0.0, 48.0])
@@ -685,11 +704,11 @@ impl App {
                     .show(ctx, |ui| {
                         ui.set_max_width(480.0);
                         ui.label(
-                            egui::RichText::new(warning.as_str())
+                            egui::RichText::new(crate::i18n::tr(warning).into_owned())
                                 .color(egui::Color32::from_rgb(0xe6, 0xa2, 0x3c)),
                         );
                         ui.add_space(8.0);
-                        if ui.button("知道了").clicked() {
+                        if ui.button(crate::i18n::tr("知道了").into_owned()).clicked() {
                             dismiss = true;
                         }
                     });

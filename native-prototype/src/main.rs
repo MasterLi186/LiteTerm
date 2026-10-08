@@ -32,6 +32,7 @@ mod connections;
 mod drag_upload;
 mod file_browser;
 mod font_support;
+mod i18n;
 mod ime;
 mod keyring;
 mod monitor;

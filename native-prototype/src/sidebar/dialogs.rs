@@ -19,7 +19,7 @@ impl Sidebar {
         let max_width = (screen.width() - 32.0).max(160.0);
         let max_height = (screen.height() - 32.0).max(160.0);
         let default_width = (screen.width() * 0.45).clamp(160.0, max_width.min(520.0));
-        egui::Window::new("新建 SSH 连接")
+        egui::Window::new(crate::i18n::tr("新建 SSH 连接").into_owned())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .resizable(true)
             .vscroll(true)
@@ -29,49 +29,58 @@ impl Sidebar {
             .show(ctx, |ui| {
                 ui.add_space(4.0);
 
-                ui.label("标签:");
+                ui.label(crate::i18n::tr("标签:").into_owned());
                 let field_width = ui.available_width();
                 ui.add_sized(
                     [field_width, 0.0],
                     egui::TextEdit::singleline(&mut self.new_conn.label),
                 );
 
-                ui.label("主机:");
+                ui.label(crate::i18n::tr("主机:").into_owned());
                 let field_width = ui.available_width();
                 ui.add_sized(
                     [field_width, 0.0],
                     egui::TextEdit::singleline(&mut self.new_conn.host).hint_text("192.168.1.1"),
                 );
 
-                ui.label("端口:");
+                ui.label(crate::i18n::tr("端口:").into_owned());
                 let field_width = ui.available_width();
                 ui.add_sized(
                     [field_width, 0.0],
                     egui::TextEdit::singleline(&mut self.new_conn.port),
                 );
 
-                ui.label("用户名:");
+                ui.label(crate::i18n::tr("用户名:").into_owned());
                 let field_width = ui.available_width();
                 ui.add_sized(
                     [field_width, 0.0],
                     egui::TextEdit::singleline(&mut self.new_conn.user),
                 );
 
-                ui.label("认证:");
+                ui.label(crate::i18n::tr("认证:").into_owned());
                 ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut self.new_conn.auth_idx, 0, "密钥");
-                    ui.selectable_value(&mut self.new_conn.auth_idx, 1, "密码");
+                    ui.selectable_value(
+                        &mut self.new_conn.auth_idx,
+                        0,
+                        crate::i18n::tr("密钥").into_owned(),
+                    );
+                    ui.selectable_value(
+                        &mut self.new_conn.auth_idx,
+                        1,
+                        crate::i18n::tr("密码").into_owned(),
+                    );
                 });
 
                 if self.new_conn.auth_idx == 0 {
-                    ui.label("密钥路径:");
+                    ui.label(crate::i18n::tr("密钥路径:").into_owned());
                     let field_width = ui.available_width();
                     ui.add_sized(
                         [field_width, 0.0],
                         egui::TextEdit::singleline(&mut self.new_conn.key_path),
                     );
                     if ui.button("浏览…").clicked() {
-                        let mut dialog = rfd::FileDialog::new().set_title("选择 SSH 私钥文件");
+                        let mut dialog = rfd::FileDialog::new()
+                            .set_title(crate::i18n::tr("选择 SSH 私钥文件").into_owned());
                         if let Some(ssh_dir) = dirs::home_dir().map(|home| home.join(".ssh")) {
                             dialog = dialog.set_directory(ssh_dir);
                         }
@@ -80,7 +89,7 @@ impl Sidebar {
                         }
                     }
                 } else {
-                    ui.label("密码:");
+                    ui.label(crate::i18n::tr("密码:").into_owned());
                     let field_width = ui.available_width();
                     ui.add_sized(
                         [field_width, 0.0],
@@ -88,7 +97,7 @@ impl Sidebar {
                     );
                 }
 
-                ui.label("分组:");
+                ui.label(crate::i18n::tr("分组:").into_owned());
                 let store = ConnectionStore::load();
                 let groups: Vec<String> = store.groups.keys().cloned().collect();
                 egui::ComboBox::from_id_salt("group_combo")
@@ -102,12 +111,12 @@ impl Sidebar {
                         ui.selectable_value(
                             &mut self.new_conn.group,
                             "__new__".to_string(),
-                            "+ 新建分组",
+                            crate::i18n::tr("+ 新建分组").into_owned(),
                         );
                     });
 
                 if self.new_conn.group == "__new__" {
-                    ui.label("新分组名:");
+                    ui.label(crate::i18n::tr("新分组名:").into_owned());
                     let field_width = ui.available_width();
                     ui.add_sized(
                         [field_width, 0.0],
@@ -128,13 +137,16 @@ impl Sidebar {
 
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("保存并连接").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("保存并连接").into_owned())
+                        .clicked()
+                    {
                         save_and_connect = true;
                     }
-                    if ui.button("仅保存").clicked() {
+                    if ui.button(crate::i18n::tr("仅保存").into_owned()).clicked() {
                         save_only = true;
                     }
-                    if ui.button("取消").clicked() {
+                    if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
                         open = false;
                     }
                 });
@@ -176,9 +188,12 @@ impl Sidebar {
     fn do_save_connection(&self) -> Result<(), String> {
         let f = &self.new_conn;
         if f.host.is_empty() {
-            return Err("主机不能为空".into());
+            return Err(crate::i18n::tr("主机不能为空").into_owned());
         }
-        let port: u16 = f.port.parse().map_err(|_| "端口格式无效")?;
+        let port: u16 = f
+            .port
+            .parse()
+            .map_err(|_| crate::i18n::tr("端口格式无效").into_owned())?;
         let label = if f.label.is_empty() {
             f.host.clone()
         } else {
@@ -186,7 +201,7 @@ impl Sidebar {
         };
         let group_id = if f.group == "__new__" {
             if f.new_group.is_empty() {
-                return Err("分组名不能为空".into());
+                return Err(crate::i18n::tr("分组名不能为空").into_owned());
             }
             f.new_group.clone()
         } else {
@@ -240,7 +255,7 @@ impl Sidebar {
         let max_height = (screen.height() - 32.0).max(180.0);
         let default_width = (screen.width() * 0.6).clamp(180.0, max_width.min(720.0));
         let default_height = (screen.height() * 0.65).clamp(180.0, max_height.min(640.0));
-        egui::Window::new("SSH 密钥管理")
+        egui::Window::new(crate::i18n::tr("SSH 密钥管理").into_owned())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .resizable(true)
             .vscroll(true)
@@ -249,7 +264,7 @@ impl Sidebar {
             .max_height(max_height)
             .show(ctx, |ui| {
                 // Key list
-                ui.heading("已有密钥");
+                ui.heading(crate::i18n::tr("已有密钥").into_owned());
                 let key_list_height = (ui.available_height() * 0.5).max(100.0);
                 egui::ScrollArea::vertical()
                     .max_height(key_list_height)
@@ -285,7 +300,10 @@ impl Sidebar {
                                     );
                                 }
                                 if key.is_public {
-                                    if ui.small_button("复制").clicked() {
+                                    if ui
+                                        .small_button(crate::i18n::tr("复制").into_owned())
+                                        .clicked()
+                                    {
                                         if let Ok(content) = std::fs::read_to_string(&key.path) {
                                             if let Ok(mut cb) = arboard::Clipboard::new() {
                                                 let _ = cb.set_text(&content);
@@ -298,9 +316,9 @@ impl Sidebar {
                     });
 
                 ui.separator();
-                ui.heading("生成新密钥");
+                ui.heading(crate::i18n::tr("生成新密钥").into_owned());
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("类型:");
+                    ui.label(crate::i18n::tr("类型:").into_owned());
                     egui::ComboBox::from_id_salt("keygen_type")
                         .selected_text(&self.keygen_type)
                         .wrap_mode(egui::TextWrapMode::Wrap)
@@ -308,7 +326,7 @@ impl Sidebar {
                             ui.selectable_value(
                                 &mut self.keygen_type,
                                 "ed25519".to_string(),
-                                "ed25519 (推荐)",
+                                crate::i18n::tr("ed25519 (推荐)").into_owned(),
                             );
                             ui.selectable_value(&mut self.keygen_type, "rsa".to_string(), "rsa");
                             ui.selectable_value(
@@ -318,14 +336,17 @@ impl Sidebar {
                             );
                         });
                 });
-                ui.label("备注:");
+                ui.label(crate::i18n::tr("备注:").into_owned());
                 let comment_width = ui.available_width();
                 ui.add_sized(
                     [comment_width, 0.0],
                     egui::TextEdit::singleline(&mut self.keygen_comment).hint_text("user@host"),
                 );
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("生成密钥").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("生成密钥").into_owned())
+                        .clicked()
+                    {
                         match generate_ssh_key(&self.keygen_type, &self.keygen_comment) {
                             Ok(pub_key) => {
                                 self.keygen_status =
@@ -345,7 +366,7 @@ impl Sidebar {
                     );
                 }
                 ui.add_space(8.0);
-                if ui.button("关闭").clicked() {
+                if ui.button(crate::i18n::tr("关闭").into_owned()).clicked() {
                     open = false;
                 }
             });

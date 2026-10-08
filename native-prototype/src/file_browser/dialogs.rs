@@ -49,10 +49,11 @@ pub(super) fn render_context_menu(
                         } else {
                             TEXT
                         };
+                        let label = crate::i18n::tr(&item.label);
                         ui.painter().text(
                             rect.left_center() + egui::vec2(8.0, 0.0),
                             egui::Align2::LEFT_CENTER,
-                            &item.label,
+                            label.as_ref(),
                             egui::FontId::proportional(11.0),
                             color,
                         );
@@ -112,7 +113,7 @@ pub(super) fn render_rename_dialog(
             );
         });
 
-    let window = egui::Window::new("重命名")
+    let window = egui::Window::new(crate::i18n::tr("重命名").into_owned())
         .id(egui::Id::new("file_rename_dialog"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -150,10 +151,16 @@ pub(super) fn render_rename_dialog(
             ui.add_space(6.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let valid = !dialog.value.trim().is_empty();
-                if ui.add_enabled(valid, egui::Button::new("确定")).clicked() {
+                if ui
+                    .add_enabled(
+                        valid,
+                        egui::Button::new(crate::i18n::tr("确定").into_owned()),
+                    )
+                    .clicked()
+                {
                     submit = true;
                 }
-                if ui.button("取消").clicked() {
+                if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
                     cancel = true;
                 }
             });
@@ -230,7 +237,7 @@ pub(super) fn render_create_dialog(
         CreateKind::File => "新建文件",
         CreateKind::Directory => "新建目录",
     };
-    let window = egui::Window::new(title)
+    let window = egui::Window::new(crate::i18n::tr(title).into_owned())
         .id(egui::Id::new("file_create_dialog"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -260,10 +267,16 @@ pub(super) fn render_create_dialog(
             }
             ui.add_space(6.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(valid, egui::Button::new("创建")).clicked() {
+                if ui
+                    .add_enabled(
+                        valid,
+                        egui::Button::new(crate::i18n::tr("创建").into_owned()),
+                    )
+                    .clicked()
+                {
                     submit = true;
                 }
-                if ui.button("取消").clicked() {
+                if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
                     cancel = true;
                 }
             });
@@ -299,7 +312,11 @@ pub(super) const DELETE_DIALOG_MAX_WIDTH: f32 = 520.0;
 pub(super) const DELETE_DIALOG_HORIZONTAL_CHROME: f32 = 44.0;
 
 pub(super) fn delete_dialog_width(ctx: &egui::Context, name: &str) -> f32 {
-    let message = format!("确定要删除“{name}”吗？");
+    let message = if crate::i18n::is_english() {
+        format!("Are you sure you want to delete “{name}”?")
+    } else {
+        format!("确定要删除“{name}”吗？")
+    };
     let text_width = ctx.fonts(|fonts| {
         fonts
             .layout_no_wrap(message, egui::FontId::proportional(12.0), TEXT)
@@ -346,7 +363,7 @@ pub(super) fn render_delete_dialog(
             );
         });
 
-    let window = egui::Window::new("确认删除")
+    let window = egui::Window::new(crate::i18n::tr("确认删除").into_owned())
         .id(window_id)
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -360,9 +377,13 @@ pub(super) fn render_delete_dialog(
         .show(ctx, |ui| {
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(format!("确定要删除“{}”吗？", dialog.name))
-                        .size(12.0)
-                        .color(TEXT),
+                    egui::RichText::new(if crate::i18n::is_english() {
+                        format!("Are you sure you want to delete “{}”?", dialog.name)
+                    } else {
+                        format!("确定要删除“{}”吗？", dialog.name)
+                    })
+                    .size(12.0)
+                    .color(TEXT),
                 )
                 .wrap(),
             );
@@ -374,15 +395,21 @@ pub(super) fn render_delete_dialog(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        egui::Button::new(egui::RichText::new("删除").color(RED)).fill(
-                            egui::Color32::from_rgba_unmultiplied(RED.r(), RED.g(), RED.b(), 32),
-                        ),
+                        egui::Button::new(
+                            egui::RichText::new(crate::i18n::tr("删除").into_owned()).color(RED),
+                        )
+                        .fill(egui::Color32::from_rgba_unmultiplied(
+                            RED.r(),
+                            RED.g(),
+                            RED.b(),
+                            32,
+                        )),
                     )
                     .clicked()
                 {
                     submit = true;
                 }
-                if ui.button("取消").clicked() {
+                if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
                     cancel = true;
                 }
             });

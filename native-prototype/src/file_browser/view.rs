@@ -23,8 +23,12 @@ pub fn render(ctx: &egui::Context, state: &mut FileBrowserState) -> Vec<FileBrow
             if ui
                 .add_sized(
                     ui.available_size(),
-                    egui::Button::new(egui::RichText::new(label).size(10.0).color(MUTED))
-                        .frame(false),
+                    egui::Button::new(
+                        egui::RichText::new(crate::i18n::tr(label).into_owned())
+                            .size(10.0)
+                            .color(MUTED),
+                    )
+                    .frame(false),
                 )
                 .clicked()
             {
@@ -138,14 +142,20 @@ fn render_pane(
                     FileSide::Local => ("本地", MUTED),
                     FileSide::Remote => ("远端", GREEN),
                 };
-                ui.label(egui::RichText::new(title).size(10.0).strong().color(color));
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(title).into_owned())
+                        .size(10.0)
+                        .strong()
+                        .color(color),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{} 项",
-                            visible_entries(&pane.entries).count()
-                        ))
+                        egui::RichText::new(if crate::i18n::is_english() {
+                            format!("{} items", visible_entries(&pane.entries).count())
+                        } else {
+                            format!("{} 项", visible_entries(&pane.entries).count())
+                        })
                         .size(9.0)
                         .color(DIM),
                     );
@@ -153,7 +163,9 @@ fn render_pane(
                         .add_enabled(
                             create_enabled,
                             egui::Button::new(
-                                egui::RichText::new("＋目录").size(10.0).color(MUTED),
+                                egui::RichText::new(crate::i18n::tr("＋目录").into_owned())
+                                    .size(10.0)
+                                    .color(MUTED),
                             )
                             .min_size(egui::vec2(42.0, 18.0))
                             .fill(PANEL_BG)
@@ -173,7 +185,9 @@ fn render_pane(
                         .add_enabled(
                             create_enabled,
                             egui::Button::new(
-                                egui::RichText::new("＋文件").size(10.0).color(MUTED),
+                                egui::RichText::new(crate::i18n::tr("＋文件").into_owned())
+                                    .size(10.0)
+                                    .color(MUTED),
                             )
                             .min_size(egui::vec2(42.0, 18.0))
                             .fill(PANEL_BG)
@@ -217,7 +231,7 @@ fn render_pane(
                         egui::vec2(20.0, 20.0),
                         egui::Button::new(egui::RichText::new("⟳").color(MUTED)).frame(false),
                     )
-                    .on_hover_text("刷新")
+                    .on_hover_text(crate::i18n::tr("刷新").into_owned())
                     .clicked()
                 {
                     output.actions.push(FileBrowserAction::List {
@@ -230,7 +244,7 @@ fn render_pane(
                         egui::vec2(20.0, 20.0),
                         egui::Button::new(egui::RichText::new("↑").color(MUTED)).frame(false),
                     )
-                    .on_hover_text("上级目录")
+                    .on_hover_text(crate::i18n::tr("上级目录").into_owned())
                     .clicked()
                 {
                     output.actions.push(FileBrowserAction::List {
@@ -244,13 +258,25 @@ fn render_pane(
     if pane.loading {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(egui::RichText::new("加载中…").size(10.0).color(MUTED));
+            ui.label(
+                egui::RichText::new(crate::i18n::tr("加载中…").into_owned())
+                    .size(10.0)
+                    .color(MUTED),
+            );
         });
     }
     if let Some(error) = &pane.error {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(error).size(10.0).color(RED));
-            if side == FileSide::Remote && ui.small_button("重新连接").clicked() {
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(error).into_owned())
+                    .size(10.0)
+                    .color(RED),
+            );
+            if side == FileSide::Remote
+                && ui
+                    .small_button(crate::i18n::tr("重新连接").into_owned())
+                    .clicked()
+            {
                 output.actions.push(FileBrowserAction::Reconnect);
             }
         });
@@ -321,7 +347,7 @@ fn render_column_header(ui: &mut egui::Ui) {
     painter.text(
         egui::pos2(rect.left() + 8.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        "文件名",
+        crate::i18n::tr("文件名").as_ref(),
         font.clone(),
         DIM,
     );
@@ -331,7 +357,7 @@ fn render_column_header(ui: &mut egui::Ui) {
             rect.center().y,
         ),
         egui::Align2::RIGHT_CENTER,
-        "大小",
+        crate::i18n::tr("大小").as_ref(),
         font.clone(),
         DIM,
     );
@@ -341,7 +367,7 @@ fn render_column_header(ui: &mut egui::Ui) {
             rect.center().y,
         ),
         egui::Align2::LEFT_CENTER,
-        "修改时间",
+        crate::i18n::tr("修改时间").as_ref(),
         font,
         DIM,
     );

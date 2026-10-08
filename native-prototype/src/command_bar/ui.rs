@@ -37,7 +37,7 @@ impl CommandBar {
                                 .corner_radius(3.0)
                                 .min_size(egui::vec2(20.0, 20.0)),
                         )
-                        .on_hover_text("添加快捷命令");
+                        .on_hover_text(crate::i18n::tr("添加快捷命令").into_owned());
                     if add_btn.clicked() {
                         self.edit_index = None;
                         self.add_label.clear();
@@ -72,15 +72,18 @@ impl CommandBar {
                             clicked_cmd = Some(format!("{}\n", command.trim_end_matches('\n')));
                         }
                         btn.context_menu(|ui| {
-                            if ui.button("编辑").clicked() {
+                            if ui.button(crate::i18n::tr("编辑").into_owned()).clicked() {
                                 edit_req = Some(i);
                                 ui.close_menu();
                             }
-                            if ui.button("删除").clicked() {
+                            if ui.button(crate::i18n::tr("删除").into_owned()).clicked() {
                                 delete_req = Some(i);
                                 ui.close_menu();
                             }
-                            if ui.button("加入收藏").clicked() {
+                            if ui
+                                .button(crate::i18n::tr("加入收藏").into_owned())
+                                .clicked()
+                            {
                                 fav_req = Some(i);
                                 ui.close_menu();
                             }
@@ -122,11 +125,15 @@ impl CommandBar {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
 
-                    ui.label(egui::RichText::new("命令输入:").size(10.0).color(muted));
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr("命令输入:").into_owned())
+                            .size(10.0)
+                            .color(muted),
+                    );
 
                     let input_resp = ui.add(
                         egui::TextEdit::singleline(&mut self.input_text)
-                            .hint_text("输入命令后回车发送到终端")
+                            .hint_text(crate::i18n::tr("输入命令后回车发送到终端").into_owned())
                             .desired_width((ui.available_width() - 54.0).max(80.0))
                             .font(egui::FontId::proportional(11.0))
                             .id_salt("cmd_bar_input"),
@@ -148,7 +155,7 @@ impl CommandBar {
                                 .frame(false)
                                 .min_size(egui::vec2(20.0, 18.0)),
                         )
-                        .on_hover_text("历史记录");
+                        .on_hover_text(crate::i18n::tr("历史记录").into_owned());
                     self.last_history_button_rect = Some(hist_btn.rect);
                     if hist_btn.clicked() {
                         let opening = !self.show_history;
@@ -164,7 +171,7 @@ impl CommandBar {
                                 .frame(false)
                                 .min_size(egui::vec2(20.0, 18.0)),
                         )
-                        .on_hover_text("收藏");
+                        .on_hover_text(crate::i18n::tr("收藏").into_owned());
                     self.last_favorites_button_rect = Some(fav_btn.rect);
                     if fav_btn.clicked() {
                         self.show_favorites = !self.show_favorites;
@@ -267,7 +274,11 @@ impl CommandBar {
                         ui.painter().with_clip_rect(title_rect).text(
                             title_rect.left_center(),
                             egui::Align2::LEFT_CENTER,
-                            format!("命令历史（{}）", history_snapshot.len()),
+                            if crate::i18n::is_english() {
+                                format!("Command history ({})", history_snapshot.len())
+                            } else {
+                                format!("命令历史（{}）", history_snapshot.len())
+                            },
                             egui::FontId::proportional(11.0),
                             muted,
                         );
@@ -279,7 +290,7 @@ impl CommandBar {
                                 egui::Id::new("command_history_clear"),
                                 egui::Sense::click(),
                             )
-                            .on_hover_text("清空历史");
+                            .on_hover_text(crate::i18n::tr("清空历史").into_owned());
                         let clear_color =
                             if clear_response.hovered() && !history_snapshot.is_empty() {
                                 egui::Color32::from_rgb(0xf8, 0x51, 0x49)
@@ -314,7 +325,7 @@ impl CommandBar {
                             ui.painter().with_clip_rect(empty_rect).text(
                                 empty_rect.center(),
                                 egui::Align2::CENTER_CENTER,
-                                "暂无历史记录",
+                                crate::i18n::tr("暂无历史记录").into_owned(),
                                 egui::FontId::proportional(11.0),
                                 muted,
                             );
@@ -371,7 +382,9 @@ impl CommandBar {
                                                 history_popup_row_id(index).with("command"),
                                                 egui::Sense::click(),
                                             )
-                                            .on_hover_text("点击填入输入框");
+                                            .on_hover_text(
+                                                crate::i18n::tr("点击填入输入框").into_owned(),
+                                            );
                                         if command_response.clicked() {
                                             fill_input = Some(command.clone());
                                         }
@@ -409,7 +422,9 @@ impl CommandBar {
                                                 history_popup_row_id(index).with("execute"),
                                                 egui::Sense::click(),
                                             )
-                                            .on_hover_text("立即执行");
+                                            .on_hover_text(
+                                                crate::i18n::tr("立即执行").into_owned(),
+                                            );
                                         ui.painter().text(
                                             execute_rect.center(),
                                             egui::Align2::CENTER_CENTER,
@@ -428,7 +443,7 @@ impl CommandBar {
                                                 history_popup_row_id(index).with("copy"),
                                                 egui::Sense::click(),
                                             )
-                                            .on_hover_text("复制");
+                                            .on_hover_text(crate::i18n::tr("复制").into_owned());
                                         ui.painter().text(
                                             copy_rect.center(),
                                             egui::Align2::CENTER_CENTER,
@@ -448,9 +463,9 @@ impl CommandBar {
                                                 egui::Sense::click(),
                                             )
                                             .on_hover_text(if is_favorite {
-                                                "取消收藏"
+                                                crate::i18n::tr("取消收藏").into_owned()
                                             } else {
-                                                "收藏"
+                                                crate::i18n::tr("收藏").into_owned()
                                             });
                                         ui.painter().text(
                                             favorite_rect.center(),
@@ -474,7 +489,7 @@ impl CommandBar {
                                                 history_popup_row_id(index).with("delete"),
                                                 egui::Sense::click(),
                                             )
-                                            .on_hover_text("删除");
+                                            .on_hover_text(crate::i18n::tr("删除").into_owned());
                                         ui.painter().text(
                                             delete_rect.center(),
                                             egui::Align2::CENTER_CENTER,
@@ -580,7 +595,7 @@ impl CommandBar {
                 (popup_size.x - frame_margin.x).max(0.0),
                 (popup_size.y - frame_margin.y).max(0.0),
             );
-            egui::Window::new("命令收藏")
+            egui::Window::new(crate::i18n::tr("命令收藏").into_owned())
                 .id(egui::Id::new("command_favorites_popup"))
                 .title_bar(false)
                 .collapsible(false)
@@ -598,7 +613,7 @@ impl CommandBar {
                         ui.painter().text(
                             header_rect.center(),
                             egui::Align2::CENTER_CENTER,
-                            "命令收藏",
+                            crate::i18n::tr("命令收藏").into_owned(),
                             egui::FontId::proportional(13.0),
                             muted,
                         );
@@ -610,9 +625,12 @@ impl CommandBar {
 
                     if self.favorites.is_empty() {
                         ui.label(
-                            egui::RichText::new("暂无收藏。可在历史或快捷命令右键加入。")
-                                .size(11.0)
-                                .color(muted),
+                            egui::RichText::new(
+                                crate::i18n::tr("暂无收藏。可在历史或快捷命令右键加入。")
+                                    .into_owned(),
+                            )
+                            .size(11.0)
+                            .color(muted),
                         );
                     } else {
                         let list_height = (ui.available_height() - 28.0).max(0.0);
@@ -639,7 +657,10 @@ impl CommandBar {
                                         if resp.clicked() {
                                             pick = Some(fav.command.clone());
                                         }
-                                        if ui.small_button("×").on_hover_text("移除收藏").clicked()
+                                        if ui
+                                            .small_button("×")
+                                            .on_hover_text(crate::i18n::tr("移除收藏").into_owned())
+                                            .clicked()
                                         {
                                             remove_idx = Some(i);
                                         }
@@ -648,7 +669,7 @@ impl CommandBar {
                             });
                     }
                     ui.add_space(4.0);
-                    if ui.button("关闭").clicked() {
+                    if ui.button(crate::i18n::tr("关闭").into_owned()).clicked() {
                         close = true;
                     }
                 });
@@ -671,9 +692,9 @@ impl CommandBar {
         // ── 添加/编辑快捷命令 ──
         if self.show_add {
             let title = if self.edit_index.is_some() {
-                "编辑快捷命令"
+                crate::i18n::tr("编辑快捷命令").into_owned()
             } else {
-                "添加快捷命令"
+                crate::i18n::tr("添加快捷命令").into_owned()
             };
             let mut close = false;
             let mut save = false;
@@ -696,18 +717,26 @@ impl CommandBar {
                         .inner_margin(egui::Margin::same(10)),
                 )
                 .show(ctx, |ui| {
-                    ui.label(egui::RichText::new("标签").size(10.0).color(muted));
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr("标签").into_owned())
+                            .size(10.0)
+                            .color(muted),
+                    );
                     ui.add(
                         egui::TextEdit::singleline(&mut self.add_label)
                             .desired_width(280.0)
-                            .hint_text("显示名称，最多 20 字"),
+                            .hint_text(crate::i18n::tr("显示名称，最多 20 字").into_owned()),
                     );
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new("命令").size(10.0).color(muted));
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr("命令").into_owned())
+                            .size(10.0)
+                            .color(muted),
+                    );
                     ui.add(
                         egui::TextEdit::singleline(&mut self.add_command)
                             .desired_width(280.0)
-                            .hint_text("发送到终端的命令")
+                            .hint_text(crate::i18n::tr("发送到终端的命令").into_owned())
                             .font(egui::FontId::monospace(11.0)),
                     );
                     if !self.add_error.is_empty() {
@@ -719,10 +748,10 @@ impl CommandBar {
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("取消").clicked() {
+                        if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
                             close = true;
                         }
-                        if ui.button("确定").clicked() {
+                        if ui.button(crate::i18n::tr("确定").into_owned()).clicked() {
                             save = true;
                         }
                     });
@@ -743,9 +772,9 @@ impl CommandBar {
                 let label = self.add_label.trim().to_string();
                 let command = self.add_command.trim().to_string();
                 if label.is_empty() {
-                    self.add_error = "请输入标签名称".into();
+                    self.add_error = crate::i18n::tr("请输入标签名称").into_owned();
                 } else if command.is_empty() {
-                    self.add_error = "请输入命令内容".into();
+                    self.add_error = crate::i18n::tr("请输入命令内容").into_owned();
                 } else {
                     let label = if label.chars().count() > 20 {
                         label.chars().take(20).collect()

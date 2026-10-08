@@ -344,7 +344,7 @@ impl SettingsPanel {
         // 预取主题列表过滤（避免在闭包中反复借用 self 冲突）
         let filter_lower = self.theme_filter.to_ascii_lowercase();
 
-        egui::Window::new("设置")
+        egui::Window::new(crate::i18n::tr("设置").into_owned())
             .id(egui::Id::new("settings_panel_window"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -356,14 +356,14 @@ impl SettingsPanel {
             .collapsible(false)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.heading("终端外观");
+                ui.heading(crate::i18n::tr("终端外观").into_owned());
                 ui.add_space(6.0);
 
                 egui::Grid::new("settings_font_grid")
                     .num_columns(2)
                     .spacing([12.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label("字体族");
+                        ui.label(crate::i18n::tr("字体族").into_owned());
                         ui.add(
                             egui::TextEdit::singleline(&mut self.draft.font_family)
                                 .desired_width(280.0)
@@ -374,7 +374,7 @@ impl SettingsPanel {
                         );
                         ui.end_row();
 
-                        ui.label("字号");
+                        ui.label(crate::i18n::tr("字号").into_owned());
                         ui.horizontal(|ui| {
                             let decrease = ui
                                 .add_enabled(
@@ -382,7 +382,7 @@ impl SettingsPanel {
                                     egui::Button::new(egui::RichText::new("−").size(16.0))
                                         .min_size(egui::vec2(28.0, 24.0)),
                                 )
-                                .on_hover_text("字号减小 1px");
+                                .on_hover_text(crate::i18n::tr("字号减小 1px").into_owned());
                             if decrease.clicked() {
                                 self.draft.font_size = step_font_size(self.draft.font_size, -1.0);
                             }
@@ -401,7 +401,7 @@ impl SettingsPanel {
                                     egui::Button::new(egui::RichText::new("+").size(16.0))
                                         .min_size(egui::vec2(28.0, 24.0)),
                                 )
-                                .on_hover_text("字号增大 1px");
+                                .on_hover_text(crate::i18n::tr("字号增大 1px").into_owned());
                             if increase.clicked() {
                                 self.draft.font_size = step_font_size(self.draft.font_size, 1.0);
                             }
@@ -417,14 +417,14 @@ impl SettingsPanel {
                     });
 
                 ui.add_space(10.0);
-                ui.heading("配色方案");
+                ui.heading(crate::i18n::tr("配色方案").into_owned());
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label("搜索");
+                    ui.label(crate::i18n::tr("搜索").into_owned());
                     ui.add(
                         egui::TextEdit::singleline(&mut self.theme_filter)
                             .desired_width(240.0)
-                            .hint_text("过滤主题名称"),
+                            .hint_text(crate::i18n::tr("过滤主题名称").into_owned()),
                     );
                 });
                 ui.add_space(4.0);
@@ -437,6 +437,9 @@ impl SettingsPanel {
                         for theme in all_themes() {
                             if !filter_lower.is_empty()
                                 && !theme.name.to_ascii_lowercase().contains(&filter_lower)
+                                && !crate::i18n::tr(theme.name)
+                                    .to_ascii_lowercase()
+                                    .contains(&filter_lower)
                             {
                                 continue;
                             }
@@ -482,9 +485,9 @@ impl SettingsPanel {
                                 }
 
                                 let label = if selected {
-                                    format!("● {}", theme.name)
+                                    format!("● {}", crate::i18n::tr(theme.name))
                                 } else {
-                                    format!("○ {}", theme.name)
+                                    format!("○ {}", crate::i18n::tr(theme.name))
                                 };
                                 if ui.selectable_label(selected, label).clicked() {
                                     self.draft.theme = theme.name.to_string();
@@ -494,24 +497,30 @@ impl SettingsPanel {
                     });
 
                 ui.add_space(10.0);
-                ui.heading("ZMODEM 文件传输");
+                ui.heading(crate::i18n::tr("ZMODEM 文件传输").into_owned());
                 ui.add_space(4.0);
                 egui::Grid::new("settings_zmodem_grid")
                     .num_columns(2)
                     .spacing([12.0, 6.0])
                     .show(ui, |ui| {
-                        ui.label("启用");
-                        ui.checkbox(&mut self.draft.zmodem_enabled, "允许发送和接收");
-                        ui.end_row();
-
-                        ui.label("自动接收");
-                        ui.add_enabled(
-                            self.draft.zmodem_enabled,
-                            egui::Checkbox::new(&mut self.draft.zmodem_auto_detect, "检测远端 sz"),
+                        ui.label(crate::i18n::tr("启用").into_owned());
+                        ui.checkbox(
+                            &mut self.draft.zmodem_enabled,
+                            crate::i18n::tr("允许发送和接收").into_owned(),
                         );
                         ui.end_row();
 
-                        ui.label("下载目录");
+                        ui.label(crate::i18n::tr("自动接收").into_owned());
+                        ui.add_enabled(
+                            self.draft.zmodem_enabled,
+                            egui::Checkbox::new(
+                                &mut self.draft.zmodem_auto_detect,
+                                crate::i18n::tr("检测远端 sz").into_owned(),
+                            ),
+                        );
+                        ui.end_row();
+
+                        ui.label(crate::i18n::tr("下载目录").into_owned());
                         ui.horizontal(|ui| {
                             ui.add_enabled(
                                 self.draft.zmodem_enabled,
@@ -519,15 +528,21 @@ impl SettingsPanel {
                                     .desired_width(210.0)
                                     .hint_text("~/Downloads"),
                             )
-                            .on_hover_text("支持 ~；保存时要求展开后为绝对路径");
+                            .on_hover_text(
+                                crate::i18n::tr("支持 ~；保存时要求展开后为绝对路径").into_owned(),
+                            );
                             if ui
-                                .add_enabled(self.draft.zmodem_enabled, egui::Button::new("浏览…"))
+                                .add_enabled(
+                                    self.draft.zmodem_enabled,
+                                    egui::Button::new(crate::i18n::tr("浏览…").into_owned()),
+                                )
                                 .clicked()
                             {
                                 let current = shellexpand::tilde(&self.draft.zmodem_download_dir)
                                     .into_owned();
-                                let mut dialog =
-                                    rfd::FileDialog::new().set_title("选择 ZMODEM 下载目录");
+                                let mut dialog = rfd::FileDialog::new().set_title(
+                                    crate::i18n::tr("选择 ZMODEM 下载目录").into_owned(),
+                                );
                                 if std::path::Path::new(&current).is_dir() {
                                     dialog = dialog.set_directory(current);
                                 }
@@ -539,19 +554,19 @@ impl SettingsPanel {
                         });
                         ui.end_row();
 
-                        ui.label("超时");
+                        ui.label(crate::i18n::tr("超时").into_owned());
                         ui.add_enabled(
                             self.draft.zmodem_enabled,
                             egui::DragValue::new(&mut self.draft.zmodem_timeout_secs)
                                 .range(MIN_ZMODEM_TIMEOUT_SECS..=MAX_ZMODEM_TIMEOUT_SECS)
                                 .speed(1.0)
-                                .suffix(" 秒"),
+                                .suffix(crate::i18n::tr(" 秒").into_owned()),
                         );
                         ui.end_row();
                     });
 
                 ui.add_space(10.0);
-                ui.heading("快捷键");
+                ui.heading(crate::i18n::tr("快捷键").into_owned());
                 ui.add_space(4.0);
 
                 for action in ShortcutAction::all() {

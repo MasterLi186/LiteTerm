@@ -71,9 +71,13 @@ impl Sidebar {
                     };
                     let toggle = ui.add(
                         egui::Button::new(
-                            egui::RichText::new(format!("{} 连接管理", arrow))
-                                .size(SIDEBAR_SECTION_SIZE)
-                                .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                            egui::RichText::new(format!(
+                                "{} {}",
+                                arrow,
+                                crate::i18n::tr("连接管理")
+                            ))
+                            .size(SIDEBAR_SECTION_SIZE)
+                            .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
                         )
                         .frame(false),
                     );
@@ -91,7 +95,8 @@ impl Sidebar {
                                 .frame(false)
                                 .min_size(egui::vec2(20.0, 18.0)),
                         );
-                        r1.clone().on_hover_text("新建连接");
+                        r1.clone()
+                            .on_hover_text(crate::i18n::tr("新建连接").into_owned());
                         if r1.clicked() {
                             self.show_new_connection = true;
                             self.new_conn = NewConnForm::default();
@@ -102,7 +107,8 @@ impl Sidebar {
                                 .frame(false)
                                 .min_size(egui::vec2(20.0, 18.0)),
                         );
-                        r2.clone().on_hover_text("SSH 密钥管理");
+                        r2.clone()
+                            .on_hover_text(crate::i18n::tr("SSH 密钥管理").into_owned());
                         if r2.clicked() {
                             self.show_key_manager = true;
                             self.ssh_keys_loaded = false;
@@ -113,7 +119,8 @@ impl Sidebar {
                                 .frame(false)
                                 .min_size(egui::vec2(20.0, 18.0)),
                         );
-                        r3.clone().on_hover_text("导出配置");
+                        r3.clone()
+                            .on_hover_text(crate::i18n::tr("导出配置").into_owned());
                         if r3.clicked() {
                             self.export_connections_with_dialog();
                         }
@@ -123,7 +130,8 @@ impl Sidebar {
                                 .frame(false)
                                 .min_size(egui::vec2(20.0, 18.0)),
                         );
-                        r4.clone().on_hover_text("导入配置");
+                        r4.clone()
+                            .on_hover_text(crate::i18n::tr("导入配置").into_owned());
                         if r4.clicked() {
                             self.import_connections_with_dialog();
                         }
@@ -410,7 +418,7 @@ impl Sidebar {
                 if narrow {
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new("运行时间")
+                            egui::RichText::new(crate::i18n::tr("运行时间").into_owned())
                                 .size(SIDEBAR_META_SIZE)
                                 .color(label_color),
                         );
@@ -424,7 +432,7 @@ impl Sidebar {
                         );
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new("系统负载")
+                            egui::RichText::new(crate::i18n::tr("系统负载").into_owned())
                                 .size(SIDEBAR_META_SIZE)
                                 .color(label_color),
                         );
@@ -442,7 +450,7 @@ impl Sidebar {
                     ui.columns(2, |columns| {
                         columns[0].vertical(|ui| {
                             ui.label(
-                                egui::RichText::new("运行时间")
+                                egui::RichText::new(crate::i18n::tr("运行时间").into_owned())
                                     .size(SIDEBAR_META_SIZE)
                                     .color(label_color),
                             );
@@ -457,7 +465,7 @@ impl Sidebar {
                         });
                         columns[1].vertical(|ui| {
                             ui.label(
-                                egui::RichText::new("系统负载")
+                                egui::RichText::new(crate::i18n::tr("系统负载").into_owned())
                                     .size(SIDEBAR_META_SIZE)
                                     .color(label_color),
                             );
@@ -481,7 +489,7 @@ impl Sidebar {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("资源")
+                    egui::RichText::new(crate::i18n::tr("资源").into_owned())
                         .size(SIDEBAR_SECTION_SIZE)
                         .color(section_color),
                 );
@@ -530,7 +538,7 @@ impl Sidebar {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("内存")
+                    egui::RichText::new(crate::i18n::tr("内存").into_owned())
                         .size(SIDEBAR_BODY_SIZE)
                         .color(section_color),
                 );
@@ -553,7 +561,7 @@ impl Sidebar {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("交换")
+                    egui::RichText::new(crate::i18n::tr("交换").into_owned())
                         .size(SIDEBAR_BODY_SIZE)
                         .color(section_color),
                 );
@@ -599,7 +607,7 @@ impl Sidebar {
                     ui.horizontal_wrapped(|ui| {
                         ui.add_space(8.0);
                         ui.label(
-                            egui::RichText::new("进程")
+                            egui::RichText::new(crate::i18n::tr("进程").into_owned())
                                 .size(SIDEBAR_SECTION_SIZE)
                                 .color(section_color),
                         );
@@ -608,13 +616,13 @@ impl Sidebar {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        egui::RichText::new(label).size(SIDEBAR_META_SIZE).color(
-                                            if active {
+                                        egui::RichText::new(crate::i18n::tr(label).into_owned())
+                                            .size(SIDEBAR_META_SIZE)
+                                            .color(if active {
                                                 egui::Color32::from_rgb(0x00, 0xd4, 0xff)
                                             } else {
                                                 egui::Color32::from_rgb(0x48, 0x4f, 0x58)
-                                            },
-                                        ),
+                                            }),
                                     )
                                     .fill(if active {
                                         egui::Color32::from_rgba_unmultiplied(
@@ -637,7 +645,7 @@ impl Sidebar {
                     ui.horizontal(|ui| {
                         ui.add_space(8.0);
                         ui.label(
-                            egui::RichText::new("进程")
+                            egui::RichText::new(crate::i18n::tr("进程").into_owned())
                                 .size(SIDEBAR_SECTION_SIZE)
                                 .color(section_color),
                         );
@@ -737,7 +745,7 @@ impl Sidebar {
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new("网络")
+                        egui::RichText::new(crate::i18n::tr("网络").into_owned())
                             .size(SIDEBAR_SECTION_SIZE)
                             .color(section_color),
                     );
@@ -855,7 +863,7 @@ impl Sidebar {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new("磁盘")
+                        egui::RichText::new(crate::i18n::tr("磁盘").into_owned())
                             .size(SIDEBAR_SECTION_SIZE)
                             .color(section_color),
                     );
@@ -873,9 +881,9 @@ impl Sidebar {
                         ui,
                         ui.available_width(),
                         disk_columns,
-                        "挂载点",
-                        "使用率",
-                        "可用/总量",
+                        crate::i18n::tr("挂载点").as_ref(),
+                        crate::i18n::tr("使用率").as_ref(),
+                        crate::i18n::tr("可用/总量").as_ref(),
                     );
                     let (header_rect, _) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), header_height),
@@ -885,9 +893,9 @@ impl Sidebar {
                         ui,
                         header_rect,
                         disk_columns,
-                        "挂载点",
-                        "使用率",
-                        "可用/总量",
+                        crate::i18n::tr("挂载点").as_ref(),
+                        crate::i18n::tr("使用率").as_ref(),
+                        crate::i18n::tr("可用/总量").as_ref(),
                         DiskRowColors {
                             mount: label_color,
                             percent: label_color,

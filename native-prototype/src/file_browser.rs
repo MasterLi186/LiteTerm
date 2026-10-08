@@ -228,6 +228,12 @@ fn context_menu_items(
     remote_ready: bool,
 ) -> Vec<ContextItemSpec> {
     let transfer_label = match side {
+        FileSide::Local if crate::i18n::is_english() => {
+            format!("Upload to remote ({})", path_name(remote_path))
+        }
+        FileSide::Remote if crate::i18n::is_english() => {
+            format!("Download to local ({})", path_name(local_path))
+        }
         FileSide::Local => format!("上传到远程 ({})", path_name(remote_path)),
         FileSide::Remote => format!("下载到本地 ({})", path_name(local_path)),
     };
@@ -559,7 +565,11 @@ impl FileBrowserState {
                         crate::sftp::FileOperation::Rename => "重命名",
                         crate::sftp::FileOperation::Delete => "删除",
                     };
-                    format!("{label}失败: {error}")
+                    if crate::i18n::is_english() {
+                        format!("{} failed: {error}", crate::i18n::tr(label))
+                    } else {
+                        format!("{label}失败: {error}")
+                    }
                 });
             }
             SftpEvent::CompletionHistoryRead { .. }

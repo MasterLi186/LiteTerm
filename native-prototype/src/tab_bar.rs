@@ -120,7 +120,7 @@ impl TabRenameDialog {
                 );
             });
 
-        egui::Window::new("重命名标签页")
+        egui::Window::new(crate::i18n::tr("重命名标签页").into_owned())
             .id(egui::Id::new("tab_rename_dialog"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -129,7 +129,7 @@ impl TabRenameDialog {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.label(
-                    egui::RichText::new("标签名称")
+                    egui::RichText::new(crate::i18n::tr("标签名称").into_owned())
                         .size(12.0)
                         .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
                 );
@@ -162,10 +162,16 @@ impl TabRenameDialog {
                 }
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(valid, egui::Button::new("确定")).clicked() {
+                    if ui
+                        .add_enabled(
+                            valid,
+                            egui::Button::new(crate::i18n::tr("确定").into_owned()),
+                        )
+                        .clicked()
+                    {
                         submit = true;
                     }
-                    if ui.button("取消").clicked() {
+                    if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
                         cancel = true;
                     }
                 });
@@ -308,7 +314,7 @@ fn top_action_button(
         egui::vec2(TITLE_ACTION_WIDTH, TAB_BAR_HEIGHT),
         egui::Sense::click(),
     );
-    let response = response.on_hover_text(tooltip);
+    let response = response.on_hover_text(crate::i18n::tr(tooltip).into_owned());
     if response.hovered() {
         ui.painter()
             .rect_filled(rect, 0.0, egui::Color32::from_rgb(0x2a, 0x31, 0x3a));
@@ -690,7 +696,7 @@ pub fn render_tab_bar(
                 let item = |ui: &mut egui::Ui, label: &str| {
                     ui.add_sized(
                         egui::vec2(width - 8.0, 30.0),
-                        egui::Button::new(label).frame(false),
+                        egui::Button::new(crate::i18n::tr(label).into_owned()).frame(false),
                     )
                 };
                 if item(ui, "批量命令").clicked() {
@@ -782,7 +788,7 @@ pub fn render_tab_bar(
                     ui.painter().text(
                         rect.left_center() + egui::vec2(8.0, 0.0),
                         egui::Align2::LEFT_CENTER,
-                        label,
+                        crate::i18n::tr(label).as_ref(),
                         egui::FontId::proportional(12.0),
                         egui::Color32::from_rgb(0xc9, 0xd1, 0xd9),
                     );
