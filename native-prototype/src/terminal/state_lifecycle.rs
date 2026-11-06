@@ -291,6 +291,37 @@ impl TerminalState {
         self.enqueue_writer_bytes(text.as_bytes().to_vec());
     }
 
+    /// Whether the program running in this terminal enabled bracketed paste
+    /// (DECSET 2004). TUI applications such as Codex and Claude Code use it to
+    /// receive a multi-line paste as one block instead of one submission per
+    /// line.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.term
+            .as_ref()
+            .is_some_and(|term| term.mode().contains(TermMode::BRACKETED_PASTE))
+    }
+
+    /// Write clipboard text, wrapping it in bracketed-paste markers when the
+    /// foreground program asked for them. Plain input and IME commits must
+    /// keep using [`Self::write_input`].
+    pub fn write_paste(&mut self, text: &str) {
+        if self.zmodem_active() {
+            return;
+        }
+        if !self.bracketed_paste_enabled() {
+            self.write_input(text);
+            return;
+        }
+        // A pasted payload must not be able to terminate its own bracket early.
+        let sanitized = text.replace("\x1b[201~", "");
+        let mut payload = String::with_capacity(sanitized.len() + 12);
+        payload.push_str("\x1b[200~");
+        payload.push_str(&sanitized);
+        payload.push_str("\x1b[201~");
+        self.output_bytes_since_user_input = 0;
+        self.enqueue_writer_bytes(payload.into_bytes());
+    }
+
     pub fn try_write_input(&mut self, text: &str) -> Result<(), String> {
         if self.zmodem_active() {
             return Err("ZMODEM 传输期间已拒绝终端输入".into());

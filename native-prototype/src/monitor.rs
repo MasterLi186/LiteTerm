@@ -653,6 +653,27 @@ fn bounded_local_environment(environment: &[std::ffi::OsString]) -> Vec<ProcessE
         .collect()
 }
 
+/// 本机 CPU 名称兜底：ARM 开发板/嵌入式设备的内核没有 `model name`，
+/// 用设备树型号（`/sys/firmware/devicetree/base/model`）作为可读名称。
+/// 设备树内容在运行期不变，缓存一次即可，避免每个采集周期都读 sysfs。
+fn local_cpu_name_fallback() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(raw) = std::fs::read("/sys/firmware/devicetree/base/model") {
+                let name = String::from_utf8_lossy(&raw)
+                    .trim_end_matches(['\0', '\n', '\r', ' '])
+                    .to_string();
+                if !name.is_empty() {
+                    return name;
+                }
+            }
+        }
+        "Unknown CPU".to_string()
+    })
+}
+
 pub struct MonitorCollector {
     sys: System,
     networks: Networks,
@@ -692,12 +713,15 @@ impl MonitorCollector {
 
         // CPU
         let cpu_percent = self.sys.global_cpu_usage();
+        // ARM 板卡（如 RK3588S BMC）的内核 /proc/cpuinfo 没有 `model name`，
+        // sysinfo 的 brand 会是空串或 unknown；此时退回设备树型号。
         let cpu_name = self
             .sys
             .cpus()
             .first()
-            .map(|c| c.brand().to_string())
-            .unwrap_or_else(|| "Unknown CPU".to_string());
+            .map(|cpu| cpu.brand().trim().to_string())
+            .filter(|brand| !brand.is_empty() && !brand.eq_ignore_ascii_case("unknown"))
+            .unwrap_or_else(|| local_cpu_name_fallback().to_string());
 
         // Memory
         let memory_used = self.sys.used_memory();

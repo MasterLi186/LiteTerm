@@ -415,6 +415,44 @@ pub(super) fn terminal_backspace_sequence(alt: bool) -> &'static str {
     }
 }
 
+/// xterm 风格的按键修饰参数：`1 + Shift(1) + Alt(2) + Ctrl(4)`。
+/// 没有修饰键时返回 `None`（此时使用不带参数的传统序列）。
+pub(super) fn xterm_modifier_parameter(shift: bool, alt: bool, ctrl: bool) -> Option<u8> {
+    let parameter = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    (parameter > 1).then_some(parameter)
+}
+
+/// 方向键：无修饰键时遵循应用光标键模式（DECCKM：`ESC O x`，否则 `ESC [ x`），
+/// 有修饰键时统一用 `ESC [ 1 ; m x`（Ctrl+左/右 → `ESC[1;5D` / `ESC[1;5C`，
+/// 即 readline/vim 的按单词移动）。
+pub(super) fn cursor_key_sequence(
+    final_byte: char,
+    modifier: Option<u8>,
+    application_cursor: bool,
+) -> String {
+    match modifier {
+        Some(parameter) => format!("\x1b[1;{parameter}{final_byte}"),
+        None if application_cursor => format!("\x1bO{final_byte}"),
+        None => format!("\x1b[{final_byte}"),
+    }
+}
+
+/// F1–F4：无修饰键时 `ESC O P..S`，有修饰键时 `ESC [ 1 ; m P..S`。
+pub(super) fn ss3_function_key_sequence(final_byte: char, modifier: Option<u8>) -> String {
+    match modifier {
+        Some(parameter) => format!("\x1b[1;{parameter}{final_byte}"),
+        None => format!("\x1bO{final_byte}"),
+    }
+}
+
+/// Insert / Delete / PageUp / PageDown：有修饰键时 `ESC [ code ; m ~`。
+pub(super) fn tilde_key_sequence(code: u8, modifier: Option<u8>) -> String {
+    match modifier {
+        Some(parameter) => format!("\x1b[{code};{parameter}~"),
+        None => format!("\x1b[{code}~"),
+    }
+}
+
 pub(super) fn is_primary_find_shortcut(
     key: &Key,
     modifiers: winit::keyboard::ModifiersState,

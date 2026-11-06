@@ -509,6 +509,16 @@ impl App {
     }
 
     pub(super) fn write_active_user_input(&mut self, input: &str) {
+        self.write_active_terminal_input(input, false);
+    }
+
+    /// Paste shares the typed-input completion bookkeeping, but the payload is
+    /// wrapped for bracketed-paste-aware programs when they enabled it.
+    pub(super) fn write_active_user_paste(&mut self, input: &str) {
+        self.write_active_terminal_input(input, true);
+    }
+
+    fn write_active_terminal_input(&mut self, input: &str, is_paste: bool) {
         self.invalidate_completion_popup_snapshot();
         let index = self.tab_manager.active_idx;
         let Some(tab) = self.tab_manager.tabs.get_mut(index) else {
@@ -519,15 +529,22 @@ impl App {
         }
         let terminal = tab.terminal.clone();
         let mut terminal = terminal.lock().unwrap();
+        let write = |terminal: &mut terminal::TerminalState| {
+            if is_paste {
+                terminal.write_paste(input);
+            } else {
+                terminal.write_input(input);
+            }
+        };
         if !terminal.completion_surface_safe() {
             tab.completion.pause_surface_tracking();
-            terminal.write_input(input);
+            write(&mut terminal);
             return;
         }
         tab.completion.resume_surface_tracking();
         if input == "\x04" && tab.completion.observe_empty_ctrl_d() {
             terminal.invalidate_prompt();
-            terminal.write_input(input);
+            write(&mut terminal);
             return;
         }
         let effect = apply_completion_user_input_state(
@@ -536,7 +553,7 @@ impl App {
             input,
         );
         apply_completion_prompt_effect(&mut terminal, effect);
-        terminal.write_input(input);
+        write(&mut terminal);
     }
 
     pub(super) fn submit_active_bash_line(&mut self) {

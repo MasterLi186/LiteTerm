@@ -83,6 +83,18 @@ impl App {
     }
 
     pub(super) fn handle_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        // X11：winit 的 XIM 重连回调只能由 XFilterEvent 派发，而它只对按键事件调用；
+        // 在用户按键时补一次派发，让崩溃重启后的系统输入法能被自动重新接上。
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+        {
+            if key_event.state == ElementState::Pressed {
+                if let Some(window) = &self.window {
+                    x11_ime_reattach::dispatch_pending(window);
+                }
+            }
+        }
         match &event {
             WindowEvent::HoveredFile(_) => {
                 let changed = if let Some(target) = self.active_drag_upload_target() {
@@ -544,6 +556,8 @@ impl App {
                         if terminal_owns_ime {
                             window.set_ime_allowed(true);
                         }
+                        // 输入法可能在失焦期间崩溃并重启：补一次 XIM 派发以重新接上。
+                        x11_ime_reattach::dispatch_pending(window);
                         window.request_redraw();
                     }
                 } else {
@@ -727,7 +741,7 @@ impl App {
                             .as_mut()
                             .and_then(|clipboard| clipboard.get_text().ok());
                         if let Some(text) = text {
-                            self.write_active_user_input(&text);
+                            self.write_active_user_paste(&text);
                         }
                     }
                     self.do_render();
@@ -918,7 +932,7 @@ impl App {
                                         .and_then(|clipboard| clipboard.get_text().ok());
                                     if let Some(text) = text {
                                         self.scroll_active_terminal_to_bottom();
-                                        self.write_active_user_input(&text);
+                                        self.write_active_user_paste(&text);
                                     }
                                     self.do_render();
                                     return;
@@ -1040,38 +1054,64 @@ impl App {
                 }
 
                 // Special keys
+                // 方向/编辑键带修饰键时按 xterm 约定附带参数（Ctrl+左/右 = 按单词移动）。
+                let key_modifier = xterm_modifier_parameter(shift, alt, ctrl);
+                let application_cursor = self
+                    .active_terminal()
+                    .and_then(|terminal| {
+                        terminal
+                            .lock()
+                            .ok()
+                            .map(|term| term.application_cursor_keys())
+                    })
+                    .unwrap_or(false);
                 let esc = match event.logical_key {
-                    Key::Named(NamedKey::Backspace) => Some(terminal_backspace_sequence(alt)),
-                    key if is_tab_key(&key) => Some("\t"),
-                    Key::Named(NamedKey::Escape) => Some("\x1b"),
-                    Key::Named(NamedKey::ArrowUp) => Some("\x1b[A"),
-                    Key::Named(NamedKey::ArrowDown) => Some("\x1b[B"),
-                    Key::Named(NamedKey::ArrowRight) => Some("\x1b[C"),
-                    Key::Named(NamedKey::ArrowLeft) => Some("\x1b[D"),
-                    Key::Named(NamedKey::Home) => Some("\x1b[H"),
-                    Key::Named(NamedKey::End) => Some("\x1b[F"),
-                    Key::Named(NamedKey::PageUp) => Some("\x1b[5~"),
-                    Key::Named(NamedKey::PageDown) => Some("\x1b[6~"),
-                    Key::Named(NamedKey::Delete) => Some("\x1b[3~"),
-                    Key::Named(NamedKey::Insert) => Some("\x1b[2~"),
-                    Key::Named(NamedKey::F1) => Some("\x1bOP"),
-                    Key::Named(NamedKey::F2) => Some("\x1bOQ"),
-                    Key::Named(NamedKey::F3) => Some("\x1bOR"),
-                    Key::Named(NamedKey::F4) => Some("\x1bOS"),
-                    Key::Named(NamedKey::F5) => Some("\x1b[15~"),
-                    Key::Named(NamedKey::F6) => Some("\x1b[17~"),
-                    Key::Named(NamedKey::F7) => Some("\x1b[18~"),
-                    Key::Named(NamedKey::F8) => Some("\x1b[19~"),
-                    Key::Named(NamedKey::F9) => Some("\x1b[20~"),
-                    Key::Named(NamedKey::F10) => Some("\x1b[21~"),
-                    Key::Named(NamedKey::F11) => Some("\x1b[23~"),
-                    Key::Named(NamedKey::F12) => Some("\x1b[24~"),
+                    Key::Named(NamedKey::Backspace) => {
+                        Some(terminal_backspace_sequence(alt).to_string())
+                    }
+                    key if is_tab_key(&key) => Some("\t".to_string()),
+                    Key::Named(NamedKey::Escape) => Some("\x1b".to_string()),
+                    Key::Named(NamedKey::ArrowUp) => {
+                        Some(cursor_key_sequence('A', key_modifier, application_cursor))
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        Some(cursor_key_sequence('B', key_modifier, application_cursor))
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        Some(cursor_key_sequence('C', key_modifier, application_cursor))
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        Some(cursor_key_sequence('D', key_modifier, application_cursor))
+                    }
+                    // Home/End 同样受 DECCKM 影响（应用模式为 `ESC O H/F`）。
+                    Key::Named(NamedKey::Home) => {
+                        Some(cursor_key_sequence('H', key_modifier, application_cursor))
+                    }
+                    Key::Named(NamedKey::End) => {
+                        Some(cursor_key_sequence('F', key_modifier, application_cursor))
+                    }
+                    Key::Named(NamedKey::PageUp) => Some(tilde_key_sequence(5, key_modifier)),
+                    Key::Named(NamedKey::PageDown) => Some(tilde_key_sequence(6, key_modifier)),
+                    Key::Named(NamedKey::Delete) => Some(tilde_key_sequence(3, key_modifier)),
+                    Key::Named(NamedKey::Insert) => Some(tilde_key_sequence(2, key_modifier)),
+                    Key::Named(NamedKey::F1) => Some(ss3_function_key_sequence('P', key_modifier)),
+                    Key::Named(NamedKey::F2) => Some(ss3_function_key_sequence('Q', key_modifier)),
+                    Key::Named(NamedKey::F3) => Some(ss3_function_key_sequence('R', key_modifier)),
+                    Key::Named(NamedKey::F4) => Some(ss3_function_key_sequence('S', key_modifier)),
+                    Key::Named(NamedKey::F5) => Some("\x1b[15~".to_string()),
+                    Key::Named(NamedKey::F6) => Some("\x1b[17~".to_string()),
+                    Key::Named(NamedKey::F7) => Some("\x1b[18~".to_string()),
+                    Key::Named(NamedKey::F8) => Some("\x1b[19~".to_string()),
+                    Key::Named(NamedKey::F9) => Some("\x1b[20~".to_string()),
+                    Key::Named(NamedKey::F10) => Some("\x1b[21~".to_string()),
+                    Key::Named(NamedKey::F11) => Some("\x1b[23~".to_string()),
+                    Key::Named(NamedKey::F12) => Some("\x1b[24~".to_string()),
                     _ => None,
                 };
 
                 if let Some(seq) = esc {
                     self.prepare_for_terminal_user_input();
-                    self.write_active_user_input(seq);
+                    self.write_active_user_input(&seq);
                 } else if let Some(text) = &event.text {
                     // Filter only raw text through IME echo/preedit suppression.
                     // Named control / shortcut sequences above are unchanged.

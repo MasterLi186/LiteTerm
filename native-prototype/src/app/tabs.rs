@@ -63,8 +63,11 @@ impl App {
     /// Create a new SSH tab (connects in background)
     pub(super) fn new_ssh_tab(&mut self, conn: &sidebar::SshConnection) -> String {
         self.prepare_for_active_tab_change();
-        let tab_id = self.tab_manager.new_ssh_placeholder(conn);
-        let params = crate::ssh::ConnectionParams::from(conn);
+        // 统一在这里补齐 keyring 密码，所有 UI 入口（侧栏、右键、新标签选择器、
+        // 恢复会话、密码重试）都经过本函数，避免某个入口漏读已保存的密码。
+        let conn = conn.clone().with_saved_password();
+        let tab_id = self.tab_manager.new_ssh_placeholder(&conn);
+        let params = crate::ssh::ConnectionParams::from(&conn);
         let session = self
             .tab_manager
             .tabs

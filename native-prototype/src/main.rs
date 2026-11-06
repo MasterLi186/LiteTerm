@@ -63,6 +63,7 @@ mod tunnel;
 mod tunnel_manager;
 mod window_icon;
 mod workspace_session;
+mod x11_ime_reattach;
 mod zmodem;
 
 #[cfg(test)]

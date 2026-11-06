@@ -306,13 +306,116 @@ pub(super) fn parse_load(load: &str) -> String {
     }
 }
 
+/// 解析 CPU 名称。
+///
+/// 输入是快照 `CPUINFO` 段的文本，支持两种行格式：
+///
+/// * 新版快照的带标签行：`dt: 设备树型号` / `model: 型号` /
+///   `implementer: 0x41` / `part: 0xd05`；
+/// * 旧格式的 `/proc/cpuinfo` 原始行（`model name : xxx`），保持向后兼容。
+///
+/// 优先级：设备树型号 > `/proc/cpuinfo` 型号 > ARM 核心名（CPU part 映射）。
+///
+/// 背景：ARM 板卡（如 RK3588S 的 BMC）的 `/proc/cpuinfo` 里没有 `model name` /
+/// `Hardware` / `Processor` 行，只有小写 `processor:` 和 `CPU part`，
+/// 按 x86 思路取型号就会得到空串（显示 Unknown CPU）。
 pub(super) fn parse_cpu_name(cpu_info: &str) -> String {
-    cpu_info
-        .lines()
-        .find_map(|line| line.split_once(':').map(|(_, value)| value.trim()))
-        .filter(|name| !name.is_empty())
-        .unwrap_or("Unknown CPU")
-        .to_string()
+    let mut device_tree_model: Option<String> = None;
+    let mut cpu_model: Option<String> = None;
+    let mut implementer: Option<String> = None;
+    let mut arm_part: Option<String> = None;
+
+    for line in cpu_info.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            // 无冒号的行（例如旧快照的 `invalid` 占位）不作为型号使用。
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let slot = match key.trim().to_ascii_lowercase().as_str() {
+            "dt" | "dt_model" => &mut device_tree_model,
+            "model" | "model name" | "hardware" => &mut cpu_model,
+            "processor" => {
+                // x86 的 `processor : 0` 是编号，不能当成型号。
+                if value.parse::<u32>().is_ok() {
+                    continue;
+                }
+                &mut cpu_model
+            }
+            "implementer" | "cpu implementer" => &mut implementer,
+            "part" | "cpu part" => &mut arm_part,
+            // 快照里还有 `CPU architecture: 8` 之类的字段，不能当成型号兜底。
+            _ => continue,
+        };
+        slot.get_or_insert_with(|| value.to_string());
+    }
+
+    device_tree_model
+        .or(cpu_model)
+        .or_else(|| {
+            let implementer = implementer.as_deref()?;
+            let part = arm_part.as_deref()?;
+            arm_core_name(implementer, part).map(str::to_string)
+        })
+        .unwrap_or_else(|| "Unknown CPU".to_string())
+}
+
+/// 把 `/proc/cpuinfo` 的 `CPU implementer` + `CPU part` 映射成核心名。
+///
+/// 只处理 ARM（implementer `0x41`）；其它厂商或未知 part 返回 `None`。
+fn arm_core_name(implementer: &str, part: &str) -> Option<&'static str> {
+    let implementer = parse_hex(implementer)?;
+    if implementer != 0x41 {
+        return None;
+    }
+    let name = match parse_hex(part)? {
+        0xd03 => "ARM Cortex-A53",
+        0xd04 => "ARM Cortex-A35",
+        0xd05 => "ARM Cortex-A55",
+        0xd07 => "ARM Cortex-A57",
+        0xd08 => "ARM Cortex-A72",
+        0xd09 => "ARM Cortex-A73",
+        0xd0a => "ARM Cortex-A75",
+        0xd0b => "ARM Cortex-A76",
+        0xd0c => "ARM Neoverse-N1",
+        0xd0d => "ARM Cortex-A77",
+        0xd0e => "ARM Cortex-A76AE",
+        0xd13 => "ARM Cortex-R52",
+        0xd20 => "ARM Cortex-M23",
+        0xd21 => "ARM Cortex-M33",
+        0xd22 => "ARM Cortex-M55",
+        0xd40 => "ARM Neoverse-V1",
+        0xd41 => "ARM Cortex-A78",
+        0xd42 => "ARM Cortex-A78AE",
+        0xd44 => "ARM Cortex-X1",
+        0xd46 => "ARM Cortex-A510",
+        0xd47 => "ARM Cortex-A710",
+        0xd48 => "ARM Cortex-X2",
+        0xd49 => "ARM Neoverse-N2",
+        0xd4d => "ARM Cortex-A715",
+        0xd4e => "ARM Cortex-X3",
+        0xd4f => "ARM Neoverse-V2",
+        0xd80 => "ARM Cortex-A520",
+        0xd81 => "ARM Cortex-A720",
+        0xd82 => "ARM Cortex-X4",
+        0xd84 => "ARM Neoverse-V3",
+        0xd85 => "ARM Cortex-X925",
+        0xd87 => "ARM Cortex-A725",
+        _ => return None,
+    };
+    Some(name)
+}
+
+/// 解析 `0x…` / 十进制形式的十六进制标识（`cpuinfo` 里多为 `0x41`）。
+fn parse_hex(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let digits = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    u32::from_str_radix(digits, 16).ok()
 }
 
 pub(super) fn parse_processes(processes: &str) -> Vec<ProcessInfo> {

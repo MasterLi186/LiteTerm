@@ -147,7 +147,7 @@ impl App {
                         .as_mut()
                         .and_then(|clipboard| clipboard.get_text().ok());
                     if let Some(text) = text {
-                        self.write_active_user_input(&text);
+                        self.write_active_user_paste(&text);
                     }
                 }
                 "select_all" => {

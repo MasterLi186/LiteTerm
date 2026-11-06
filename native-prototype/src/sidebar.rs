@@ -552,7 +552,9 @@ fn render_disk_row_content(
             egui::UiBuilder::new()
                 .id_salt("disk_mount")
                 .max_rect(rects.mount)
-                .layout(egui::Layout::top_down_justified(egui::Align::Min)),
+                // 不能用 top_down_justified：它会让 Label 走两端对齐，
+                // 长挂载路径换行后字符被均摊拉开（看起来像字体变形）。
+                .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         mount_ui.set_clip_rect(row_ui.clip_rect().intersect(rects.mount));
         mount_ui.add(disk_mount_label(mount_text, colors.mount));
@@ -860,6 +862,33 @@ impl std::fmt::Debug for SshConnection {
             .field("group", &self.group)
             .field("group_color", &self.group_color)
             .finish_non_exhaustive()
+    }
+}
+
+impl SshConnection {
+    /// 密码/keyring 认证且调用方没有现成密码时，从凭据库补齐已保存的密码。
+    ///
+    /// 所有创建 SSH 标签的 UI 入口都经过这里，避免某条入口（例如新标签选择器）
+    /// 忘记读取 keyring，导致每次连接都重新弹出密码框。
+    pub(crate) fn with_saved_password(mut self) -> Self {
+        if self.password.is_empty() && (self.auth == "keyring" || self.auth == "password") {
+            let entry = crate::keyring::KeyringEntry::new(&self.user, &self.host, self.port);
+            match entry.retrieve_password() {
+                Ok(Some(password)) => {
+                    self.password = password;
+                    self.auth = "password".to_string();
+                }
+                Ok(None) => {}
+                Err(error) => log::warn!(
+                    "[KEYRING] 读取 SSH 密码失败 {}@{}:{}: {}",
+                    self.user,
+                    self.host,
+                    self.port,
+                    error
+                ),
+            }
+        }
+        self
     }
 }
 

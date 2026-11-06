@@ -248,6 +248,13 @@ impl TerminalState {
         self.term.as_ref()
     }
 
+    /// 是否处于应用光标键模式（DECCKM）：方向键需使用 SS3 形式 `ESC O x`。
+    pub fn application_cursor_keys(&self) -> bool {
+        self.term
+            .as_ref()
+            .is_some_and(|term| term.mode().contains(TermMode::APP_CURSOR))
+    }
+
     pub fn term_mut(&mut self) -> Option<&mut Term<Listener>> {
         self.term.as_mut()
     }

@@ -6,6 +6,12 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
             return;
         }
+        // X11：系统输入法可能在后台崩溃/重启。按键被 XIM 吞掉时本程序收不到
+        // KeyboardInput，所以这里也要周期性检查一次（内部 250ms 节流），
+        // 保证输入法回来时不需要等用户按键就能自动接上。
+        if let Some(window) = &self.window {
+            x11_ime_reattach::dispatch_pending(window);
+        }
         if let Some(batch) = self.drag_upload.take_batch() {
             self.dispatch_drag_upload(batch);
             if let Some(window) = &self.window {
@@ -24,16 +30,23 @@ impl ApplicationHandler<UserEvent> for App {
             .recording_playbacks
             .values()
             .any(recording::PlaybackState::is_playing);
+        let mut next_wake: Option<Instant> = None;
         if playback_active || selection_auto_scroll_active {
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                now + Duration::from_millis(if playback_active { 16 } else { 32 }),
-            ));
-        } else {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+            next_wake = Some(now + Duration::from_millis(if playback_active { 16 } else { 32 }));
         }
+        if x11_ime_reattach::needs_attention() {
+            // 输入法尚未接上：短间隔醒来重试，避免按键被 XIM 吞掉后没人触发恢复。
+            // 取较早的 deadline，不能把动画/滚动的下一次唤醒推迟到 300ms 之后。
+            let ime_wake = now + Duration::from_millis(300);
+            next_wake = Some(next_wake.map_or(ime_wake, |current| current.min(ime_wake)));
+        }
+        event_loop.set_control_flow(match next_wake {
+            Some(deadline) => winit::event_loop::ControlFlow::WaitUntil(deadline),
+            None => winit::event_loop::ControlFlow::Wait,
+        });
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
