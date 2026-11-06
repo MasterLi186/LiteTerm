@@ -173,6 +173,7 @@ struct XWindowAttributes {
     screen: *mut c_void,
 }
 
+#[cfg(target_os = "linux")]
 impl XWindowAttributes {
     fn empty() -> Self {
         // SAFETY: 全零是合法的 POD 初值；Xlib 会完整填充。
