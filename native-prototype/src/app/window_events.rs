@@ -432,13 +432,15 @@ impl App {
                         // 键盘经 should_pass_keyboard_to_terminal 判定
                         let in_terminal =
                             self.is_in_terminal(self.mouse_position.0, self.mouse_position.1);
+                        // 拖拽选区期间滚轮要能继续扩展选区，即使指针已移出终端区域。
+                        let selection_wheel_active = self.local_selection_pane_id().is_some();
                         // 检查 egui 是否有文本框获焦（命令输入栏/弹窗输入框）
                         let egui_wants_keyboard = self.egui_ctx.wants_keyboard_input();
                         let pass_through = if matches!(event, WindowEvent::MouseWheel { .. }) {
                             should_pass_pointer_to_terminal(
                                 settings_panel_visible,
                                 has_blocking_dialog,
-                                in_terminal,
+                                in_terminal || selection_wheel_active,
                             )
                         } else if matches!(event, WindowEvent::MouseInput { .. }) {
                             // helper 门控 modal（in_terminal=true 仅取 modal 语义）；
@@ -718,6 +720,15 @@ impl App {
                             self.send_mouse_event_to_pane(&pane_id, 0, cell.0, cell.1, true);
                             return;
                         }
+                        // Shift+左键：已有选区时从原锚点扩展，而不是重新开始
+                        // 一个单格选区（终端通用交互）。Alt 表示要新建块选择，
+                        // 因此 Shift+Alt 不在此扩展。
+                        if shift && !block && self.pane_has_selection(&pane_id) {
+                            self.reset_click_sequence();
+                            self.update_selection_for_pane(&pane_id, cell);
+                            self.do_render();
+                            return;
+                        }
 
                         let now = Instant::now();
                         let elapsed = now.duration_since(self.last_click_time).as_millis();
@@ -773,7 +784,11 @@ impl App {
             WindowEvent::MouseWheel { delta, .. } => {
                 self.pending_terminal_link = None;
                 let hovered_pane_id = self.pane_id_at(self.mouse_position.0, self.mouse_position.1);
-                let in_term = hovered_pane_id.is_some();
+                // 拖拽选区期间滚轮锁定在选区所在 pane（指针移出该区域也继续扩展），
+                // 这是有意压过“滚轮跟随指针所在 pane”的默认行为。
+                let selection_pane_id = self.local_selection_pane_id();
+                let pane_id = selection_pane_id.or(hovered_pane_id);
+                let in_term = pane_id.is_some();
                 if !should_pass_pointer_to_terminal(
                     settings_panel_visible,
                     has_blocking_dialog,
@@ -783,7 +798,7 @@ impl App {
                     self.terminal_wheel_pane_id = None;
                     return;
                 }
-                let pane_id = hovered_pane_id.expect("terminal hit must identify a pane");
+                let pane_id = pane_id.expect("selection or hit must identify a pane");
                 if self.terminal_wheel_pane_id.as_ref() != Some(&pane_id) {
                     self.terminal_wheel_accumulator.reset();
                     self.terminal_wheel_pane_id = Some(pane_id.clone());

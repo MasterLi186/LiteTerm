@@ -43,6 +43,7 @@ impl TerminalState {
         }
     }
 
+    /// 是否已有选区锚点。选区在鼠标释放后仍保留，Shift+点击据此继续扩展。
     pub fn has_selection_anchor(&self) -> bool {
         self.term
             .as_ref()

@@ -106,11 +106,15 @@ impl App {
         let rect = logical_to_physical_pane_rect(rect, self.pixels_per_point());
         let (cell_width, cell_height) = renderer.cell_size();
         let (cols, rows) = renderer.calculate_grid_size_for_rect(rect);
+        if cols == 0 || rows == 0 {
+            return None;
+        }
         let col = ((x as f32 - rect.x).max(0.0) / cell_width).floor() as usize;
         let row = ((y as f32 - rect.y).max(0.0) / cell_height).floor() as usize;
         Some((
             col.min(usize::from(cols.saturating_sub(1))),
-            row.min(usize::from(rows)),
+            // 指针落到底部之外时要夹到最后一个可见行；rows 本身是越界索引。
+            row.min(usize::from(rows.saturating_sub(1))),
         ))
     }
 

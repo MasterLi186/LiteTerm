@@ -12,6 +12,30 @@ impl App {
         self.pane_id_at(x, y).is_some()
     }
 
+    /// 该 pane 当前是否已有选区锚点（用于 Shift+左键扩展选区）。
+    ///
+    /// 选区在鼠标释放后仍保留，因此 Shift+点击会从“上一次选择”的锚点继续扩展。
+    pub(super) fn pane_has_selection(&self, pane_id: &str) -> bool {
+        self.terminal_for_pane(pane_id).is_some_and(|terminal| {
+            terminal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .has_selection_anchor()
+        })
+    }
+
+    /// 正在拖拽本地选区时返回选区的 pane；pane 已不存在则返回 `None`。
+    pub(super) fn local_selection_pane_id(&self) -> Option<String> {
+        if !matches!(
+            self.left_mouse_gesture,
+            Some(LeftMouseGesture::LocalSelection)
+        ) {
+            return None;
+        }
+        let pane_id = self.left_mouse_pane_id.as_ref()?;
+        self.terminal_for_pane(pane_id).map(|_| pane_id.clone())
+    }
+
     pub(super) fn get_selection_text(&self) -> String {
         let terminal = match self.active_terminal() {
             Some(t) => t,
