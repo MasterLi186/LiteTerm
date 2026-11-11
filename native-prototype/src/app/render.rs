@@ -188,10 +188,7 @@ impl App {
                     pane_rect,
                 ))
             });
-        let split_actions_enabled = self
-            .tab_manager
-            .active()
-            .is_some_and(|tab| matches!(tab.tab_type, TabType::Local { .. } | TabType::Ssh { .. }));
+        let split_actions_enabled = self.tab_manager.active().is_some_and(Tab::supports_split);
         let (horizontal_split_label, vertical_split_label) =
             terminal_split_menu_labels(split_actions_enabled);
         let active_recording = self

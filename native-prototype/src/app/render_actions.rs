@@ -263,6 +263,9 @@ impl App {
                 "split_v" => {
                     self.split_active_terminal(SplitDirection::Vertical);
                 }
+                "toggle_maximize" => {
+                    self.toggle_maximized_active_pane();
+                }
                 "close_pane" => {
                     self.close_active_terminal_pane();
                 }

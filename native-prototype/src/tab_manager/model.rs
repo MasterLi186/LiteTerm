@@ -150,6 +150,8 @@ pub struct TerminalLayout {
     tree: PaneTree,
     active_pane_id: PaneId,
     panes: HashMap<PaneId, TerminalPane>,
+    /// 临时最大化的 pane；布局仍保留在 `tree` 中，取消后恢复。
+    maximized_pane_id: Option<PaneId>,
 }
 
 pub enum CloseLayoutPaneResult {
@@ -170,6 +172,7 @@ impl TerminalLayout {
             tree: PaneTree::new(pane_id.clone()),
             active_pane_id: pane_id,
             panes,
+            maximized_pane_id: None,
         };
         layout.debug_assert_invariants();
         layout
@@ -179,8 +182,50 @@ impl TerminalLayout {
         &self.tree
     }
 
+    /// 返回当前**可见**布局（最大化时只含一个 pane）。
+    ///
+    /// 非渲染消费者（标签列表、会话保存）应使用 `panes()`/`tree()`，不要依赖这里
+    /// 在最大化期间的完整性。
     pub fn layout(&self, rect: Rect) -> LayoutSnapshot {
+        if let Some(pane_id) = self.maximized_pane_id.as_ref() {
+            if self.panes.contains_key(pane_id) {
+                // 最大化期间只暴露这一个 pane：渲染与命中测试都只看它，
+                // 其余 pane 的终端与读线程保持运行，取消后恢复原布局。
+                return LayoutSnapshot {
+                    panes: vec![PaneViewport {
+                        pane_id: pane_id.clone(),
+                        rect,
+                    }],
+                    dividers: Vec::new(),
+                };
+            }
+        }
         self.tree.layout(rect)
+    }
+
+    /// 是否处于临时最大化状态。
+    pub fn is_maximized(&self) -> bool {
+        self.maximized_pane_id.is_some()
+    }
+
+    /// 退出最大化；返回是否真的改变了状态。
+    pub fn clear_maximized_pane(&mut self) -> bool {
+        self.maximized_pane_id.take().is_some()
+    }
+
+    /// 切换当前活动 pane 的最大化；返回切换后是否处于最大化。
+    pub fn toggle_maximized_pane(&mut self) -> bool {
+        if self.panes.len() <= 1 {
+            self.maximized_pane_id = None;
+            return false;
+        }
+        if self.maximized_pane_id.as_deref() == Some(self.active_pane_id.as_str()) {
+            self.maximized_pane_id = None;
+            false
+        } else {
+            self.maximized_pane_id = Some(self.active_pane_id.clone());
+            true
+        }
     }
 
     pub fn active_pane_id(&self) -> &str {
@@ -229,6 +274,8 @@ impl TerminalLayout {
         self.active_pane_id.clone_from(&pane.id);
         self.panes.insert(pane.id.clone(), pane);
         self.tree = next_tree;
+        // 分屏后新 pane 成为活动 pane；先退出最大化，让新布局可见。
+        self.maximized_pane_id = None;
         self.debug_assert_invariants();
         Ok(())
     }
@@ -251,6 +298,11 @@ impl TerminalLayout {
                 }
                 self.tree = next_tree;
                 self.active_pane_id.clone_from(&suggested_active);
+                // 被关闭的 pane 若正在最大化，退出最大化并恢复分屏布局；
+                // 只剩一个 pane 时最大化也失去意义。
+                if self.maximized_pane_id.as_deref() == Some(pane_id) || self.panes.len() <= 1 {
+                    self.maximized_pane_id = None;
+                }
                 self.debug_assert_invariants();
                 CloseLayoutPaneResult::Closed {
                     removed,
@@ -276,6 +328,9 @@ impl TerminalLayout {
                 .iter()
                 .all(|(pane_id, pane)| pane_id == &pane.id && leaf_set.contains(pane_id.as_str()))
             && self.panes.contains_key(&self.active_pane_id)
+            && self.maximized_pane_id.as_ref().map_or(true, |pane_id| {
+                self.panes.contains_key(pane_id) && self.panes.len() > 1
+            })
     }
 
     fn debug_assert_invariants(&self) {
@@ -321,6 +376,11 @@ impl DerefMut for Tab {
 }
 
 impl Tab {
+    /// 是否支持分屏（串口、录屏回放与非终端标签不支持）。
+    pub fn supports_split(&self) -> bool {
+        matches!(self.tab_type, TabType::Local { .. } | TabType::Ssh { .. })
+    }
+
     pub fn active_pane(&self) -> &TerminalPane {
         self.layout.active()
     }

@@ -285,6 +285,17 @@ impl App {
         if self.show_terminal_menu {
             let pos = self.terminal_menu_pos;
             let mut close = false;
+            let maximize_enabled = self
+                .tab_manager
+                .active()
+                .is_some_and(|tab| tab.supports_split() && tab.panes().len() > 1);
+            let maximized = self
+                .tab_manager
+                .active()
+                .is_some_and(|tab| tab.layout.is_maximized());
+            // 菜单打开时可直接按 O/E 选择分屏方向，标签里给出提示。
+            let horizontal_menu_label = format!("{horizontal_split_label} (H)");
+            let vertical_menu_label = format!("{vertical_split_label} (V)");
             let menu_response = egui::Window::new("terminal_ctx_menu")
                 .title_bar(false)
                 .resizable(false)
@@ -410,12 +421,24 @@ impl App {
                         close = true;
                     }
                     ui.separator();
-                    if item(ui, horizontal_split_label, split_actions_enabled) {
+                    if item(ui, &horizontal_menu_label, split_actions_enabled) {
                         term_menu_action = Some("split_h");
                         close = true;
                     }
-                    if item(ui, vertical_split_label, split_actions_enabled) {
+                    if item(ui, &vertical_menu_label, split_actions_enabled) {
                         term_menu_action = Some("split_v");
+                        close = true;
+                    }
+                    if item(
+                        ui,
+                        if maximized {
+                            "还原面板"
+                        } else {
+                            "最大化面板"
+                        },
+                        maximize_enabled,
+                    ) {
+                        term_menu_action = Some("toggle_maximize");
                         close = true;
                     }
                     if item(ui, "关闭面板", true) {

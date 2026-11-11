@@ -2,7 +2,9 @@ use crate::bash_integration::is_bash_path;
 use crate::monitor::MonitorKey;
 use crate::sidebar::SshConnection;
 use crate::smart_completion::{CompletionSessionKey, CompletionState};
-use crate::split::{ClosePaneResult, LayoutSnapshot, PaneId, PaneTree, SplitDirection, SplitId};
+use crate::split::{
+    ClosePaneResult, LayoutSnapshot, PaneId, PaneTree, PaneViewport, SplitDirection, SplitId,
+};
 use crate::terminal::TerminalState;
 use egui::Rect;
 use std::collections::{HashMap, HashSet};

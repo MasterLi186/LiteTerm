@@ -108,6 +108,31 @@ impl App {
         self.focus_pane(&target)
     }
 
+    /// 当前标签是否支持分屏（本地/SSH 终端）。
+    pub(super) fn active_tab_supports_split(&self) -> bool {
+        self.tab_manager.active().is_some_and(Tab::supports_split)
+    }
+
+    /// 切换当前活动 pane 的临时最大化（与 Terminator 的 Ctrl+Shift+X 一致）。
+    ///
+    /// 只有多 pane 的终端标签才生效；最大化状态保存在该标签的布局中，
+    /// 切换标签后各自保留。
+    pub(super) fn toggle_maximized_active_pane(&mut self) -> bool {
+        let index = self.tab_manager.active_idx;
+        let Some(tab) = self.tab_manager.tabs.get_mut(index) else {
+            return false;
+        };
+        if !tab.supports_split() || tab.panes().len() <= 1 {
+            return false;
+        }
+        tab.layout.toggle_maximized_pane();
+        self.refresh_pane_layout();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        true
+    }
+
     pub(super) fn terminal_for_pane(&self, pane_id: &str) -> Option<Arc<Mutex<TerminalState>>> {
         self.tab_manager
             .active()
@@ -153,6 +178,17 @@ impl App {
         self.clear_terminal_ime_composition();
         self.clear_selection();
         self.reset_click_sequence();
-        self.tab_manager.set_active_pane(&tab_id, pane_id)
+        // 焦点切到别的 pane 时退出最大化，避免输入落进隐藏 pane。
+        let mut cleared_maximize = false;
+        if let Some(index) = self.tab_manager.find_by_id(&tab_id) {
+            if let Some(tab) = self.tab_manager.tabs.get_mut(index) {
+                cleared_maximize = tab.layout.clear_maximized_pane();
+            }
+        }
+        let focused = self.tab_manager.set_active_pane(&tab_id, pane_id);
+        if cleared_maximize {
+            self.refresh_pane_layout();
+        }
+        focused
     }
 }

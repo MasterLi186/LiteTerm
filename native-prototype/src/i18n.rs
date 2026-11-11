@@ -45,6 +45,8 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "取消" => "Cancel",
         "确认关闭" => "Confirm close",
         "仍然关闭" => "Close anyway",
+        "最大化面板" => "Maximize pane",
+        "还原面板" => "Restore pane",
         "标签页「{label}」中仍有程序正在运行：{programs}。关闭后会终止这些程序。" => {
             "\"{label}\" still has running programs: {programs}. Closing will terminate them."
         }
@@ -305,6 +307,10 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "语言" => "Language",
         "水平分屏" => "Split horizontally",
         "垂直分屏" => "Split vertically",
+        "水平分屏 (H)" => "Split horizontally (H)",
+        "垂直分屏 (V)" => "Split vertically (V)",
+        "水平分屏（串口不支持） (H)" => "Split horizontally (serial unsupported) (H)",
+        "垂直分屏（串口不支持） (V)" => "Split vertically (serial unsupported) (V)",
         "清屏" => "Clear terminal",
         "重连失败" => "Reconnect failed",
         "设置已保存并应用" => "Settings saved and applied",

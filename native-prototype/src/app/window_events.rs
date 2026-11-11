@@ -896,6 +896,45 @@ impl App {
                 if keyboard_route != Some(KeyboardInputRoute::App) {
                     return;
                 }
+                // 右键菜单打开时支持键盘选择：H 水平分屏、V 垂直分屏（兼容
+                // Terminator 的 O/E 加速键），Esc 关闭菜单。
+                if self.show_terminal_menu {
+                    let close_menu = matches!(&event.logical_key, Key::Named(NamedKey::Escape));
+                    // 只接受无 Ctrl/Alt/Super 的普通按键，避免误触其它组合键。
+                    let menu_modifiers = self.modifiers.state();
+                    let plain_key = !menu_modifiers.control_key()
+                        && !menu_modifiers.alt_key()
+                        && !menu_modifiers.super_key();
+                    let direction = if plain_key {
+                        match &event.logical_key {
+                            Key::Character(text)
+                                if text.eq_ignore_ascii_case("h")
+                                    || text.eq_ignore_ascii_case("o") =>
+                            {
+                                Some(SplitDirection::Horizontal)
+                            }
+                            Key::Character(text)
+                                if text.eq_ignore_ascii_case("v")
+                                    || text.eq_ignore_ascii_case("e") =>
+                            {
+                                Some(SplitDirection::Vertical)
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if close_menu || direction.is_some() {
+                        self.show_terminal_menu = false;
+                        if let Some(direction) = direction {
+                            if self.active_tab_supports_split() {
+                                self.split_active_terminal(direction);
+                            }
+                        }
+                        self.do_render();
+                        return;
+                    }
+                }
                 // NOTE: Do NOT scroll-to-bottom here. Search open/nav/typing and
                 // shortcuts must not yank the viewport. Only terminal-directed
                 // keyboard input (below the pass gate) scrolls to bottom.
@@ -905,6 +944,37 @@ impl App {
                 let alt = self.modifiers.state().alt_key();
                 let egui_wants_keyboard = self.egui_ctx.wants_keyboard_input();
                 let search_owns = self.search_field_owns_focus;
+
+                // Ctrl+Shift + X/O/E：最大化、水平分屏、垂直分屏（Terminator 默认键）。
+                if ctrl && shift && !alt && !has_dialog && !egui_wants_keyboard && !search_owns {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::KeyX) => {
+                            // 菜单打开时也走这里；先收起菜单避免残留在旧位置。
+                            self.show_terminal_menu = false;
+                            if self.toggle_maximized_active_pane() {
+                                self.do_render();
+                                return;
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::KeyO) => {
+                            self.show_terminal_menu = false;
+                            if self.active_tab_supports_split() {
+                                self.split_active_terminal(SplitDirection::Horizontal);
+                                self.do_render();
+                                return;
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::KeyE) => {
+                            self.show_terminal_menu = false;
+                            if self.active_tab_supports_split() {
+                                self.split_active_terminal(SplitDirection::Vertical);
+                                self.do_render();
+                                return;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
 
                 // Ctrl+Shift / Ctrl+Alt + 方向键：切换分屏焦点。只有该方向确实存在
                 // 邻居时才拦截，否则保留原有按键行为。GNOME 等桌面会用
