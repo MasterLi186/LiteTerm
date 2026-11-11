@@ -877,6 +877,22 @@ impl App {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
+                // 关闭确认框打开时只处理 Esc/Enter，其余按键不进入终端。
+                // 放在路由判断之前，避免模态/IME 抢走键盘时按键失效。
+                if self.close_tab_confirmation.is_some() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.cancel_pending_tab_close();
+                            self.do_render();
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            self.confirm_pending_tab_close();
+                            self.do_render();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 if keyboard_route != Some(KeyboardInputRoute::App) {
                     return;
                 }
@@ -889,6 +905,25 @@ impl App {
                 let alt = self.modifiers.state().alt_key();
                 let egui_wants_keyboard = self.egui_ctx.wants_keyboard_input();
                 let search_owns = self.search_field_owns_focus;
+
+                // Ctrl+Shift / Ctrl+Alt + 方向键：切换分屏焦点。只有该方向确实存在
+                // 邻居时才拦截，否则保留原有按键行为。GNOME 等桌面会用
+                // Ctrl+Alt+方向键切换工作区，因此以 Ctrl+Shift 为主。
+                if ctrl && (alt || shift) && !has_dialog && !egui_wants_keyboard && !search_owns {
+                    let direction = match &event.logical_key {
+                        Key::Named(NamedKey::ArrowLeft) => Some(PaneFocusDirection::Left),
+                        Key::Named(NamedKey::ArrowRight) => Some(PaneFocusDirection::Right),
+                        Key::Named(NamedKey::ArrowUp) => Some(PaneFocusDirection::Up),
+                        Key::Named(NamedKey::ArrowDown) => Some(PaneFocusDirection::Down),
+                        _ => None,
+                    };
+                    if let Some(direction) = direction {
+                        if self.focus_pane_in_direction(direction) {
+                            self.do_render();
+                            return;
+                        }
+                    }
+                }
 
                 // Egui normally consumes these while TextEdit is focused. This fallback
                 // covers the frame after clicking a search-bar button, without PTY input.
@@ -932,7 +967,7 @@ impl App {
                                 }
                                 shortcuts::ShortcutAction::CloseTab => {
                                     let idx = self.tab_manager.active_idx;
-                                    self.close_tab(idx);
+                                    self.request_close_tab(idx);
                                     self.do_render();
                                     return;
                                 }

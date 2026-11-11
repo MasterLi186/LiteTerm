@@ -471,6 +471,19 @@ impl App {
 
     pub(super) fn close_active_terminal_pane(&mut self) {
         self.clear_terminal_ime_composition();
+        // 单 pane 标签页的“关闭面板”等价于关闭标签页，先走确认流程。
+        let closes_whole_tab = self
+            .tab_manager
+            .active()
+            .is_some_and(|tab| tab.tab_type.is_terminal() && tab.panes().count() == 1);
+        if closes_whole_tab {
+            let index = self.tab_manager.active_idx;
+            let programs = self.tab_foreground_programs(index);
+            if !programs.is_empty() {
+                self.request_close_tab_with_programs(index, programs);
+                return;
+            }
+        }
         if let Some(pane_id) = self
             .tab_manager
             .active()
@@ -494,6 +507,151 @@ impl App {
                 self.left_mouse_pane_id = None;
                 self.clear_selection();
                 self.refresh_pane_layout();
+            }
+        }
+    }
+
+    /// 收集标签页内所有前台子程序名（去重）。
+    fn tab_foreground_programs(&self, index: usize) -> Vec<String> {
+        let Some(tab) = self.tab_manager.tabs.get(index) else {
+            return Vec::new();
+        };
+        if !tab.tab_type.is_terminal() {
+            return Vec::new();
+        }
+        let mut programs: Vec<String> = Vec::new();
+        for pane in tab.panes() {
+            let terminal = pane
+                .terminal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(name) = terminal.foreground_program_name() {
+                if !programs.contains(&name) {
+                    programs.push(name);
+                }
+            }
+        }
+        programs
+    }
+
+    /// 用户主动关闭单个标签页；有前台程序时先弹确认框。
+    pub(super) fn request_close_tab(&mut self, index: usize) {
+        let programs = self.tab_foreground_programs(index);
+        self.request_close_tab_with_programs(index, programs);
+    }
+
+    /// 使用调用方已探测到的前台程序，避免同一帧内重复加锁读取 `/proc`。
+    fn request_close_tab_with_programs(&mut self, index: usize, programs: Vec<String>) {
+        let Some(tab) = self.tab_manager.tabs.get(index) else {
+            return;
+        };
+        let tab_id = tab.id.clone();
+        let label = tab.label.clone();
+        if programs.is_empty() {
+            self.close_tab(index);
+            return;
+        }
+        let separator = if crate::i18n::is_english() {
+            ", "
+        } else {
+            "、"
+        };
+        let message = crate::i18n::tr(
+            "标签页「{label}」中仍有程序正在运行：{programs}。关闭后会终止这些程序。",
+        )
+        .replace("{programs}", &programs.join(separator))
+        .replace("{label}", &label);
+        self.close_tab_confirmation = Some(CloseTabConfirmation {
+            pending: PendingTabClose::Tab(tab_id),
+            message,
+        });
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// 用户主动“关闭其他”标签页；有前台程序时先弹确认框。
+    pub(super) fn request_close_other_tabs(&mut self, keep_index: usize) {
+        let Some(keep) = self.tab_manager.tabs.get(keep_index) else {
+            return;
+        };
+        let keep_id = keep.id.clone();
+        let english = crate::i18n::is_english();
+        let program_separator = if english { ", " } else { "、" };
+        let busy: Vec<String> = self
+            .tab_manager
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != keep_index)
+            .filter_map(|(index, tab)| {
+                let programs = self.tab_foreground_programs(index);
+                if programs.is_empty() {
+                    return None;
+                }
+                let programs = programs.join(program_separator);
+                Some(if english {
+                    format!("{} ({programs})", tab.label)
+                } else {
+                    format!("{}（{programs}）", tab.label)
+                })
+            })
+            .collect();
+        if busy.is_empty() {
+            self.close_other_tabs(keep_index);
+            return;
+        }
+        let tab_separator = if english { "; " } else { "；" };
+        let message =
+            crate::i18n::tr("以下标签页中仍有程序正在运行：{tabs}。关闭后会终止这些程序。")
+                .replace("{tabs}", &busy.join(tab_separator));
+        self.close_tab_confirmation = Some(CloseTabConfirmation {
+            pending: PendingTabClose::OtherTabs(keep_id),
+            message,
+        });
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// 确认关闭（对话框“仍然关闭”）。
+    pub(super) fn confirm_pending_tab_close(&mut self) {
+        let Some(pending) = self.close_tab_confirmation.take() else {
+            return;
+        };
+        match pending.pending {
+            PendingTabClose::Tab(tab_id) => {
+                if let Some(index) = self
+                    .tab_manager
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == tab_id)
+                {
+                    self.close_tab(index);
+                }
+            }
+            PendingTabClose::OtherTabs(keep_id) => {
+                if let Some(index) = self
+                    .tab_manager
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == keep_id)
+                {
+                    self.close_other_tabs(index);
+                }
+            }
+        }
+        // 目标标签已不存在时也要重绘一帧，让模态及时消失。
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// 取消关闭。
+    pub(super) fn cancel_pending_tab_close(&mut self) {
+        if self.close_tab_confirmation.take().is_some() {
+            if let Some(window) = &self.window {
+                window.request_redraw();
             }
         }
     }

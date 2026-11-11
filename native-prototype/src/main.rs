@@ -78,7 +78,7 @@ use app_zmodem::*;
 use renderer::{GpuState, PaneRenderRect, Renderer};
 use sidebar::Sidebar;
 use smart_completion::{AdbHistoryLoadRequest, CompletionSessionKey, HistoryLoadRequest};
-use split::{LayoutSnapshot, PaneId, SplitDirection, SplitId};
+use split::{LayoutSnapshot, PaneFocusDirection, PaneId, SplitDirection, SplitId};
 use tab_manager::{Tab, TabManager, TabType};
 use terminal::TerminalState;
 

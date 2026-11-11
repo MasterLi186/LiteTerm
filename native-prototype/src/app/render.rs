@@ -349,6 +349,7 @@ impl App {
 
             self.render_connection_context_menu(ctx);
             self.render_ssh_password_prompt(ctx);
+            self.render_close_tab_confirmation(ctx);
             if let Some((index, pane_rect, error)) = active_serial_failure.as_ref() {
                 if self.render_serial_failure_card(ctx, *pane_rect, error) {
                     retry_failed_serial = Some(*index);

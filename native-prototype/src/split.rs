@@ -15,6 +15,15 @@ pub enum SplitDirection {
     Vertical,
 }
 
+/// 分屏焦点移动方向（Ctrl+Shift / Ctrl+Alt + 方向键）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneFocusDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaneNode {
     Leaf {
@@ -56,6 +65,61 @@ impl LayoutSnapshot {
 
     pub fn pane(&self, pane_id: &str) -> Option<&PaneViewport> {
         self.panes.iter().find(|pane| pane.pane_id == pane_id)
+    }
+
+    /// 从 `pane_id` 出发，在指定方向找最近的邻居 pane。
+    ///
+    /// 先要求候选 pane 确实位于该方向（允许边缘贴合），且在与方向垂直的轴上
+    /// 有重叠；距离优先取边缘间距，其次取中心线偏差。
+    pub fn neighbor(&self, pane_id: &str, direction: PaneFocusDirection) -> Option<&PaneViewport> {
+        let current = self.pane(pane_id)?.rect;
+        let mut best: Option<(f32, f32, &PaneViewport)> = None;
+        for pane in &self.panes {
+            if pane.pane_id == pane_id {
+                continue;
+            }
+            let rect = pane.rect;
+            let (gap, overlaps) = match direction {
+                PaneFocusDirection::Left => (
+                    current.left() - rect.right(),
+                    rect.top() < current.bottom() && rect.bottom() > current.top(),
+                ),
+                PaneFocusDirection::Right => (
+                    rect.left() - current.right(),
+                    rect.top() < current.bottom() && rect.bottom() > current.top(),
+                ),
+                PaneFocusDirection::Up => (
+                    current.top() - rect.bottom(),
+                    rect.left() < current.right() && rect.right() > current.left(),
+                ),
+                PaneFocusDirection::Down => (
+                    rect.top() - current.bottom(),
+                    rect.left() < current.right() && rect.right() > current.left(),
+                ),
+            };
+            if gap < -0.5 || !overlaps {
+                continue;
+            }
+            let center_delta = match direction {
+                PaneFocusDirection::Left | PaneFocusDirection::Right => {
+                    (rect.center().y - current.center().y).abs()
+                }
+                PaneFocusDirection::Up | PaneFocusDirection::Down => {
+                    (rect.center().x - current.center().x).abs()
+                }
+            };
+            let better = match best {
+                None => true,
+                Some((best_gap, best_delta, _)) => {
+                    gap < best_gap - 0.5
+                        || ((gap - best_gap).abs() <= 0.5 && center_delta < best_delta)
+                }
+            };
+            if better {
+                best = Some((gap, center_delta, pane));
+            }
+        }
+        best.map(|(_, _, pane)| pane)
     }
 
     pub fn divider_at(&self, position: Pos2) -> Option<DividerViewport> {

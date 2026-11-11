@@ -24,6 +24,18 @@ enum SerialTerminalMenuState {
     Disconnected,
 }
 
+/// 关闭确认对话框要执行的挂起操作。
+pub(super) enum PendingTabClose {
+    Tab(String),
+    OtherTabs(String),
+}
+
+/// 用户主动关闭标签页时，若仍有前台程序在运行，展示二次确认。
+pub(super) struct CloseTabConfirmation {
+    pub(super) pending: PendingTabClose,
+    pub(super) message: String,
+}
+
 pub(super) struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
@@ -91,6 +103,7 @@ pub(super) struct App {
     settings: settings::Settings,
     settings_panel: settings_panel::SettingsPanel,
     new_tab_selector: new_tab_selector::NewTabSelector,
+    close_tab_confirmation: Option<CloseTabConfirmation>,
     tab_rename_dialog: tab_bar::TabRenameDialog,
     tab_drag_state: tab_bar::TabDragState,
     pending_window_drag_origin: Option<(f64, f64)>,
@@ -264,6 +277,7 @@ impl App {
             settings,
             settings_panel: settings_panel::SettingsPanel::default(),
             new_tab_selector: new_tab_selector::NewTabSelector::new(),
+            close_tab_confirmation: None,
             tab_rename_dialog: tab_bar::TabRenameDialog::default(),
             tab_drag_state: tab_bar::TabDragState::default(),
             pending_window_drag_origin: None,

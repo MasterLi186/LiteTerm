@@ -43,6 +43,14 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "连接到" => "Connect to",
         "请输入密码" => "Enter password",
         "取消" => "Cancel",
+        "确认关闭" => "Confirm close",
+        "仍然关闭" => "Close anyway",
+        "标签页「{label}」中仍有程序正在运行：{programs}。关闭后会终止这些程序。" => {
+            "\"{label}\" still has running programs: {programs}. Closing will terminate them."
+        }
+        "以下标签页中仍有程序正在运行：{tabs}。关闭后会终止这些程序。" => {
+            "These tabs still have running programs: {tabs}. Closing will terminate them."
+        }
         "连接" => "Connect",
         "命令输入:" => "Command:",
         "输入命令后回车发送到终端" => "Enter a command and press Enter to send it to the terminal",

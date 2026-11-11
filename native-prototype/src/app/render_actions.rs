@@ -278,10 +278,10 @@ impl App {
                 self.switch_to_tab(idx);
             }
             tab_bar::TabBarAction::Close(idx) => {
-                self.close_tab(idx);
+                self.request_close_tab(idx);
             }
             tab_bar::TabBarAction::CloseOthers(idx) => {
-                self.close_other_tabs(idx);
+                self.request_close_other_tabs(idx);
             }
             tab_bar::TabBarAction::NewTab => {
                 self.invalidate_completion_popup_snapshot();

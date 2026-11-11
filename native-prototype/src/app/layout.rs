@@ -88,6 +88,26 @@ impl App {
         self.pane_layout.pane(pane_id).map(|pane| pane.rect)
     }
 
+    /// 把焦点移动到指定方向上最近的 pane；没有邻居时返回 `false`。
+    pub(super) fn focus_pane_in_direction(&mut self, direction: PaneFocusDirection) -> bool {
+        let Some(pane_id) = self
+            .tab_manager
+            .active()
+            .filter(|tab| tab.tab_type.is_terminal())
+            .map(|tab| tab.active_pane_id().to_string())
+        else {
+            return false;
+        };
+        let target = self
+            .pane_layout
+            .neighbor(&pane_id, direction)
+            .map(|pane| pane.pane_id.clone());
+        let Some(target) = target else {
+            return false;
+        };
+        self.focus_pane(&target)
+    }
+
     pub(super) fn terminal_for_pane(&self, pane_id: &str) -> Option<Arc<Mutex<TerminalState>>> {
         self.tab_manager
             .active()

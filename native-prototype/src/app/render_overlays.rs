@@ -442,4 +442,47 @@ impl App {
         }
         term_menu_action
     }
+
+    /// 关闭标签页前的二次确认对话框。
+    pub(super) fn render_close_tab_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(message) = self
+            .close_tab_confirmation
+            .as_ref()
+            .map(|confirmation| confirmation.message.clone())
+        else {
+            return;
+        };
+        let mut cancel = false;
+        let mut confirm = false;
+        let modal = egui::Modal::new(egui::Id::new("close_tab_confirmation")).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            ui.label(
+                egui::RichText::new(crate::i18n::tr("确认关闭").into_owned())
+                    .size(16.0)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(message).size(14.0));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
+                    cancel = true;
+                }
+                if ui
+                    .button(crate::i18n::tr("仍然关闭").into_owned())
+                    .clicked()
+                {
+                    confirm = true;
+                }
+            });
+        });
+        if modal.should_close() {
+            cancel = true;
+        }
+        if confirm {
+            self.confirm_pending_tab_close();
+        } else if cancel {
+            self.cancel_pending_tab_close();
+        }
+    }
 }

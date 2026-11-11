@@ -256,6 +256,48 @@ impl TerminalState {
             .is_some_and(|term| term.mode().contains(TermMode::APP_CURSOR))
     }
 
+    /// 本地 PTY 当前前台子程序名；停在空闲 shell 提示符时返回 `None`。
+    ///
+    /// 通过 `tcgetpgrp` 与 shell 所在进程组比较，再读取 `/proc/<pgid>/comm`。
+    /// SSH、串口以及非 Linux 平台无法可靠探测，返回 `None`。
+    pub fn foreground_program_name(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        {
+            let master = self.pty_master.as_ref()?;
+            let shell_pid = self.local_child.as_ref()?.process_id()? as libc::pid_t;
+            let fd = master.as_raw_fd()?;
+            // SAFETY: fd 属于仍然存活的 PTY master。
+            let foreground = unsafe { libc::tcgetpgrp(fd) };
+            if foreground <= 0 {
+                log::debug!("[CLOSE] tcgetpgrp 失败，跳过程序检测 (fd={fd})");
+                return None;
+            }
+            // portable-pty 的 process_group_leader() 本身就是 tcgetpgrp，不能拿它
+            // 与前台进程组比较；这里显式读 shell 的 pgrp
+            //（/proc/<pid>/stat 中 comm 之后的第 3 个字段）。
+            let shell_pgrp = std::fs::read_to_string(format!("/proc/{shell_pid}/stat"))
+                .ok()
+                .and_then(|stat| {
+                    let rest = stat.rsplit_once(')')?.1;
+                    rest.split_whitespace().nth(2)?.parse::<libc::pid_t>().ok()
+                })
+                .unwrap_or(shell_pid);
+            if foreground == shell_pgrp {
+                return None;
+            }
+            let Ok(comm) = std::fs::read_to_string(format!("/proc/{foreground}/comm")) else {
+                log::debug!("[CLOSE] 无法读取 /proc/{foreground}/comm，跳过关闭确认");
+                return None;
+            };
+            let name = comm.trim();
+            (!name.is_empty()).then(|| name.to_string())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
     pub fn term_mut(&mut self) -> Option<&mut Term<Listener>> {
         self.term.as_mut()
     }

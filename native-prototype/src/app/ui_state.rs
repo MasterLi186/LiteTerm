@@ -30,6 +30,7 @@ impl App {
     pub(super) fn has_blocking_dialog(&self) -> bool {
         blocking_dialog_visible(self.has_sidebar_dialog(), self.new_tab_selector.is_open())
             || self.command_bar.has_blocking_dialog()
+            || self.close_tab_confirmation.is_some()
             || self.tab_rename_dialog.is_open()
             || self.batch_dialog.is_open()
             || self.tunnel_manager.is_open()
