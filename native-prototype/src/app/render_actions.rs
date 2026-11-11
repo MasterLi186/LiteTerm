@@ -280,6 +280,11 @@ impl App {
             tab_bar::TabBarAction::SwitchTo(idx) => {
                 self.switch_to_tab(idx);
             }
+            tab_bar::TabBarAction::RestoreMaximized(idx) => {
+                // 先在原标签上还原，再切过去；非活动标签只在切换后的下一帧刷新布局。
+                self.restore_tab_maximized_pane(idx);
+                self.switch_to_tab(idx);
+            }
             tab_bar::TabBarAction::Close(idx) => {
                 self.request_close_tab(idx);
             }

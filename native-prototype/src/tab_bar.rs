@@ -1,9 +1,21 @@
 use crate::tab_manager::{PaneStatus, TabManager, TabPlacement, TabType, MAX_TAB_LABEL_CHARS};
 use egui;
 
+/// 标签右侧关闭按钮的宽度。
+const CLOSE_SIZE: f32 = 20.0;
+/// 最大化标签还原图标的命中宽度（在关闭按钮左侧）。
+const RESTORE_SIZE: f32 = 20.0;
+/// 图标与标签右边缘之间的留白，避免误触。
+const TAB_EDGE_GAP: f32 = 2.0;
+/// 标签文字的左边距（在类型圆点之后）。
+const TAB_LABEL_LEFT: f32 = 22.0;
+/// 标签文字裁剪区的左边界。
+const TAB_LABEL_CLIP_LEFT: f32 = 20.0;
+
 pub enum TabBarAction {
     None,
     SwitchTo(usize),
+    RestoreMaximized(usize),
     Close(usize),
     CloseOthers(usize),
     Duplicate(usize),
@@ -227,6 +239,22 @@ fn tab_dot_color(tab_type: &TabType, status: &PaneStatus) -> egui::Color32 {
         TabType::Recording { .. } => egui::Color32::from_rgb(0xff, 0x7b, 0x72),
         TabType::Settings => egui::Color32::from_rgb(0x40, 0xcb, 0xd9),
     }
+}
+
+/// 绘制“还原最大化”图标：两个重叠的方框。
+fn paint_restore_icon(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    color: egui::Color32,
+    background: egui::Color32,
+) {
+    let stroke = egui::Stroke::new(1.2, color);
+    let radius = egui::CornerRadius::same(1);
+    let back = egui::Rect::from_center_size(center + egui::vec2(2.0, -2.0), egui::vec2(8.0, 8.0));
+    let front = egui::Rect::from_center_size(center + egui::vec2(-1.5, 1.5), egui::vec2(8.0, 8.0));
+    painter.rect_stroke(back, radius, stroke, egui::StrokeKind::Inside);
+    painter.rect_filled(front, radius, background);
+    painter.rect_stroke(front, radius, stroke, egui::StrokeKind::Inside);
 }
 
 #[derive(Clone, Copy)]
@@ -457,11 +485,28 @@ pub fn render_tab_bar(
                         let dot_center = egui::pos2(tab_rect.left() + 12.0, tab_rect.center().y);
                         ui.painter().circle_filled(dot_center, 3.0, dot_color);
 
-                        // 标签名只允许绘制到关闭按钮左侧。长的 SSH/进程标题不能覆盖 × 和 +。
-                        let text_pos = egui::pos2(tab_rect.left() + 22.0, tab_rect.center().y);
+                        // 最大化标签在关闭按钮左侧多一个还原图标。
+                        // 标签被压到放不下图标时干脆不显示还原入口；
+                        // 仍可通过右键菜单或 Ctrl+Shift+X 还原。
+                        let show_restore = tab.layout.is_maximized()
+                            && tab_rect.width()
+                                >= CLOSE_SIZE + TAB_EDGE_GAP + RESTORE_SIZE + TAB_LABEL_CLIP_LEFT;
+                        let right_reserve = if show_restore {
+                            CLOSE_SIZE + TAB_EDGE_GAP + RESTORE_SIZE
+                        } else {
+                            CLOSE_SIZE + TAB_EDGE_GAP
+                        };
+                        // 标签名只允许绘制到关闭按钮/还原图标左侧。长的 SSH/进程标题
+                        // 不能覆盖 × 和 +；极窄标签下也保证裁剪区不反向。
+                        let text_pos =
+                            egui::pos2(tab_rect.left() + TAB_LABEL_LEFT, tab_rect.center().y);
                         let label_clip = egui::Rect::from_min_max(
-                            egui::pos2(tab_rect.left() + 20.0, tab_rect.top()),
-                            egui::pos2(tab_rect.right() - 22.0, tab_rect.bottom()),
+                            egui::pos2(tab_rect.left() + TAB_LABEL_CLIP_LEFT, tab_rect.top()),
+                            egui::pos2(
+                                (tab_rect.right() - right_reserve)
+                                    .max(tab_rect.left() + TAB_LABEL_CLIP_LEFT),
+                                tab_rect.bottom(),
+                            ),
                         );
                         ui.painter().with_clip_rect(label_clip).text(
                             text_pos,
@@ -473,8 +518,8 @@ pub fn render_tab_bar(
 
                         // × 关闭按钮
                         let close_rect = egui::Rect::from_min_size(
-                            egui::pos2(tab_rect.right() - 20.0, tab_rect.top()),
-                            egui::vec2(20.0, tab_rect.height()),
+                            egui::pos2(tab_rect.right() - CLOSE_SIZE, tab_rect.top()),
+                            egui::vec2(CLOSE_SIZE, tab_rect.height()),
                         );
                         let close_resp = ui.interact(
                             close_rect,
@@ -495,16 +540,49 @@ pub fn render_tab_bar(
                             close_color,
                         );
 
+                        // 还原图标（仅最大化标签显示）：两个重叠方框。
+                        let restore_rect = egui::Rect::from_min_size(
+                            egui::pos2(
+                                tab_rect.right() - CLOSE_SIZE - TAB_EDGE_GAP - RESTORE_SIZE,
+                                tab_rect.top(),
+                            ),
+                            egui::vec2(RESTORE_SIZE, tab_rect.height()),
+                        );
+                        let restore_resp = show_restore.then(|| {
+                            ui.interact(
+                                restore_rect,
+                                egui::Id::new(("tab_restore", i)),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_ui(|ui| {
+                                ui.label(crate::i18n::tr("已最大化，点击还原").as_ref());
+                            })
+                        });
+                        if let Some(restore_resp) = &restore_resp {
+                            // 跟随主题的弱/强文本色，浅色主题下也能看清。
+                            let color = if restore_resp.hovered() {
+                                ui.visuals().strong_text_color()
+                            } else {
+                                ui.visuals().weak_text_color()
+                            };
+                            paint_restore_icon(ui.painter(), restore_rect.center(), color, bg);
+                        }
+
                         // 事件
-                        if close_resp.clicked() {
+                        if restore_resp.as_ref().is_some_and(|resp| resp.clicked()) {
+                            action = TabBarAction::RestoreMaximized(i);
+                        } else if close_resp.clicked() {
                             action = TabBarAction::Close(i);
                         } else if tab_resp.clicked() {
                             action = TabBarAction::SwitchTo(i);
                         }
                         if tab_resp.drag_started()
-                            && ctx
-                                .input(|input| input.pointer.interact_pos())
-                                .is_some_and(|position| !close_rect.contains(position))
+                            && ctx.input(|input| input.pointer.press_origin()).is_some_and(
+                                |position| {
+                                    !close_rect.contains(position)
+                                        && !(show_restore && restore_rect.contains(position))
+                                },
+                            )
                         {
                             drag.dragged_id = Some(tab.id.clone());
                             drag.insertion = None;
@@ -527,7 +605,13 @@ pub fn render_tab_bar(
                                 drag.insertion = Some((tab.id.clone(), placement, x));
                             }
                         }
-                        if tab_resp.middle_clicked() {
+                        // 中键关闭同样是“还原图标优先”，避免在中键点在还原区时误关标签。
+                        // 用按下位置判定，与拖拽路径一致。
+                        let middle_on_restore = show_restore
+                            && ctx
+                                .input(|input| input.pointer.press_origin())
+                                .is_some_and(|position| restore_rect.contains(position));
+                        if tab_resp.middle_clicked() && !middle_on_restore {
                             action = TabBarAction::Close(i);
                         }
 

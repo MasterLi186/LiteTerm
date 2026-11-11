@@ -133,6 +133,23 @@ impl App {
         true
     }
 
+    /// 还原指定标签的最大化 pane（标签栏还原图标）。
+    pub(super) fn restore_tab_maximized_pane(&mut self, index: usize) -> bool {
+        let Some(tab) = self.tab_manager.tabs.get_mut(index) else {
+            return false;
+        };
+        if !tab.layout.clear_maximized_pane() {
+            return false;
+        }
+        if index == self.tab_manager.active_idx {
+            self.refresh_pane_layout();
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        true
+    }
+
     pub(super) fn terminal_for_pane(&self, pane_id: &str) -> Option<Arc<Mutex<TerminalState>>> {
         self.tab_manager
             .active()

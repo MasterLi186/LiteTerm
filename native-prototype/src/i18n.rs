@@ -47,6 +47,7 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "仍然关闭" => "Close anyway",
         "最大化面板" => "Maximize pane",
         "还原面板" => "Restore pane",
+        "已最大化，点击还原" => "Maximized, click to restore",
         "标签页「{label}」中仍有程序正在运行：{programs}。关闭后会终止这些程序。" => {
             "\"{label}\" still has running programs: {programs}. Closing will terminate them."
         }
