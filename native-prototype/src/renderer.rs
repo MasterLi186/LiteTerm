@@ -338,15 +338,34 @@ fn vs_main(@builtin(vertex_index) vi: u32, cell: CellInstance) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // 8 表示这是只有字形、没有背景的四边形（用于溢出单元格的字形）。
+    let no_background = (in.flags & 8u) != 0u;
     var color = in.bg;
+    if no_background {
+        color = vec4(0.0);
+    }
 
     let glyph_local = in.local_pos - in.glyph_offset;
     if glyph_local.x >= 0.0 && glyph_local.y >= 0.0 &&
        glyph_local.x < in.glyph_size.x && glyph_local.y < in.glyph_size.y &&
        in.glyph_size.x > 0.0 {
         let glyph_uv = in.uv_origin + (glyph_local / in.glyph_size) * in.uv_extent;
-        let alpha = textureSample(t_atlas, s_atlas, glyph_uv).r;
-        color = mix(color, in.fg, vec4(alpha, alpha, alpha, alpha));
+        let texel = textureSample(t_atlas, s_atlas, glyph_uv);
+        if (in.flags & 4u) != 0u {
+            // 彩色 emoji：保留位图 RGB，按 alpha 与背景混合。
+            if no_background {
+                color = vec4(texel.rgb, texel.a);
+            } else {
+                color = mix(color, vec4(texel.rgb, 1.0), texel.a);
+            }
+        } else {
+            // 普通字形：图集里是白色 + alpha，用终端前景色着色。
+            if no_background {
+                color = vec4(in.fg.rgb, texel.a);
+            } else {
+                color = mix(color, in.fg, vec4(texel.a, texel.a, texel.a, texel.a));
+            }
+        }
     }
 
     if (in.flags & 1u) != 0u {

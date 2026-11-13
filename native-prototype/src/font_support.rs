@@ -125,6 +125,39 @@ pub fn cjk_fallback_families() -> &'static [&'static str] {
     ]
 }
 
+/// 平台彩色 emoji 字体族。仅在字符按 emoji 呈现时才优先尝试，
+/// 避免影响普通文本的字体回退顺序。
+pub fn color_emoji_families() -> &'static [&'static str] {
+    #[cfg(target_os = "linux")]
+    {
+        &["Noto Color Emoji"]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        &["Apple Color Emoji"]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        &["Segoe UI Emoji"]
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        &[]
+    }
+}
+
+/// 默认按 emoji 呈现的常见码点；其他符号需要 U+FE0F 变体选择符才切换为彩色。
+///
+/// 这里覆盖 emoji 的主要区块（含 ⌚ ⚡ ✨ ❗ ➕ ➡ 等默认 emoji 符号）。
+/// 若系统彩色字体没有对应字形，仍会回退到普通字体，因此范围略宽是安全的；
+/// 盒线、几何图形和箭头不在其中，避免把 TUI 符号彩色化。
+pub fn emoji_presentation(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x1F000..=0x1FAFF | 0x2300..=0x23FF | 0x2600..=0x27BF | 0x2B00..=0x2BFF
+    )
+}
+
 /// Return whether the database already exposes one of our known CJK families.
 /// This avoids loading the same system font a second time on Linux/macOS.
 pub fn database_has_known_cjk_family(db: &cosmic_text::fontdb::Database) -> bool {

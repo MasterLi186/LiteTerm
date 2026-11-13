@@ -1,15 +1,16 @@
 use cosmic_text::{
     Attrs, Buffer, CacheKeyFlags, FontSystem, Metrics, PhysicalGlyph, Shaping, Style, SwashCache,
-    Weight,
+    SwashContent, Weight,
 };
 use std::collections::HashMap;
 
-/// 字形样式键：(字符, 粗体, 斜体)
+/// 字形样式键：(字符, 粗体, 斜体, 是否 emoji 呈现)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
     pub ch: char,
     pub bold: bool,
     pub italic: bool,
+    pub color_emoji: bool,
 }
 
 /// 纹理图集中一个字形的位置
@@ -22,6 +23,8 @@ pub struct GlyphEntry {
     pub bearing_x: i32,
     pub bearing_y: i32,
     pub advance_width: f32,
+    /// 彩色位图（emoji）需要按原 RGBA 着色，而不是终端前景色。
+    pub is_color: bool,
 }
 
 pub fn is_wide_char(c: char) -> bool {
@@ -62,13 +65,22 @@ struct GlyphShapeRequest<'a> {
     ch: char,
     bold: bool,
     italic: bool,
+    /// 该字符按 emoji 呈现：优先尝试平台彩色 emoji 字体。
+    color_emoji: bool,
 }
 
 fn shape_glyph_with_italic_fallback(
     font_system: &mut FontSystem,
     request: GlyphShapeRequest<'_>,
 ) -> Option<PhysicalGlyph> {
-    let mut families = Vec::with_capacity(1 + crate::font_support::cjk_fallback_families().len());
+    let mut families = Vec::with_capacity(
+        1 + crate::font_support::cjk_fallback_families().len()
+            + crate::font_support::color_emoji_families().len(),
+    );
+    // emoji 呈现的字符优先用彩色字体；普通字符保持原有回退顺序。
+    if request.color_emoji {
+        families.extend(crate::font_support::color_emoji_families().iter().copied());
+    }
     families.push(request.family);
     families.extend(
         crate::font_support::cjk_fallback_families()
@@ -123,6 +135,9 @@ pub struct GlyphAtlas {
     cursor_y: u32,
     row_height: u32,
     pub dirty: bool,
+    /// 自上次上传以来新增字形占用的行范围 [dirty_top, dirty_bottom)。
+    dirty_top: u32,
+    dirty_bottom: u32,
     pub font_size: f32,
     pub cell_width: f32,
     pub cell_height: f32,
@@ -133,7 +148,8 @@ impl GlyphAtlas {
     pub fn new(font_system: &mut FontSystem, swash_cache: &mut SwashCache, font_size: f32) -> Self {
         let atlas_width = 2048;
         let atlas_height = 2048;
-        let data = vec![0u8; (atlas_width * atlas_height) as usize];
+        // RGBA8：普通字形存白色 + alpha 遮罩，彩色 emoji 存原始 RGBA。
+        let data = vec![0u8; (atlas_width * atlas_height * 4) as usize];
 
         // 对齐 guishell/xterm.js 实测值：size=26 → cellReal=13x26
         let cell_width = (font_size * 0.5).round();
@@ -148,6 +164,8 @@ impl GlyphAtlas {
             cursor_y: 1,
             row_height: 0,
             dirty: true,
+            dirty_top: u32::MAX,
+            dirty_bottom: 0,
             font_size,
             cell_width,
             cell_height: line_height,
@@ -156,7 +174,7 @@ impl GlyphAtlas {
 
         // 预填充 ASCII（normal weight）
         for ch in (0x20u8..=0x7e).map(|b| b as char) {
-            atlas.ensure_glyph(font_system, swash_cache, ch, false, false);
+            atlas.ensure_glyph(font_system, swash_cache, ch, false, false, false);
         }
 
         atlas
@@ -181,6 +199,21 @@ impl GlyphAtlas {
         self.cursor_y = 1;
         self.row_height = 0;
         self.dirty = true;
+        self.dirty_top = u32::MAX;
+        self.dirty_bottom = 0;
+    }
+
+    /// 取出自上次上传以来新增字形的行范围 `[top, bottom)`。
+    pub fn take_dirty_rows(&mut self) -> Option<(u32, u32)> {
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        let top = self.dirty_top.min(self.atlas_height);
+        let bottom = self.dirty_bottom.min(self.atlas_height);
+        self.dirty_top = u32::MAX;
+        self.dirty_bottom = 0;
+        (top < bottom).then_some((top, bottom))
     }
 
     pub fn ensure_glyph(
@@ -190,8 +223,14 @@ impl GlyphAtlas {
         ch: char,
         bold: bool,
         italic: bool,
+        color_emoji: bool,
     ) -> Option<GlyphEntry> {
-        let key = GlyphKey { ch, bold, italic };
+        let key = GlyphKey {
+            ch,
+            bold,
+            italic,
+            color_emoji,
+        };
         if let Some(entry) = self.entries.get(&key) {
             return Some(*entry);
         }
@@ -211,6 +250,7 @@ impl GlyphAtlas {
                 ch,
                 bold,
                 italic,
+                color_emoji,
             },
         )?;
         let image = swash_cache
@@ -231,16 +271,36 @@ impl GlyphAtlas {
             return None;
         }
 
+        // 彩色 emoji（Noto Color Emoji 等）返回 32 位 RGBA 位图；普通字形是单通道
+        // alpha 遮罩。图集统一为 RGBA8：普通字形写白色 + alpha，彩色字形原样拷贝，
+        // 由着色器按 is_color 决定用前景色还是位图颜色。
+        let is_mask = image.content == SwashContent::Mask;
+        let bytes_per_pixel = if is_mask { 1 } else { 4 };
+        let required = (w as usize) * (h as usize) * bytes_per_pixel;
+        if image.data.len() < required {
+            return None;
+        }
         for iy in 0..h {
             for ix in 0..w {
-                let src = (iy * w + ix) as usize;
-                let dst = ((self.cursor_y + iy) * self.atlas_width + self.cursor_x + ix) as usize;
-                if src < image.data.len() && dst < self.data.len() {
-                    self.data[dst] = image.data[src];
+                let src = (iy as usize * w as usize + ix as usize) * bytes_per_pixel;
+                let dst =
+                    (((self.cursor_y + iy) * self.atlas_width + self.cursor_x + ix) as usize) * 4;
+                if dst + 4 > self.data.len() || self.cursor_x + ix >= self.atlas_width {
+                    continue;
+                }
+                if is_mask {
+                    self.data[dst] = 255;
+                    self.data[dst + 1] = 255;
+                    self.data[dst + 2] = 255;
+                    self.data[dst + 3] = image.data[src];
+                } else {
+                    self.data[dst..dst + 4].copy_from_slice(&image.data[src..src + 4]);
                 }
             }
         }
 
+        self.dirty_top = self.dirty_top.min(self.cursor_y);
+        self.dirty_bottom = self.dirty_bottom.max(self.cursor_y + h);
         let entry = GlyphEntry {
             x: self.cursor_x,
             y: self.cursor_y,
@@ -249,6 +309,7 @@ impl GlyphAtlas {
             bearing_x: physical.x + image.placement.left,
             bearing_y: physical.y - image.placement.top + (self.cell_height * 0.8) as i32,
             advance_width: char_width,
+            is_color: !is_mask,
         };
 
         self.entries.insert(key, entry);
@@ -302,6 +363,7 @@ mod tests {
                 ch: 'A',
                 bold: false,
                 italic: true,
+                color_emoji: false,
             },
         )
         .expect("Ubuntu Mono Italic should contain ASCII");
@@ -327,6 +389,7 @@ mod tests {
                 ch: '你',
                 bold: false,
                 italic: true,
+                color_emoji: false,
             },
         ) else {
             eprintln!("skipping CJK fallback assertion: no CJK font is installed");
@@ -348,15 +411,20 @@ mod tests {
         let mut swash_cache = SwashCache::new();
         let mut atlas = GlyphAtlas::new(&mut font_system, &mut swash_cache, 22.0);
 
-        let Some(glyph) =
-            atlas.ensure_glyph(&mut font_system, &mut swash_cache, '中', false, false)
-        else {
+        let Some(glyph) = atlas.ensure_glyph(
+            &mut font_system,
+            &mut swash_cache,
+            '中',
+            false,
+            false,
+            false,
+        ) else {
             eprintln!("skipping CJK atlas assertion: no CJK font is installed");
             return;
         };
         let has_ink = (glyph.y..glyph.y + glyph.height).any(|y| {
             (glyph.x..glyph.x + glyph.width)
-                .any(|x| atlas.data[(y * atlas.atlas_width + x) as usize] != 0)
+                .any(|x| atlas.data[((y * atlas.atlas_width + x) as usize) * 4 + 3] != 0)
         });
 
         assert!(has_ink, "CJK 字形区域必须包含非零像素");

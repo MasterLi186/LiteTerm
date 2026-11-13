@@ -1,5 +1,11 @@
 use super::*;
 
+/// 片元着色器 instance flags：下划线 / 删除线 / 彩色字形 / 无背景。
+const GPU_FLAG_UNDERLINE: u32 = 1;
+const GPU_FLAG_STRIKEOUT: u32 = 2;
+const GPU_FLAG_COLOR_GLYPH: u32 = 4;
+const GPU_FLAG_NO_BACKGROUND: u32 = 8;
+
 pub(super) fn cached_pane_slot_index(draw_index: usize) -> Option<usize> {
     (draw_index < MAX_CACHED_PANE_DRAW_SLOTS).then_some(draw_index)
 }
@@ -65,7 +71,7 @@ impl Renderer {
     pub fn new(gpu: &GpuState) -> Self {
         let mut font_system = new_font_system();
         let mut swash_cache = SwashCache::new();
-        let atlas = GlyphAtlas::new(&mut font_system, &mut swash_cache, BOOTSTRAP_FONT_SIZE);
+        let mut atlas = GlyphAtlas::new(&mut font_system, &mut swash_cache, BOOTSTRAP_FONT_SIZE);
 
         let atlas_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Glyph Atlas"),
@@ -77,7 +83,7 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -91,7 +97,7 @@ impl Renderer {
             &atlas.data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(atlas.atlas_width),
+                bytes_per_row: Some(atlas.atlas_width * 4),
                 rows_per_image: Some(atlas.atlas_height),
             },
             wgpu::Extent3d {
@@ -100,6 +106,8 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+        // 初始整图上传已包含预填充 ASCII，清掉脏行标记。
+        atlas.take_dirty_rows();
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -300,7 +308,7 @@ impl Renderer {
             &self.atlas.data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(self.atlas.atlas_width),
+                bytes_per_row: Some(self.atlas.atlas_width * 4),
                 rows_per_image: Some(self.atlas.atlas_height),
             },
             wgpu::Extent3d {
@@ -309,7 +317,7 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
-        self.atlas.dirty = false;
+        self.atlas.take_dirty_rows();
         self.style_revision = self.style_revision.wrapping_add(1).max(1);
     }
 
@@ -587,6 +595,8 @@ impl Renderer {
         ];
 
         let mut instances: Vec<CellInstance> = Vec::with_capacity(8192);
+        // 超出单元格的字形单独收集，最后绘制，避免被相邻单元格的背景/文字覆盖。
+        let mut overlay_glyphs: Vec<CellInstance> = Vec::with_capacity(32);
         let cursor = content.cursor;
         let display_offset = term.grid().display_offset() as i32;
 
@@ -653,10 +663,10 @@ impl Renderer {
 
             let mut gpu_flags: u32 = 0;
             if flags.intersects(CellFlags::ALL_UNDERLINES) {
-                gpu_flags |= 1;
+                gpu_flags |= GPU_FLAG_UNDERLINE;
             }
             if flags.contains(CellFlags::STRIKEOUT) {
-                gpu_flags |= 2;
+                gpu_flags |= GPU_FLAG_STRIKEOUT;
             }
 
             let bold = flags.contains(CellFlags::BOLD);
@@ -681,43 +691,127 @@ impl Renderer {
                 continue;
             }
 
+            // 默认按 emoji 呈现的字符，或带 U+FE0F 变体选择符的文本符号，
+            // 优先使用系统彩色 emoji 字体。
+            let color_emoji = crate::font_support::emoji_presentation(ch_char)
+                || cell
+                    .zerowidth()
+                    .is_some_and(|zerowidth| zerowidth.contains(&'\u{FE0F}'));
             let glyph = self.atlas.ensure_glyph(
                 &mut self.font_system,
                 &mut self.swash_cache,
                 ch_char,
                 bold,
                 italic,
+                color_emoji,
             );
+            // 彩色位图字形按图集里的 RGBA 原色输出，其余字形仍用终端前景色。
+            if glyph.is_some_and(|glyph| glyph.is_color) {
+                gpu_flags |= GPU_FLAG_COLOR_GLYPH;
+            }
 
             let cell_w = if flags.contains(CellFlags::WIDE_CHAR) {
                 cw * 2.0
             } else {
                 cw
             };
-            let (uv_pos, uv_size, g_offset, g_size) = if let Some(g) = glyph {
-                (
-                    [g.x as f32, g.y as f32],
-                    [g.width as f32, g.height as f32],
-                    [g.bearing_x as f32, g.bearing_y as f32],
-                    [g.width as f32, g.height as f32],
-                )
+            if let Some(g) = glyph {
+                let glyph_w = g.width as f32;
+                let glyph_h = g.height as f32;
+                let offset_x = g.bearing_x as f32;
+                let offset_y = g.bearing_y as f32;
+                // 回退字体里的符号（⚠ ✔ ✗）和彩色 emoji 常比等宽单元格宽。
+                // 只有横向溢出才走“背景 + 溢出字形”路径；负 bearing（斜体左侧
+                // 外伸等）保持原来的基线定位，避免字形整体位移。
+                let horizontal_overflow = offset_x + glyph_w > cell_w + 0.5;
+                let vertical_overflow = offset_y < 0.0 || offset_y + glyph_h > ch + 0.5;
+                if horizontal_overflow {
+                    // 允许少量横向溢出：单色符号两侧各 2px，彩色 emoji 各 4px
+                    //（emoji 后通常跟空格，稍宽不会压住正文）。
+                    const MONO_OVERHANG_X: f32 = 2.0;
+                    const COLOR_OVERHANG_X: f32 = 4.0;
+                    let color_glyph = gpu_flags & GPU_FLAG_COLOR_GLYPH != 0;
+                    let overhang = if color_glyph {
+                        COLOR_OVERHANG_X
+                    } else {
+                        MONO_OVERHANG_X
+                    };
+                    let allowed_w = cell_w + overhang * 2.0;
+                    let scale_x = (allowed_w / glyph_w).min(1.0);
+                    let draw_w = (glyph_w * scale_x).max(1.0);
+                    let box_x = (cell_w - draw_w) * 0.5;
+                    let (draw_h, box_y) = if color_glyph {
+                        // 彩色 emoji 保持宽高比并居中。
+                        let scale = scale_x.min(ch / glyph_h);
+                        let draw_h = (glyph_h * scale).max(1.0);
+                        (draw_h, (ch - draw_h) * 0.5)
+                    } else if vertical_overflow {
+                        // 纵向也超出的单色字形：缩到行高内居中。
+                        let scale_y = (ch / glyph_h).min(1.0);
+                        let draw_h = (glyph_h * scale_y).max(1.0);
+                        (draw_h, (ch - draw_h) * 0.5)
+                    } else {
+                        // 纵向未溢出时保留原始 bearing，避免基线平移。
+                        (glyph_h, offset_y)
+                    };
+                    instances.push(CellInstance {
+                        pos: [px, py],
+                        size: [cell_w, ch],
+                        uv_pos: [0.0, 0.0],
+                        uv_size: [0.0, 0.0],
+                        glyph_offset: [0.0, 0.0],
+                        glyph_size: [0.0, 0.0],
+                        fg,
+                        bg,
+                        // 彩色标记只属于字形实例。
+                        flags: gpu_flags & !GPU_FLAG_COLOR_GLYPH,
+                        _pad: [0; 3],
+                    });
+                    overlay_glyphs.push(CellInstance {
+                        pos: [px + box_x, py + box_y],
+                        size: [draw_w, draw_h],
+                        uv_pos: [g.x as f32, g.y as f32],
+                        uv_size: [glyph_w, glyph_h],
+                        glyph_offset: [0.0, 0.0],
+                        glyph_size: [draw_w, draw_h],
+                        fg,
+                        bg: [0.0; 4],
+                        // 下划线/删除线留在背景实例上；8 表示不绘制背景。
+                        flags: (gpu_flags & GPU_FLAG_COLOR_GLYPH) | GPU_FLAG_NO_BACKGROUND,
+                        _pad: [0; 3],
+                    });
+                } else {
+                    instances.push(CellInstance {
+                        pos: [px, py],
+                        size: [cell_w, ch],
+                        uv_pos: [g.x as f32, g.y as f32],
+                        uv_size: [glyph_w, glyph_h],
+                        glyph_offset: [offset_x, offset_y],
+                        glyph_size: [glyph_w, glyph_h],
+                        fg,
+                        bg,
+                        flags: gpu_flags,
+                        _pad: [0; 3],
+                    });
+                }
             } else {
-                ([0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
-            };
-
-            instances.push(CellInstance {
-                pos: [px, py],
-                size: [cell_w, ch],
-                uv_pos,
-                uv_size,
-                glyph_offset: g_offset,
-                glyph_size: g_size,
-                fg,
-                bg,
-                flags: gpu_flags,
-                _pad: [0; 3],
-            });
+                instances.push(CellInstance {
+                    pos: [px, py],
+                    size: [cell_w, ch],
+                    uv_pos: [0.0, 0.0],
+                    uv_size: [0.0, 0.0],
+                    glyph_offset: [0.0, 0.0],
+                    glyph_size: [0.0, 0.0],
+                    fg,
+                    bg,
+                    flags: gpu_flags,
+                    _pad: [0; 3],
+                });
+            }
         }
+
+        // 溢出的字形最后画，避免被后绘制的单元格背景/文字覆盖。
+        instances.extend(overlay_glyphs);
 
         // Cursor
         if cursor_visible {
@@ -864,27 +958,31 @@ impl Renderer {
             return;
         }
 
-        if self.atlas.dirty {
+        if let Some((top, bottom)) = self.atlas.take_dirty_rows() {
+            // 只上传新增字形所在行，避免每出现一个新字形就重传整张 16MiB 图集。
+            let width = self.atlas.atlas_width;
+            let row_bytes = (width * 4) as usize;
+            let start = top as usize * row_bytes;
+            let end = bottom as usize * row_bytes;
             gpu.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.atlas_texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
+                    origin: wgpu::Origin3d { x: 0, y: top, z: 0 },
                     aspect: wgpu::TextureAspect::All,
                 },
-                &self.atlas.data,
+                &self.atlas.data[start..end],
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(self.atlas.atlas_width),
-                    rows_per_image: Some(self.atlas.atlas_height),
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(bottom - top),
                 },
                 wgpu::Extent3d {
-                    width: self.atlas.atlas_width,
-                    height: self.atlas.atlas_height,
+                    width,
+                    height: bottom - top,
                     depth_or_array_layers: 1,
                 },
             );
-            self.atlas.dirty = false;
         }
 
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
