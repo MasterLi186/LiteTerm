@@ -1,7 +1,8 @@
 use std::fmt;
 
 use sysinfo::{
-    Disks, Networks, Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind,
+    Disks, Networks, Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, Signal, System,
+    UpdateKind,
 };
 
 const LOCAL_DETAIL_FIELD_BYTES: usize = 8 * 1024;
@@ -326,6 +327,41 @@ fn local_process_detail_refresh_kind() -> ProcessRefreshKind {
         .with_cmd(UpdateKind::OnlyIfNotSet)
         .with_exe(UpdateKind::OnlyIfNotSet)
         .without_tasks()
+}
+
+/// 向本地进程发送终止信号（SIGTERM；Windows 上回退为强制终止）。
+///
+/// 拒绝终止 PID 1 和当前应用自身，并在发送前核对启动时间，避免 PID 复用误杀。
+pub fn kill_local_process(pid: u32, expected_start_time: &str) -> Result<(), String> {
+    if pid <= 1 {
+        return Err(crate::i18n::tr("不允许终止系统进程").into_owned());
+    }
+    if pid == std::process::id() {
+        return Err(crate::i18n::tr("不能终止当前应用自身").into_owned());
+    }
+    let target = Pid::from_u32(pid);
+    let mut system = System::new();
+    let targets = [target];
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&targets),
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    let process = system
+        .process(target)
+        .ok_or_else(|| crate::i18n::tr("本机进程不存在或无权读取").into_owned())?;
+    let expected = normalize_process_start_time(expected_start_time);
+    if format_process_start_time(process.start_time()) != expected {
+        return Err(crate::i18n::tr("进程已退出或 PID 已被复用，已取消终止").into_owned());
+    }
+    let sent = process
+        .kill_with(Signal::Term)
+        .unwrap_or_else(|| process.kill());
+    if sent {
+        Ok(())
+    } else {
+        Err(crate::i18n::tr("发送终止信号失败（权限不足或进程已退出）").into_owned())
+    }
 }
 
 /// Collect bounded details for one local process.

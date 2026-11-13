@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use crate::monitor::{
     normalize_process_start_time, MonitorKey, ProcessDetail, ProcessInfo, ProcessStats,
@@ -50,10 +51,34 @@ impl SortDirection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessManagerAction {
     Refresh,
-    Select { pid: u32, request_id: u64 },
+    Select {
+        pid: u32,
+        request_id: u64,
+    },
     CloseDetail,
     CopyText(String),
+    /// 用户已在确认弹框中确认终止该进程；`start_time` 用于防止 PID 复用误杀。
+    KillProcess {
+        pid: u32,
+        start_time: String,
+    },
 }
+
+/// 右键菜单中待确认的终止目标。
+#[derive(Clone)]
+struct PendingKill {
+    pid: u32,
+    name: String,
+    start_time: String,
+}
+
+struct Notice {
+    message: String,
+    is_error: bool,
+    shown_at: Instant,
+}
+
+const NOTICE_LIFETIME: Duration = Duration::from_secs(8);
 
 pub struct ProcessManagerState {
     target: MonitorKey,
@@ -68,6 +93,10 @@ pub struct ProcessManagerState {
     search_query: String,
     search_request_focus: bool,
     show_zombie_dialog: bool,
+    pending_kill: Option<PendingKill>,
+    /// 点击“复制位置”后等待进程详情加载完成的 PID。
+    copy_location_pid: Option<u32>,
+    notice: Option<Notice>,
 }
 
 impl fmt::Debug for ProcessManagerState {
@@ -103,6 +132,9 @@ impl ProcessManagerState {
             search_query: String::new(),
             search_request_focus: false,
             show_zombie_dialog: false,
+            pending_kill: None,
+            copy_location_pid: None,
+            notice: None,
         }
     }
 
@@ -210,6 +242,42 @@ impl ProcessManagerState {
         self.pending_request_id = None;
         self.detail = None;
         self.detail_error = None;
+        self.copy_location_pid = None;
+    }
+
+    /// 应用终止进程的结果，并在列表上方显示短暂提示。
+    pub fn apply_kill_result(&mut self, pid: u32, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                let message = crate::i18n::tr("已向 PID {pid} 发送终止信号")
+                    .replace("{pid}", &pid.to_string());
+                self.set_notice(message, false);
+            }
+            Err(error) => {
+                let message = crate::i18n::tr("终止 PID {pid} 失败：{error}")
+                    .replace("{pid}", &pid.to_string())
+                    .replace("{error}", &error);
+                self.set_notice(message, true);
+            }
+        }
+    }
+
+    fn set_notice(&mut self, message: String, is_error: bool) {
+        self.notice = Some(Notice {
+            message,
+            is_error,
+            shown_at: Instant::now(),
+        });
+    }
+
+    fn expire_notice(&mut self) {
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.shown_at.elapsed() >= NOTICE_LIFETIME)
+        {
+            self.notice = None;
+        }
     }
 
     pub fn reset_target(&mut self, target: MonitorKey) {
@@ -218,6 +286,8 @@ impl ProcessManagerState {
         }
         self.target = target;
         self.clear_detail();
+        self.pending_kill = None;
+        self.notice = None;
     }
 
     pub fn reconcile_processes(&mut self, processes: &[ProcessInfo]) -> bool {
@@ -253,6 +323,12 @@ pub fn render(
     if let Some(processes) = processes {
         state.reconcile_processes(processes);
     }
+    state.expire_notice();
+    if let Some(notice) = &state.notice {
+        let remaining = NOTICE_LIFETIME.saturating_sub(notice.shown_at.elapsed());
+        ctx.request_repaint_after(remaining.max(Duration::from_millis(50)));
+    }
+    maybe_copy_location(state, &mut actions);
     if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
         state.search_request_focus = true;
     }
@@ -264,6 +340,9 @@ pub fn render(
         )
         .show(ctx, |ui| {
             render_toolbar(ui, state, processes, stats, &mut actions);
+            if let Some(notice) = state.notice.as_ref() {
+                render_notice(ui, notice);
+            }
             render_monitor_state(ui, processes, monitor_error);
             if has_detail_area(state) {
                 let maximum_height = detail_panel_max_height(ui.available_height());
@@ -285,7 +364,116 @@ pub fn render(
             render_processes(ui, state, processes, &mut actions);
         });
     render_zombie_dialog(ctx, state, zombie_processes, stats);
+    render_kill_confirmation(ctx, state, &mut actions);
     actions
+}
+
+fn render_notice(ui: &mut egui::Ui, notice: &Notice) {
+    let color = if notice.is_error { RED } else { GREEN };
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.12))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.45)))
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(&notice.message)
+                    .size(PROCESS_META_SIZE)
+                    .color(color),
+            );
+        });
+}
+
+fn process_location(detail: &ProcessDetail) -> Option<&str> {
+    let executable = detail.executable.trim();
+    if !executable.is_empty() {
+        return Some(executable);
+    }
+    let working_dir = detail.working_dir.trim();
+    (!working_dir.is_empty()).then_some(working_dir)
+}
+
+/// “复制位置”不在快照里；若详情已加载则立即复制，否则先拉取详情再复制。
+fn maybe_copy_location(state: &mut ProcessManagerState, actions: &mut Vec<ProcessManagerAction>) {
+    let Some(pid) = state.copy_location_pid else {
+        return;
+    };
+    // 选中项已切到别的进程时，本次“复制位置”不再成立，也不要把别人的
+    // 详情错误误报成本次失败。
+    if state.selected_pid != Some(pid) {
+        state.copy_location_pid = None;
+        return;
+    }
+    if state.pending_request_id.is_some() {
+        return;
+    }
+    if state.detail.as_ref().map(|detail| detail.identity.pid) == Some(pid) {
+        let location = state
+            .detail
+            .as_ref()
+            .and_then(process_location)
+            .map(str::to_string);
+        state.copy_location_pid = None;
+        match location {
+            Some(location) => actions.push(ProcessManagerAction::CopyText(location)),
+            None => state.set_notice(
+                crate::i18n::tr("无法读取该进程的可执行文件位置").into_owned(),
+                true,
+            ),
+        }
+    } else if let Some(error) = state.detail_error.clone() {
+        state.copy_location_pid = None;
+        let message = crate::i18n::tr("无法读取进程位置：{error}").replace("{error}", &error);
+        state.set_notice(message, true);
+    } else if state.detail.is_some() {
+        // 用户已切换到其他进程，取消本次复制。
+        state.copy_location_pid = None;
+    }
+}
+
+fn render_kill_confirmation(
+    ctx: &egui::Context,
+    state: &mut ProcessManagerState,
+    actions: &mut Vec<ProcessManagerAction>,
+) {
+    let Some(pending) = state.pending_kill.clone() else {
+        return;
+    };
+    let mut confirm = false;
+    let mut cancel = false;
+    let modal = egui::Modal::new(egui::Id::new("process_kill_confirmation")).show(ctx, |ui| {
+        ui.set_max_width(420.0);
+        ui.label(
+            egui::RichText::new(crate::i18n::tr("确认终止进程").into_owned())
+                .size(16.0)
+                .strong(),
+        );
+        ui.add_space(6.0);
+        let message = crate::i18n::tr("确定要终止进程 {name}（PID {pid}）吗？")
+            .replace("{name}", &pending.name)
+            .replace("{pid}", &pending.pid.to_string());
+        ui.label(egui::RichText::new(message).size(14.0));
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if ui.button(crate::i18n::tr("是").into_owned()).clicked() {
+                confirm = true;
+            }
+            if ui.button(crate::i18n::tr("否").into_owned()).clicked() {
+                cancel = true;
+            }
+        });
+    });
+    if modal.should_close() {
+        cancel = true;
+    }
+    if confirm {
+        state.pending_kill = None;
+        actions.push(ProcessManagerAction::KillProcess {
+            pid: pending.pid,
+            start_time: pending.start_time,
+        });
+    } else if cancel {
+        state.pending_kill = None;
+    }
 }
 
 fn has_detail_area(state: &ProcessManagerState) -> bool {
@@ -760,9 +948,11 @@ fn render_processes(
                     ui.spacing_mut().item_spacing.y = 0.0;
                     for process in sorted {
                         let selected = state.selected_pid == Some(process.pid);
-                        if render_process_row(ui, process, selected).clicked() {
+                        let response = render_process_row(ui, process, selected);
+                        if response.clicked() {
                             actions.push(state.select_process(process.pid, &process.start_time));
                         }
+                        render_process_menu(&response, process, state, actions);
                     }
                 });
         });
@@ -896,6 +1086,96 @@ fn render_process_row(ui: &mut egui::Ui, process: &ProcessInfo, selected: bool) 
         left += width + ui.spacing().item_spacing.x;
     }
     response
+}
+
+/// 进程行右键菜单（对齐 FinalShell）：终止进程、复制 PID/名称/命令行/位置。
+fn render_process_menu(
+    response: &egui::Response,
+    process: &ProcessInfo,
+    state: &mut ProcessManagerState,
+    actions: &mut Vec<ProcessManagerAction>,
+) {
+    response.context_menu(|ui| {
+        // 本机的 PID 1 和自身进程在确认前就禁用，避免无效交互。
+        let protected = matches!(state.target(), MonitorKey::Local)
+            && (process.pid <= 1 || process.pid == std::process::id());
+        let terminate = ui.add_enabled(
+            !protected,
+            egui::Button::new(
+                egui::RichText::new(crate::i18n::tr("终止进程").into_owned()).color(RED),
+            )
+            .frame(false),
+        );
+        let terminate = if protected {
+            terminate.on_disabled_hover_text(crate::i18n::tr("该进程不允许终止").into_owned())
+        } else {
+            terminate
+        };
+        if terminate.clicked() {
+            state.pending_kill = Some(PendingKill {
+                pid: process.pid,
+                name: process.name.clone(),
+                start_time: process.start_time.clone(),
+            });
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui
+            .button(crate::i18n::tr("复制 PID").into_owned())
+            .clicked()
+        {
+            actions.push(ProcessManagerAction::CopyText(process.pid.to_string()));
+            ui.close_menu();
+        }
+        if ui
+            .button(crate::i18n::tr("复制名称").into_owned())
+            .clicked()
+        {
+            actions.push(ProcessManagerAction::CopyText(process.name.clone()));
+            ui.close_menu();
+        }
+        if ui
+            .button(crate::i18n::tr("复制命令行").into_owned())
+            .clicked()
+        {
+            let command = if process.command.trim().is_empty() {
+                process.name.clone()
+            } else {
+                process.command.clone()
+            };
+            actions.push(ProcessManagerAction::CopyText(command));
+            ui.close_menu();
+        }
+        if ui
+            .button(crate::i18n::tr("复制位置").into_owned())
+            .clicked()
+        {
+            let loaded = state
+                .detail
+                .as_ref()
+                .filter(|detail| detail.identity.pid == process.pid)
+                .and_then(process_location)
+                .map(str::to_string);
+            match loaded {
+                Some(location) => actions.push(ProcessManagerAction::CopyText(location)),
+                None if state
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.identity.pid == process.pid) =>
+                {
+                    state.set_notice(
+                        crate::i18n::tr("无法读取该进程的可执行文件位置").into_owned(),
+                        true,
+                    );
+                }
+                None => {
+                    actions.push(state.select_process(process.pid, &process.start_time));
+                    state.copy_location_pid = Some(process.pid);
+                }
+            }
+            ui.close_menu();
+        }
+    });
 }
 
 fn sorted_processes(

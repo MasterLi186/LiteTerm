@@ -151,6 +151,13 @@ enum UserEvent {
         request_id: u64,
         result: Result<Box<network_detail::NetworkDetailSnapshot>, String>,
     },
+    ProcessKilled {
+        key: monitor::MonitorKey,
+        generation: u64,
+        requester: String,
+        pid: u32,
+        result: Result<(), String>,
+    },
     RecordingLoaded {
         path: std::path::PathBuf,
         result: Result<recording::Asciicast, String>,
@@ -235,6 +242,20 @@ impl std::fmt::Debug for UserEvent {
                 .field("generation", generation)
                 .field("requester", requester)
                 .field("request_id", request_id)
+                .field("result", &if result.is_ok() { "Ok" } else { "Err" })
+                .finish(),
+            UserEvent::ProcessKilled {
+                key,
+                generation,
+                requester,
+                pid,
+                result,
+            } => f
+                .debug_struct("ProcessKilled")
+                .field("key", key)
+                .field("generation", generation)
+                .field("requester", requester)
+                .field("pid", pid)
                 .field("result", &if result.is_ok() { "Ok" } else { "Err" })
                 .finish(),
             UserEvent::RecordingLoaded { path, result } => f

@@ -43,6 +43,11 @@ pub(crate) enum RemoteMonitorCommand {
         requester: String,
         request_id: u64,
     },
+    KillProcess {
+        requester: String,
+        pid: u32,
+        expected_start_time: String,
+    },
     Shutdown,
 }
 
@@ -70,6 +75,13 @@ pub(crate) enum RemoteMonitorEvent {
         requester: String,
         request_id: u64,
         result: Result<Box<NetworkDetailSnapshot>, String>,
+    },
+    ProcessKilled {
+        key: MonitorKey,
+        generation: u64,
+        requester: String,
+        pid: u32,
+        result: Result<(), String>,
     },
 }
 
@@ -114,6 +126,19 @@ impl fmt::Debug for RemoteMonitorEvent {
                 .field("key", key)
                 .field("generation", generation)
                 .field("request_id", request_id)
+                .field("result", &if result.is_ok() { "Ok" } else { "Err" })
+                .finish(),
+            Self::ProcessKilled {
+                key,
+                generation,
+                pid,
+                result,
+                ..
+            } => f
+                .debug_struct("RemoteMonitorEvent::ProcessKilled")
+                .field("key", key)
+                .field("generation", generation)
+                .field("pid", pid)
                 .field("result", &if result.is_ok() { "Ok" } else { "Err" })
                 .finish(),
         }
@@ -163,6 +188,14 @@ impl RemoteMonitorHandle {
         });
     }
 
+    pub(crate) fn kill_process(&self, requester: String, pid: u32, expected_start_time: String) {
+        let _ = self.tx.send(RemoteMonitorCommand::KillProcess {
+            requester,
+            pid,
+            expected_start_time,
+        });
+    }
+
     #[cfg(test)]
     fn take_done_receiver_for_test(&mut self) -> Option<Receiver<()>> {
         self.done_rx.take()
@@ -184,6 +217,10 @@ trait SnapshotSource {
 
     fn fetch_network_detail(&mut self) -> Result<NetworkDetailSnapshot, String> {
         Err("当前监控源不支持网络详情".to_string())
+    }
+
+    fn kill_process(&mut self, _pid: u32, _expected_start_time: &str) -> Result<(), String> {
+        Err("当前监控源不支持终止进程".to_string())
     }
 }
 
@@ -242,6 +279,76 @@ impl SnapshotSource for SshSnapshotSource {
                 .exec(NETWORK_DETAIL_COMMAND)
                 .map_err(|error| format!("执行远端网络详情命令失败: {error}"))?;
             read_network_detail_bounded(&mut channel)
+        })();
+        let _ = channel.close();
+        let _ = channel.wait_close();
+        result
+    }
+
+    fn kill_process(&mut self, pid: u32, expected_start_time: &str) -> Result<(), String> {
+        if pid <= 1 {
+            return Err(crate::i18n::tr("不允许终止系统进程").into_owned());
+        }
+        // 先核对启动时间，避免确认期间进程退出后同一 PID 被别的进程复用。
+        let start_command =
+            format!("LC_ALL=C; export LC_ALL; ps -p {pid} -o lstart= 2>/dev/null | head -n 1");
+        let mut start_channel = self
+            .session
+            .channel_session()
+            .map_err(|error| format!("创建远端终止进程通道失败: {error}"))?;
+        let start_result = (|| {
+            start_channel
+                .exec(&start_command)
+                .map_err(|error| format!("执行远端进程校验命令失败: {error}"))?;
+            read_utf8_bounded(
+                &mut start_channel,
+                16 * 1024,
+                "读取远端进程启动时间失败",
+                "远端进程启动时间超过 16KiB 限制",
+                "远端进程启动时间不是有效 UTF-8",
+            )
+        })();
+        let _ = start_channel.close();
+        let _ = start_channel.wait_close();
+        let observed_start = start_result?;
+        if observed_start.trim().is_empty()
+            || normalize_process_start_time(&observed_start)
+                != normalize_process_start_time(expected_start_time)
+        {
+            return Err(crate::i18n::tr("进程已退出或 PID 已被复用，已取消终止").into_owned());
+        }
+
+        let command = format!("kill -TERM -- {pid} 2>&1; printf '\\n__EXIT__:%s\\n' $?");
+        let mut channel = self
+            .session
+            .channel_session()
+            .map_err(|error| format!("创建远端终止进程通道失败: {error}"))?;
+        let result = (|| {
+            channel
+                .exec(&command)
+                .map_err(|error| format!("执行远端终止进程命令失败: {error}"))?;
+            let output = read_utf8_bounded(
+                &mut channel,
+                64 * 1024,
+                "读取远端终止进程结果失败",
+                "远端终止进程输出超过 64KiB 限制",
+                "远端终止进程输出不是有效 UTF-8",
+            )?;
+            let (message, code) = output
+                .rsplit_once("__EXIT__:")
+                .ok_or_else(|| "无法确认远端终止进程结果".to_string())?;
+            let code = code.trim();
+            if code == "0" {
+                return Ok(());
+            }
+            let message = message.trim().trim_end_matches(['\r', '\n']);
+            if message.is_empty() {
+                Err(crate::i18n::tr("终止进程失败（退出码 {code}）").replace("{code}", code))
+            } else {
+                Err(crate::i18n::tr("终止进程失败（退出码 {code}）：{message}")
+                    .replace("{code}", code)
+                    .replace("{message}", message))
+            }
         })();
         let _ = channel.close();
         let _ = channel.wait_close();
@@ -634,6 +741,23 @@ where
                     return false;
                 }
             }
+            Ok(RemoteMonitorCommand::KillProcess {
+                requester,
+                pid,
+                expected_start_time,
+            }) => {
+                if !send_kill_result(
+                    source,
+                    sink,
+                    key,
+                    generation,
+                    requester,
+                    pid,
+                    expected_start_time,
+                ) {
+                    return false;
+                }
+            }
             Ok(RemoteMonitorCommand::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
                 return false;
             }
@@ -677,6 +801,23 @@ where
                 request_id,
             }) => {
                 if !send_network_detail(source, sink, key, generation, requester, request_id) {
+                    return WorkerControl::Shutdown;
+                }
+            }
+            Ok(RemoteMonitorCommand::KillProcess {
+                requester,
+                pid,
+                expected_start_time,
+            }) => {
+                if !send_kill_result(
+                    source,
+                    sink,
+                    key,
+                    generation,
+                    requester,
+                    pid,
+                    expected_start_time,
+                ) {
                     return WorkerControl::Shutdown;
                 }
             }
@@ -738,6 +879,33 @@ where
         generation,
         requester,
         request_id,
+        result,
+    })
+    .is_ok()
+}
+
+fn send_kill_result<S, E>(
+    source: &mut Option<S>,
+    sink: &E,
+    key: &MonitorKey,
+    generation: u64,
+    requester: String,
+    pid: u32,
+    expected_start_time: String,
+) -> bool
+where
+    S: SnapshotSource,
+    E: EventSink,
+{
+    let result = source
+        .as_mut()
+        .ok_or_else(|| "远端监控当前未连接".to_string())
+        .and_then(|source| source.kill_process(pid, &expected_start_time));
+    sink.send(RemoteMonitorEvent::ProcessKilled {
+        key: key.clone(),
+        generation,
+        requester,
+        pid,
         result,
     })
     .is_ok()

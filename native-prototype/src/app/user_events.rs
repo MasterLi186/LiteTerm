@@ -71,6 +71,39 @@ impl App {
                     }
                 }
             }
+            UserEvent::ProcessKilled {
+                key,
+                generation,
+                requester,
+                pid,
+                result,
+            } => {
+                if monitor_event_is_current(&key, generation, &self.remote_monitor_generations) {
+                    let succeeded = result.is_ok();
+                    if let Some(state) = self.process_managers.get_mut(&requester) {
+                        if state.target() == &key {
+                            state.apply_kill_result(pid, result);
+                        }
+                    }
+                    if succeeded {
+                        match &key {
+                            monitor::MonitorKey::Local => {
+                                if let Some(refresh) = &self.local_monitor_refresh {
+                                    let _ = refresh.try_send(());
+                                }
+                            }
+                            monitor::MonitorKey::Remote { .. } => {
+                                if let Some(worker) = self.remote_monitors.get(&key) {
+                                    worker.refresh();
+                                }
+                            }
+                        }
+                    }
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
             UserEvent::RecordingLoaded { path, result } => match result {
                 Ok(cast) => {
                     self.prepare_for_active_tab_change();

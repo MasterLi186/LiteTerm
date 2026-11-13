@@ -402,6 +402,33 @@ impl App {
                         let _ = clipboard.set_text(text);
                     }
                 }
+                process_manager::ProcessManagerAction::KillProcess { pid, start_time } => match key
+                {
+                    monitor::MonitorKey::Local => {
+                        let proxy = self.proxy.clone();
+                        let requester = tab_id.to_string();
+                        std::thread::spawn(move || {
+                            let result = monitor::kill_local_process(pid, &start_time);
+                            let _ = proxy.send_event(UserEvent::ProcessKilled {
+                                key: monitor::MonitorKey::Local,
+                                generation: 0,
+                                requester,
+                                pid,
+                                result,
+                            });
+                        });
+                    }
+                    monitor::MonitorKey::Remote { .. } => {
+                        if let Some(worker) = self.remote_monitors.get(key) {
+                            worker.kill_process(tab_id.to_string(), pid, start_time);
+                        } else if let Some(state) = self.process_managers.get_mut(tab_id) {
+                            state.apply_kill_result(
+                                pid,
+                                Err(crate::i18n::tr("远端监控尚未连接，请稍后重试").into_owned()),
+                            );
+                        }
+                    }
+                },
                 process_manager::ProcessManagerAction::CloseDetail => {}
             }
         }

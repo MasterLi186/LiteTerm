@@ -48,6 +48,40 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "最大化面板" => "Maximize pane",
         "还原面板" => "Restore pane",
         "已最大化，点击还原" => "Maximized, click to restore",
+        "终止进程" => "Terminate process",
+        "复制 PID" => "Copy PID",
+        "复制名称" => "Copy name",
+        "复制命令行" => "Copy command line",
+        "复制位置" => "Copy location",
+        "确认终止进程" => "Confirm process termination",
+        "确定要终止进程 {name}（PID {pid}）吗？" => "Terminate process {name} (PID {pid})?",
+        "是" => "Yes",
+        "否" => "No",
+        "已向 PID {pid} 发送终止信号" => "Termination signal sent to PID {pid}",
+        "终止 PID {pid} 失败：{error}" => "Failed to terminate PID {pid}: {error}",
+        "无法读取该进程的可执行文件位置" => {
+            "Unable to read the process executable location"
+        }
+        "无法读取进程位置：{error}" => "Unable to read the process location: {error}",
+        "该进程不允许终止" => "This process cannot be terminated",
+        "不允许终止系统进程" => "Refusing to terminate a system process",
+        "不能终止当前应用自身" => "Refusing to terminate the current application",
+        "本机进程不存在或无权读取" => "The process does not exist or cannot be read",
+        "进程已退出或 PID 已被复用，已取消终止" => {
+            "The process exited or its PID was reused; termination cancelled"
+        }
+        "发送终止信号失败（权限不足或进程已退出）" => {
+            "Failed to send the termination signal (permission denied or process exited)"
+        }
+        "远端监控尚未连接，请稍后重试" => {
+            "Remote monitoring is not connected yet; try again later"
+        }
+        "终止进程失败（退出码 {code}）" => {
+            "Failed to terminate the process (exit code {code})"
+        }
+        "终止进程失败（退出码 {code}）：{message}" => {
+            "Failed to terminate the process (exit code {code}): {message}"
+        }
         "标签页「{label}」中仍有程序正在运行：{programs}。关闭后会终止这些程序。" => {
             "\"{label}\" still has running programs: {programs}. Closing will terminate them."
         }

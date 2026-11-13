@@ -92,6 +92,19 @@ pub(super) fn user_event_from_remote(event: remote_monitor::RemoteMonitorEvent) 
             request_id,
             result,
         },
+        remote_monitor::RemoteMonitorEvent::ProcessKilled {
+            key,
+            generation,
+            requester,
+            pid,
+            result,
+        } => UserEvent::ProcessKilled {
+            key,
+            generation,
+            requester,
+            pid,
+            result,
+        },
     }
 }
 
