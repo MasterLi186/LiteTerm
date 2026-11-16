@@ -169,7 +169,7 @@ fn sidebar_typography_uses_local_readable_sizes() {
     assert_eq!(SIDEBAR_META_SIZE, 11.0);
     assert_eq!(SIDEBAR_BODY_SIZE, 12.0);
     assert_eq!(SIDEBAR_SECTION_SIZE, 12.0);
-    assert_eq!(SIDEBAR_VALUE_SIZE, 13.0);
+    assert_eq!(SIDEBAR_VALUE_SIZE, 12.0);
 }
 
 #[test]

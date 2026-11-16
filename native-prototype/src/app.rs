@@ -17,6 +17,10 @@ mod window_events;
 
 pub(crate) use api_ops::*;
 
+/// Linux 上 egui 界面的整体缩放（见 `App::new` 中的说明）。
+#[cfg(target_os = "linux")]
+const LINUX_UI_ZOOM_FACTOR: f32 = 1.15;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SerialTerminalMenuState {
     Connecting,
@@ -245,6 +249,11 @@ impl App {
                     }
                 }
                 ctx.set_fonts(fonts);
+                // GNOME 界面字体是 Ubuntu Sans 11pt（≈14.7 逻辑像素），egui 控件按 ≈12.5 设计，
+                // Linux 上整体放大一档以贴近系统原生应用；zoom 同时缩放文字与布局，
+                // 不影响终端字号（终端按设置字号 × 窗口缩放比绘制）。
+                #[cfg(target_os = "linux")]
+                ctx.set_zoom_factor(LINUX_UI_ZOOM_FACTOR);
                 ctx
             },
             egui_state: None,
