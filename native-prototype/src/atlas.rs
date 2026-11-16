@@ -214,6 +214,42 @@ fn shape_glyph_with_italic_fallback(
     None
 }
 
+/// 字体族是否有字重正好为 700 的粗体字面。cosmic-text 0.12 只接受字重完全匹配的 face：
+/// Ubuntu Sans Mono / Ubuntu Mono 这类可变字体在 fontdb 里只登记为 400，请求粗体时
+/// 会改用 Noto Sans Bold 等比例字体，等宽格子里就出现 “Publ i c” 这样的间距。
+fn family_has_bold_face(font_system: &FontSystem, family: &str) -> bool {
+    font_system.db().faces().any(|face| {
+        face.weight == Weight::BOLD
+            && face
+                .families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(family))
+    })
+}
+
+fn face_in_family(font_system: &FontSystem, id: cosmic_text::fontdb::ID, family: &str) -> bool {
+    font_system.db().face(id).is_some_and(|face| {
+        face.families
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(family))
+    })
+}
+
+/// 假粗体的横向加粗像素数（与 FreeType 的 embolden 强度同量级，约字号的 1/20）。
+fn synthetic_bold_px(font_size: f32) -> u32 {
+    (font_size / 20.0).round().clamp(1.0, 4.0) as u32
+}
+
+/// 横向加粗后的遮罩取样：取原遮罩中 [x - extra, x] 范围内的最大 alpha。
+fn emboldened_mask_alpha(mask: &[u8], src_width: u32, x: u32, y: u32, extra: u32) -> u8 {
+    let row = y as usize * src_width as usize;
+    (x.saturating_sub(extra)..=x)
+        .filter(|&sx| sx < src_width)
+        .map(|sx| mask[row + sx as usize])
+        .max()
+        .unwrap_or(0)
+}
+
 /// CPU 侧的字形纹理图集
 pub struct GlyphAtlas {
     pub data: Vec<u8>,
@@ -233,6 +269,8 @@ pub struct GlyphAtlas {
     /// 基线到字符格顶部的距离（物理像素）。
     baseline: f32,
     font_family: String,
+    /// 主字体族有真粗体字面；没有时粗体用本字体 + 假粗体绘制。
+    family_has_bold: bool,
 }
 
 impl GlyphAtlas {
@@ -245,6 +283,7 @@ impl GlyphAtlas {
         let font_family = resolve_installed_family(font_system, "Ubuntu Mono");
         let cell = measure_cell_metrics(font_system, &font_family, font_size)
             .unwrap_or_else(|| fallback_cell_metrics(font_size));
+        let family_has_bold = family_has_bold_face(font_system, &font_family);
 
         let mut atlas = Self {
             data,
@@ -262,6 +301,7 @@ impl GlyphAtlas {
             cell_height: cell.height,
             baseline: cell.baseline,
             font_family,
+            family_has_bold,
         };
 
         // 预填充 ASCII（normal weight）
@@ -282,6 +322,7 @@ impl GlyphAtlas {
 
     pub fn reset(&mut self, font_system: &mut FontSystem, family: &str, size: f32) {
         self.font_family = resolve_installed_family(font_system, family);
+        self.family_has_bold = family_has_bold_face(font_system, &self.font_family);
         self.font_size = size;
         let cell = measure_cell_metrics(font_system, &self.font_family, size)
             .unwrap_or_else(|| fallback_cell_metrics(size));
@@ -335,27 +376,47 @@ impl GlyphAtlas {
         } else {
             self.cell_width
         };
-        let physical = shape_glyph_with_italic_fallback(
+        let request = GlyphShapeRequest {
+            family: &self.font_family,
+            font_size: self.font_size,
+            cell_height: self.cell_height,
+            char_width,
+            ch,
+            bold,
+            italic,
+            color_emoji,
+        };
+        // 主字体族没有粗体字面时，先按常规字重在本字体里塑形，再做假粗体；
+        // 本字体不含的字符（CJK 等回退字体）仍按原逻辑请求真粗体。
+        let mut synthetic_bold = bold && !self.family_has_bold;
+        let mut physical = shape_glyph_with_italic_fallback(
             font_system,
             GlyphShapeRequest {
-                family: &self.font_family,
-                font_size: self.font_size,
-                cell_height: self.cell_height,
-                char_width,
-                ch,
-                bold,
-                italic,
-                color_emoji,
+                bold: bold && !synthetic_bold,
+                ..request
             },
         )?;
+        if synthetic_bold
+            && !face_in_family(font_system, physical.cache_key.font_id, request.family)
+        {
+            synthetic_bold = false;
+            physical = shape_glyph_with_italic_fallback(font_system, request)?;
+        }
         let image = swash_cache
             .get_image(font_system, physical.cache_key)
             .as_ref()?;
-        let w = image.placement.width;
+        let src_w = image.placement.width;
         let h = image.placement.height;
-        if w == 0 || h == 0 {
+        if src_w == 0 || h == 0 {
             return None;
         }
+        let is_mask = image.content == SwashContent::Mask;
+        let embolden = if synthetic_bold && is_mask {
+            synthetic_bold_px(self.font_size)
+        } else {
+            0
+        };
+        let w = src_w + embolden;
 
         if self.cursor_x + w + 1 >= self.atlas_width {
             self.cursor_x = 1;
@@ -369,15 +430,14 @@ impl GlyphAtlas {
         // 彩色 emoji（Noto Color Emoji 等）返回 32 位 RGBA 位图；普通字形是单通道
         // alpha 遮罩。图集统一为 RGBA8：普通字形写白色 + alpha，彩色字形原样拷贝，
         // 由着色器按 is_color 决定用前景色还是位图颜色。
-        let is_mask = image.content == SwashContent::Mask;
         let bytes_per_pixel = if is_mask { 1 } else { 4 };
-        let required = (w as usize) * (h as usize) * bytes_per_pixel;
+        let required = (src_w as usize) * (h as usize) * bytes_per_pixel;
         if image.data.len() < required {
             return None;
         }
         for iy in 0..h {
             for ix in 0..w {
-                let src = (iy as usize * w as usize + ix as usize) * bytes_per_pixel;
+                let src = (iy as usize * src_w as usize + ix as usize) * bytes_per_pixel;
                 let dst =
                     (((self.cursor_y + iy) * self.atlas_width + self.cursor_x + ix) as usize) * 4;
                 if dst + 4 > self.data.len() || self.cursor_x + ix >= self.atlas_width {
@@ -387,7 +447,8 @@ impl GlyphAtlas {
                     self.data[dst] = 255;
                     self.data[dst + 1] = 255;
                     self.data[dst + 2] = 255;
-                    self.data[dst + 3] = image.data[src];
+                    self.data[dst + 3] =
+                        emboldened_mask_alpha(&image.data, src_w, ix, iy, embolden);
                 } else {
                     self.data[dst..dst + 4].copy_from_slice(&image.data[src..src + 4]);
                 }
@@ -401,7 +462,8 @@ impl GlyphAtlas {
             y: self.cursor_y,
             width: w,
             height: h,
-            bearing_x: physical.x + image.placement.left,
+            // 假粗体向右加宽了 embolden 像素，左移一半保持字形居中。
+            bearing_x: physical.x + image.placement.left - (embolden / 2) as i32,
             bearing_y: physical.y - image.placement.top + self.baseline as i32,
             advance_width: char_width,
             is_color: !is_mask,
