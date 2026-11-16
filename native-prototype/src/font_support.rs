@@ -170,6 +170,18 @@ pub fn database_has_known_cjk_family(db: &cosmic_text::fontdb::Database) -> bool
     })
 }
 
+/// 终端字号在设置里按逻辑像素保存（与 egui 界面同一坐标系），而终端渲染器按物理像素
+/// 栅格化字形，因此要乘以窗口缩放比；否则 200% 缩放下终端字会只有界面的一半大。
+/// 非法缩放比按 1.0 处理。
+pub fn terminal_font_physical_size(logical_size: f32, scale_factor: f64) -> f32 {
+    let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor as f32
+    } else {
+        1.0
+    };
+    logical_size * scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -120,7 +120,10 @@ impl ApplicationHandler<UserEvent> for App {
         renderer.set_font(
             &gpu,
             &self.settings.terminal.font,
-            self.settings.terminal.font_size,
+            crate::font_support::terminal_font_physical_size(
+                self.settings.terminal.font_size,
+                window.scale_factor(),
+            ),
         );
 
         self.egui_state = Some(egui_state);

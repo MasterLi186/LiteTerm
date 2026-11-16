@@ -112,7 +112,10 @@ impl App {
                             renderer.set_font(
                                 gpu,
                                 &new_settings.terminal.font,
-                                new_settings.terminal.font_size,
+                                crate::font_support::terminal_font_physical_size(
+                                    new_settings.terminal.font_size,
+                                    window.scale_factor(),
+                                ),
                             );
                         }
                     }

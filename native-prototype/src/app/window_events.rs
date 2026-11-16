@@ -527,8 +527,19 @@ impl App {
                     plan_window_geometry_update(WindowGeometryEventKind::ScaleFactorChanged),
                     WindowGeometryUpdatePlan::SyncAndRender,
                 );
-                self.egui_ctx
-                    .set_pixels_per_point(sanitize_pixels_per_point(scale_factor as f32));
+                // egui_winit::State::on_window_event 已把新缩放比写入 native_pixels_per_point。
+                // 这里不能再调 set_pixels_per_point：egui 会按上一帧的 native 值把差额记成
+                // zoom_factor（Wayland 建窗时缩放比先是 1.0，随后变为 2.0），界面就成了 4 倍。
+                if let (Some(renderer), Some(gpu)) = (self.renderer.as_mut(), self.gpu.as_ref()) {
+                    renderer.set_font(
+                        gpu,
+                        &self.settings.terminal.font,
+                        crate::font_support::terminal_font_physical_size(
+                            self.settings.terminal.font_size,
+                            scale_factor,
+                        ),
+                    );
+                }
                 if let (Some(window), Some(gpu)) = (&self.window, &mut self.gpu) {
                     let size = window.inner_size();
                     gpu.resize(size.width, size.height);
