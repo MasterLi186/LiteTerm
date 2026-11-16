@@ -280,7 +280,8 @@ impl GlyphAtlas {
         // RGBA8：普通字形存白色 + alpha 遮罩，彩色 emoji 存原始 RGBA。
         let data = vec![0u8; (atlas_width * atlas_height * 4) as usize];
 
-        let font_family = resolve_installed_family(font_system, "Ubuntu Mono");
+        let font_family =
+            resolve_installed_family(font_system, crate::settings::DEFAULT_TERMINAL_FONT_FAMILY);
         let cell = measure_cell_metrics(font_system, &font_family, font_size)
             .unwrap_or_else(|| fallback_cell_metrics(font_size));
         let family_has_bold = family_has_bold_face(font_system, &font_family);

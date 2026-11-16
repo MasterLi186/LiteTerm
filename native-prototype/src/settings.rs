@@ -9,9 +9,16 @@ use crate::shortcuts::ShortcutSettings;
 
 #[cfg(target_os = "windows")]
 pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Consolas";
-#[cfg(not(target_os = "windows"))]
+/// Linux 默认与 Ubuntu 24.04 系统等宽字体（GNOME Terminal 所用）一致；未安装时渲染器会回退。
+#[cfg(target_os = "linux")]
+pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Ubuntu Sans Mono";
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Ubuntu Mono";
-pub const DEFAULT_TERMINAL_FONT_SIZE: f32 = 22.0;
+/// 终端默认字号（逻辑像素，渲染时再乘以窗口缩放比），比 GNOME Terminal 默认的 13pt 小一号。
+pub const DEFAULT_TERMINAL_FONT_SIZE: f32 = 16.0;
+#[cfg(target_os = "linux")]
+pub const DEFAULT_TERMINAL_COLOR_SCHEME: &str = crate::themes::GNOME_TERMINAL_THEME_NAME;
+#[cfg(not(target_os = "linux"))]
 pub const DEFAULT_TERMINAL_COLOR_SCHEME: &str = "AdventureTime";
 pub const MIN_SIDEBAR_WIDTH: u32 = 150;
 pub const MAX_SIDEBAR_WIDTH: u32 = 500;
@@ -609,14 +616,20 @@ mod tests {
 
     /// Fresh Native settings use the Native product defaults.
     #[test]
-    fn default_terminal_uses_platform_mono_22_and_adventure_time() {
+    fn default_terminal_uses_platform_mono_16_and_platform_theme() {
         let settings = Settings::default();
         #[cfg(target_os = "windows")]
         assert_eq!(DEFAULT_TERMINAL_FONT_FAMILY, "Consolas");
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        assert_eq!(DEFAULT_TERMINAL_FONT_FAMILY, "Ubuntu Sans Mono");
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         assert_eq!(DEFAULT_TERMINAL_FONT_FAMILY, "Ubuntu Mono");
-        assert_eq!(DEFAULT_TERMINAL_FONT_SIZE, 22.0);
+        assert_eq!(DEFAULT_TERMINAL_FONT_SIZE, 16.0);
+        #[cfg(target_os = "linux")]
+        assert_eq!(DEFAULT_TERMINAL_COLOR_SCHEME, "GNOME Terminal");
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(DEFAULT_TERMINAL_COLOR_SCHEME, "AdventureTime");
+        assert!(crate::themes::theme_by_name(DEFAULT_TERMINAL_COLOR_SCHEME).is_some());
         assert_eq!(settings.terminal.font, DEFAULT_TERMINAL_FONT_FAMILY);
         assert_eq!(settings.terminal.font_size, DEFAULT_TERMINAL_FONT_SIZE);
         assert_eq!(
@@ -634,7 +647,7 @@ mod tests {
     }
 
     /// P0 Task 3 RED: 旧式 "family size" 字符串应规范化为纯 family，
-    /// 且缺失显式 font_size 时使用 Native 默认 22.0，而非内嵌旧字号。
+    /// 且缺失显式 font_size 时使用 Native 默认 16.0，而非内嵌旧字号。
     #[test]
     fn deserializes_legacy_font_family_size_string_without_inheriting_embedded_size() {
         let settings: Settings = toml::from_str("[terminal]\nfont = 'Monospace 12'\n").unwrap();
@@ -759,16 +772,16 @@ color_scheme = '3024 Day'
         assert!(warnings.iter().any(|w| w.contains("字号")));
     }
 
-    /// NaN / ±∞ 字号应回落 Native 默认 22.0，并产生含「字号」的中文警告。
+    /// NaN / ±∞ 字号应回落 Native 默认 16.0，并产生含「字号」的中文警告。
     #[test]
-    fn sanitize_loaded_resets_non_finite_font_size_to_default_22() {
+    fn sanitize_loaded_resets_non_finite_font_size_to_default_16() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut settings = Settings::default();
             settings.terminal.font_size = bad;
             let warnings = settings.sanitize_loaded();
             assert_eq!(
                 settings.terminal.font_size, DEFAULT_TERMINAL_FONT_SIZE,
-                "non-finite font_size={bad:?} 应回落 22.0"
+                "non-finite font_size={bad:?} 应回落 16.0"
             );
             assert!(
                 warnings.iter().any(|w| w.contains("字号")),
