@@ -56,6 +56,95 @@ fn shape_once(
         .map(|glyph| glyph.physical((0.0, 0.0), 1.0))
 }
 
+/// 终端字符格度量（物理像素）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CellMetrics {
+    width: f32,
+    height: f32,
+    /// 基线到字符格顶部的距离。
+    baseline: f32,
+}
+
+/// 按主字体的真实度量计算字符格：宽 = '0' 的 advance，高 = ascent + descent + leading，
+/// 各项按整像素取整（与 GNOME 默认开启 hint metrics 时的 VTE 一致）。
+/// 旧实现写死 0.5em × 1.0em（旧版 Ubuntu Mono 的比例），新版 Ubuntu Mono / Ubuntu Sans
+/// Mono 的 advance 是 0.56em、行高 1.12~1.2em，会被横向压扁、行距过挤。
+fn measure_cell_metrics(
+    font_system: &mut FontSystem,
+    family: &str,
+    font_size: f32,
+) -> Option<CellMetrics> {
+    let mut buffer = Buffer::new(font_system, Metrics::new(font_size, font_size * 2.0));
+    buffer.set_size(font_system, None, None);
+    buffer.set_text(
+        font_system,
+        "0",
+        Attrs::new().family(cosmic_text::Family::Name(family)),
+        Shaping::Advanced,
+    );
+    buffer.shape_until_scroll(font_system, false);
+    let glyph = buffer
+        .layout_runs()
+        .flat_map(|run| run.glyphs.iter())
+        .next()?
+        .clone();
+    let font = font_system.get_font(glyph.font_id)?;
+    let metrics = font.as_swash().metrics(&[]);
+    let units_per_em = f32::from(metrics.units_per_em);
+    if !(glyph.w.is_finite() && glyph.w > 0.0 && units_per_em > 0.0) {
+        return None;
+    }
+    let ascent = metrics.ascent / units_per_em * font_size;
+    let descent = metrics.descent / units_per_em * font_size;
+    let leading = metrics.leading.max(0.0) / units_per_em * font_size;
+    if !(ascent.is_finite() && descent.is_finite() && ascent > 0.0) {
+        return None;
+    }
+    let width = glyph.w.round().max(1.0);
+    let ascent = ascent.round();
+    let leading = leading.round();
+    let height = (ascent + descent.round() + leading).max(1.0);
+    // 行间距上下均分。
+    let baseline = ascent + (leading * 0.5).floor();
+    Some(CellMetrics {
+        width,
+        height,
+        baseline,
+    })
+}
+
+/// 字体度量不可用时的旧比例。
+fn fallback_cell_metrics(font_size: f32) -> CellMetrics {
+    CellMetrics {
+        width: (font_size * 0.5).round(),
+        height: font_size,
+        baseline: font_size * 0.8,
+    }
+}
+
+/// 设置里的字体没安装时，退回到已安装的常见等宽字体，避免 cosmic-text 用比例字体顶替。
+/// 返回字体库里的规范族名。
+fn resolve_installed_family(font_system: &FontSystem, requested: &str) -> String {
+    let installed = |wanted: &str| {
+        font_system.db().faces().find_map(|face| {
+            face.families
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+                .map(|(name, _)| name.clone())
+        })
+    };
+    if let Some(name) = installed(requested) {
+        return name;
+    }
+    for candidate in crate::font_support::monospace_fallback_families() {
+        if let Some(name) = installed(candidate) {
+            log::warn!("终端字体「{requested}」未安装，改用「{name}」");
+            return name;
+        }
+    }
+    requested.to_string()
+}
+
 #[derive(Clone, Copy)]
 struct GlyphShapeRequest<'a> {
     family: &'a str,
@@ -141,6 +230,8 @@ pub struct GlyphAtlas {
     pub font_size: f32,
     pub cell_width: f32,
     pub cell_height: f32,
+    /// 基线到字符格顶部的距离（物理像素）。
+    baseline: f32,
     font_family: String,
 }
 
@@ -151,9 +242,9 @@ impl GlyphAtlas {
         // RGBA8：普通字形存白色 + alpha 遮罩，彩色 emoji 存原始 RGBA。
         let data = vec![0u8; (atlas_width * atlas_height * 4) as usize];
 
-        // 对齐 guishell/xterm.js 实测值：size=26 → cellReal=13x26
-        let cell_width = (font_size * 0.5).round();
-        let line_height = font_size;
+        let font_family = resolve_installed_family(font_system, "Ubuntu Mono");
+        let cell = measure_cell_metrics(font_system, &font_family, font_size)
+            .unwrap_or_else(|| fallback_cell_metrics(font_size));
 
         let mut atlas = Self {
             data,
@@ -167,9 +258,10 @@ impl GlyphAtlas {
             dirty_top: u32::MAX,
             dirty_bottom: 0,
             font_size,
-            cell_width,
-            cell_height: line_height,
-            font_family: "Ubuntu Mono".to_string(),
+            cell_width: cell.width,
+            cell_height: cell.height,
+            baseline: cell.baseline,
+            font_family,
         };
 
         // 预填充 ASCII（normal weight）
@@ -188,11 +280,14 @@ impl GlyphAtlas {
         self.entries.is_empty()
     }
 
-    pub fn reset(&mut self, family: &str, size: f32) {
-        self.font_family = family.to_string();
+    pub fn reset(&mut self, font_system: &mut FontSystem, family: &str, size: f32) {
+        self.font_family = resolve_installed_family(font_system, family);
         self.font_size = size;
-        self.cell_width = (size * 0.5).round();
-        self.cell_height = size;
+        let cell = measure_cell_metrics(font_system, &self.font_family, size)
+            .unwrap_or_else(|| fallback_cell_metrics(size));
+        self.cell_width = cell.width;
+        self.cell_height = cell.height;
+        self.baseline = cell.baseline;
         self.entries.clear();
         self.data.fill(0);
         self.cursor_x = 1;
@@ -307,7 +402,7 @@ impl GlyphAtlas {
             width: w,
             height: h,
             bearing_x: physical.x + image.placement.left,
-            bearing_y: physical.y - image.placement.top + (self.cell_height * 0.8) as i32,
+            bearing_y: physical.y - image.placement.top + self.baseline as i32,
             advance_width: char_width,
             is_color: !is_mask,
         };
@@ -340,12 +435,22 @@ mod tests {
         let mut swash_cache = SwashCache::new();
         let mut atlas = GlyphAtlas::new(&mut font_system, &mut swash_cache, 26.0);
 
-        atlas.reset("Noto Sans Mono", 18.0);
+        atlas.reset(&mut font_system, "Ubuntu Mono", 18.0);
 
-        assert_eq!(atlas.font_family(), "Noto Sans Mono");
+        assert!(!atlas.font_family().is_empty());
         assert_eq!(atlas.font_size, 18.0);
-        assert_eq!(atlas.cell_width, 9.0);
-        assert_eq!(atlas.cell_height, 18.0);
+        // 字符格来自字体真实度量：等宽字体的 advance 约 0.5~0.65em，行高不小于 1em。
+        assert!(
+            (9.0..=12.0).contains(&atlas.cell_width),
+            "{}",
+            atlas.cell_width
+        );
+        assert!(
+            (18.0..=24.0).contains(&atlas.cell_height),
+            "{}",
+            atlas.cell_height
+        );
+        assert!(atlas.baseline > 0.0 && atlas.baseline < atlas.cell_height);
         assert!(atlas.is_empty());
         assert!(atlas.dirty);
     }

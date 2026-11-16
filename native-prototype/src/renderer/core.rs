@@ -296,7 +296,7 @@ impl Renderer {
     pub fn set_font(&mut self, gpu: &GpuState, family: &str, size: f32) {
         self.font_system = new_font_system();
         self.swash_cache = SwashCache::new();
-        self.atlas.reset(family, size);
+        self.atlas.reset(&mut self.font_system, family, size);
         // 立即上传已清零的 atlas，避免切换后一帧残留旧字形
         gpu.queue.write_texture(
             wgpu::TexelCopyTextureInfo {

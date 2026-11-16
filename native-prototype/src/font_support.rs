@@ -170,6 +170,22 @@ pub fn database_has_known_cjk_family(db: &cosmic_text::fontdb::Database) -> bool
     })
 }
 
+/// 设置里的终端字体未安装时依次尝试的等宽字体。
+pub fn monospace_fallback_families() -> &'static [&'static str] {
+    &[
+        "Ubuntu Sans Mono",
+        "Ubuntu Mono",
+        "DejaVu Sans Mono",
+        "Noto Sans Mono",
+        "Liberation Mono",
+        "Consolas",
+        "Cascadia Mono",
+        "Menlo",
+        "Monaco",
+        "Courier New",
+    ]
+}
+
 /// 终端字号在设置里按逻辑像素保存（与 egui 界面同一坐标系），而终端渲染器按物理像素
 /// 栅格化字形，因此要乘以窗口缩放比；否则 200% 缩放下终端字会只有界面的一半大。
 /// 非法缩放比按 1.0 处理。
