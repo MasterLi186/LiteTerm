@@ -126,6 +126,7 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "搜索配色方案…" => "Search themes…",
         "标签名称" => "Tab name",
         "工具" => "Tools",
+        "隐藏侧边栏" => "Hide sidebar",
         "最小化" => "Minimize",
         "最大化 / 还原" => "Maximize / Restore",
         "远端进程" => "Remote processes",

@@ -209,6 +209,12 @@ impl SettingsPanel {
         self.draft.sidebar_width = width;
     }
 
+    /// 标签栏开关切换侧边栏后同步设置页，避免设置页草稿回写旧值。
+    pub fn sync_show_sidebar(&mut self, visible: bool) {
+        self.base.appearance.show_sidebar = visible;
+        self.draft.show_sidebar = visible;
+    }
+
     pub fn sidebar_width(&self) -> u32 {
         self.draft.sidebar_width
     }

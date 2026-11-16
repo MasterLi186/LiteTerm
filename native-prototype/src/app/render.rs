@@ -282,7 +282,12 @@ impl App {
                     file_actions = file_browser::render(ctx, state);
                 }
             }
-            tab_action = tab_bar::render_tab_bar(ctx, &self.tab_manager, &mut self.tab_drag_state);
+            tab_action = tab_bar::render_tab_bar(
+                ctx,
+                &self.tab_manager,
+                &mut self.tab_drag_state,
+                self.sidebar.visible,
+            );
             tab_rename_request = self.tab_rename_dialog.render(ctx);
             if active_settings_tab {
                 let width_before = self.settings_panel.sidebar_width();

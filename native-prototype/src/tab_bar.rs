@@ -29,6 +29,7 @@ pub enum TabBarAction {
     OpenBatch,
     OpenTunnels,
     OpenSettings,
+    ToggleSidebar,
     NewTab,
     ToggleMaximize,
     MinimizeWindow,
@@ -52,6 +53,8 @@ impl TabDragState {
 pub const TAB_BAR_HEIGHT: f32 = 38.0;
 const TITLE_ACTION_WIDTH: f32 = 40.0;
 const TITLE_ACTIONS_RESERVED_WIDTH: f32 = 210.0;
+/// 标签栏最左侧“显示/隐藏侧边栏”按钮的宽度。
+const SIDEBAR_TOGGLE_WIDTH: f32 = 34.0;
 const TAB_ITEM_SPACING: f32 = 2.0;
 const TAB_PLUS_WIDTH: f32 = 42.0;
 const TAB_WIDTH_MIN: f32 = 72.0;
@@ -395,10 +398,58 @@ fn top_action_button(
     response
 }
 
+/// 侧边栏开关图标：外框 + 左侧分栏线；侧边栏可见时填充左栏。
+fn sidebar_toggle_button(ui: &mut egui::Ui, rect: egui::Rect, sidebar_visible: bool) -> bool {
+    let response = ui.interact(
+        rect,
+        egui::Id::new("tab_bar_sidebar_toggle"),
+        egui::Sense::click(),
+    );
+    let tooltip = if sidebar_visible {
+        "隐藏侧边栏"
+    } else {
+        "显示侧边栏"
+    };
+    let response = response.on_hover_text(crate::i18n::tr(tooltip).into_owned());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 0.0, egui::Color32::from_rgb(0x2a, 0x31, 0x3a));
+    }
+    let color = if response.hovered() {
+        egui::Color32::from_rgb(0x00, 0xd4, 0xff)
+    } else {
+        egui::Color32::from_rgb(0x8b, 0x94, 0x9e)
+    };
+    let frame = egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 13.0));
+    let divider_x = frame.left() + 5.0;
+    if sidebar_visible {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(frame.left_top(), egui::pos2(divider_x, frame.bottom())),
+            2.0,
+            color,
+        );
+    }
+    ui.painter().rect_stroke(
+        frame,
+        2.0,
+        egui::Stroke::new(1.25_f32, color),
+        egui::epaint::StrokeKind::Inside,
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(divider_x, frame.top()),
+            egui::pos2(divider_x, frame.bottom()),
+        ],
+        egui::Stroke::new(1.25_f32, color),
+    );
+    response.clicked()
+}
+
 pub fn render_tab_bar(
     ctx: &egui::Context,
     tab_manager: &TabManager,
     drag: &mut TabDragState,
+    sidebar_visible: bool,
 ) -> TabBarAction {
     let mut action = TabBarAction::None;
     drag.title_drag_rect = None;
@@ -418,8 +469,16 @@ pub fn render_tab_bar(
             let panel_rect = ui.max_rect();
             let tabs_right =
                 (panel_rect.right() - TITLE_ACTIONS_RESERVED_WIDTH).max(panel_rect.left() + 1.0);
-            let tabs_rect = egui::Rect::from_min_max(
+            let toggle_right = (panel_rect.left() + SIDEBAR_TOGGLE_WIDTH).min(tabs_right - 1.0);
+            let toggle_rect = egui::Rect::from_min_max(
                 panel_rect.left_top(),
+                egui::pos2(toggle_right, panel_rect.bottom()),
+            );
+            if sidebar_toggle_button(ui, toggle_rect, sidebar_visible) {
+                action = TabBarAction::ToggleSidebar;
+            }
+            let tabs_rect = egui::Rect::from_min_max(
+                egui::pos2(toggle_right, panel_rect.top()),
                 egui::pos2(tabs_right, panel_rect.bottom()),
             );
             let controls_rect = egui::Rect::from_min_max(

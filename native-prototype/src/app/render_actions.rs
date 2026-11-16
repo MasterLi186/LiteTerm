@@ -311,6 +311,21 @@ impl App {
                 self.cancel_left_mouse_gesture();
                 self.open_settings_tab();
             }
+            tab_bar::TabBarAction::ToggleSidebar => {
+                self.cancel_left_mouse_gesture();
+                let visible = !self.sidebar.visible;
+                self.sidebar.visible = visible;
+                self.sidebar_width = if visible { self.sidebar.width } else { 0.0 };
+                self.settings.appearance.show_sidebar = visible;
+                self.settings_panel.sync_show_sidebar(visible);
+                if let Err(error) = self.settings.save() {
+                    self.terminal_notice = Some(format!("保存侧边栏状态失败：{error}"));
+                }
+                self.sync_terminal_size();
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
             tab_bar::TabBarAction::Reorder {
                 dragged_id,
                 target_id,
