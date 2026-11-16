@@ -444,6 +444,13 @@ pub struct GpuState {
 impl GpuState {
     pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
+        let is_wayland = {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            matches!(
+                window.window_handle().map(|handle| handle.as_raw()),
+                Ok(RawWindowHandle::Wayland(_))
+            )
+        };
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -472,12 +479,22 @@ impl GpuState {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
+        let present_mode = select_present_mode(&surface_caps.present_modes, is_wayland);
+        let adapter_info = adapter.get_info();
+        log::info!(
+            "[GPU] adapter={} backend={:?} wayland={} present_mode={:?} supported={:?}",
+            adapter_info.name,
+            adapter_info.backend,
+            is_wayland,
+            present_mode,
+            surface_caps.present_modes
+        );
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -507,6 +524,18 @@ impl GpuState {
 
     pub fn format(&self) -> wgpu::TextureFormat {
         self.config.format
+    }
+}
+
+/// Wayland + Vulkan 的 Fifo 在窗口最小化、切到其他工作区或被遮挡时（合成器不再发帧回调），
+/// present 会无限阻塞主线程，GNOME 随即弹出“未响应”。本程序在后台事件（光标闪烁、
+/// 监控刷新）里也会直接绘制，所以 Wayland 上优先用不等待帧回调、也不撕裂的 Mailbox；
+/// 其他平台或不支持时仍用 Fifo。
+fn select_present_mode(supported: &[wgpu::PresentMode], is_wayland: bool) -> wgpu::PresentMode {
+    if is_wayland && supported.contains(&wgpu::PresentMode::Mailbox) {
+        wgpu::PresentMode::Mailbox
+    } else {
+        wgpu::PresentMode::Fifo
     }
 }
 

@@ -1008,6 +1008,8 @@ impl App {
         }
 
         gpu.queue.submit(std::iter::once(encoder.finish()));
+        // Wayland 下让 winit 按合成器帧回调节流 RedrawRequested；其他平台为空操作。
+        window.pre_present_notify();
         output.present();
         publish_completion_popup_snapshot(
             &mut self.completion_popup_snapshot,
