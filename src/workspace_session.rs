@@ -35,7 +35,13 @@ pub enum PersistedTab {
     Serial {
         device: String,
         display_name: String,
+        #[serde(default)]
+        vid: Option<u16>,
+        #[serde(default)]
+        pid: Option<u16>,
         serial_number: Option<String>,
+        #[serde(default)]
+        usb_interface: Option<String>,
         baud_rate: u32,
     },
 }
@@ -61,7 +67,10 @@ impl WorkspaceSession {
                 TabType::Serial { spec } => Some(PersistedTab::Serial {
                     device: spec.device.clone(),
                     display_name: spec.display_name.clone(),
+                    vid: spec.vid,
+                    pid: spec.pid,
                     serial_number: spec.serial_number.clone(),
+                    usb_interface: spec.usb_interface.clone(),
                     baud_rate: spec.baud_rate,
                 }),
                 TabType::Process { .. }
@@ -150,7 +159,10 @@ impl PersistedTab {
         let Self::Serial {
             device,
             display_name,
+            vid,
+            pid,
             serial_number,
+            usb_interface,
             baud_rate,
         } = self
         else {
@@ -159,7 +171,10 @@ impl PersistedTab {
         Some(SerialSpec {
             device: device.clone(),
             display_name: display_name.clone(),
+            vid: *vid,
+            pid: *pid,
             serial_number: serial_number.clone(),
+            usb_interface: usb_interface.clone(),
             baud_rate: *baud_rate,
         })
     }

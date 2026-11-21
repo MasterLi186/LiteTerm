@@ -353,7 +353,16 @@ fn long_serial_rows_fill_the_vertical_viewport_without_horizontal_overflow() {
             name: format!("串口设备-{index}-{}", "很长的名称".repeat(8)),
             path: format!("/dev/serial/by-id/device-{index}-{}", "x".repeat(48)),
             port_type: "USB serial adapter".repeat(4),
+            vid: Some(0x0403),
+            pid: Some(0x6001),
             serial_number: Some(format!("SERIAL-{index}")),
+            manufacturer: None,
+            product: None,
+            usb_path: None,
+            usb_speed: None,
+            devpath: None,
+            vendor_full: None,
+            adb_siblings: Vec::new(),
         })
         .collect();
     let ctx = egui::Context::default();

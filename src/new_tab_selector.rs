@@ -697,7 +697,10 @@ fn draw_serial_section_body(
                     *action = NewTabAction::OpenSerial(crate::serial::SerialSpec {
                         device: port.path.clone(),
                         display_name: port.name.clone(),
+                        vid: port.vid,
+                        pid: port.pid,
                         serial_number: port.serial_number.clone(),
+                        usb_interface: port.interface_number().map(str::to_owned),
                         baud_rate: *baud_rate,
                     });
                 }
@@ -719,7 +722,7 @@ fn serial_column_rects(rect: egui::Rect) -> SerialColumnRects {
     let width = inner.width().max(0.0);
     let device_right = inner.left() + width * 0.23;
     let model_right = inner.left() + width * 0.65;
-    let serial_right = inner.left() + width * 0.90;
+    let serial_right = inner.left() + width * 0.84;
     SerialColumnRects {
         device: egui::Rect::from_min_max(inner.min, egui::pos2(device_right, inner.bottom())),
         model: egui::Rect::from_min_max(
@@ -764,8 +767,12 @@ fn draw_serial_column_header(ui: &mut egui::Ui) {
 }
 
 fn draw_serial_row(ui: &mut egui::Ui, port: &crate::serial::SerialPortInfo) -> egui::Response {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), egui::Sense::click());
+    let has_adb = !port.adb_siblings.is_empty();
+    let row_height = if has_adb { 52.0 } else { 34.0 };
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), row_height),
+        egui::Sense::click(),
+    );
     let fill = if response.hovered() {
         ROW_HOVER
     } else {
@@ -785,7 +792,11 @@ fn draw_serial_row(ui: &mut egui::Ui, port: &crate::serial::SerialPortInfo) -> e
         MODAL_TEXT
     };
     paint_serial_cell(ui, columns.device, &port.device_label(), 11.0, device_color);
-    paint_serial_cell(ui, columns.model, &port.name, 11.0, MODAL_TEXT);
+    let model = match port.vid_pid() {
+        Some(vid_pid) => format!("{} ({vid_pid})", port.display_model()),
+        None => port.display_model(),
+    };
+    paint_serial_cell(ui, columns.model, &model, 11.0, MODAL_TEXT);
     paint_serial_cell(
         ui,
         columns.serial,
@@ -793,23 +804,100 @@ fn draw_serial_row(ui: &mut egui::Ui, port: &crate::serial::SerialPortInfo) -> e
         10.5,
         MUTED_TEXT,
     );
-    paint_serial_cell(ui, columns.kind, &port.port_type, 10.5, MUTED_TEXT);
+    let kind = if has_adb {
+        format!("{} · ADB", port.port_type)
+    } else {
+        port.port_type.clone()
+    };
+    paint_serial_cell(ui, columns.kind, &kind, 10.5, MUTED_TEXT);
+    if has_adb {
+        let text = port
+            .adb_siblings
+            .iter()
+            .map(|adb| {
+                if adb.product.is_empty() {
+                    adb.serial.clone()
+                } else {
+                    format!("{} ({})", adb.serial, adb.product)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let text = format!("ADB · {text}");
+        let clip = rect.shrink2(egui::vec2(12.0, 0.0));
+        ui.painter().with_clip_rect(clip).text(
+            egui::pos2(clip.left(), rect.bottom() - 10.0),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::proportional(10.0),
+            ACCENT_GREEN,
+        );
+    }
 
-    response.on_hover_text(if crate::i18n::is_english() {
+    let english = crate::i18n::is_english();
+    let mut lines = vec![port.path.clone(), port.display_model()];
+    if let Some(vid_pid) = port.vid_pid() {
+        lines.push(if english {
+            format!("VID:PID: {vid_pid}")
+        } else {
+            format!("VID:PID：{vid_pid}")
+        });
+    }
+    lines.push(if english {
         format!(
-            "{}\n{}\nHardware SN: {}",
-            port.path,
-            port.name,
+            "Hardware SN: {}",
             port.serial_number.as_deref().unwrap_or("None")
         )
     } else {
-        format!(
-            "{}\n{}\n硬件 SN：{}",
-            port.path,
-            port.name,
-            port.serial_number.as_deref().unwrap_or("无")
-        )
-    })
+        format!("硬件 SN：{}", port.serial_number.as_deref().unwrap_or("无"))
+    });
+    if let Some(vendor) = port.vendor_full.as_deref() {
+        lines.push(if english {
+            format!("Vendor: {vendor}")
+        } else {
+            format!("厂商：{vendor}")
+        });
+    }
+    if let Some(usb_path) = port.usb_path.as_deref() {
+        lines.push(if english {
+            format!("USB path: {usb_path}")
+        } else {
+            format!("USB 路径：{usb_path}")
+        });
+    }
+    if let Some(devpath) = port.devpath.as_deref() {
+        lines.push(if english {
+            format!("Interface: {devpath}")
+        } else {
+            format!("接口：{devpath}")
+        });
+    }
+    if let Some(speed) = port.usb_speed.as_deref() {
+        lines.push(if english {
+            format!("Speed: {speed}")
+        } else {
+            format!("USB 速率：{speed}")
+        });
+    }
+    for adb in &port.adb_siblings {
+        let product = if adb.product.is_empty() {
+            adb.manufacturer.clone()
+        } else {
+            adb.product.clone()
+        };
+        let port_suffix = adb
+            .port
+            .as_deref()
+            .map(|port| format!(" ({port})"))
+            .unwrap_or_default();
+        let label = if english { "ADB: " } else { "ADB：" };
+        lines.push(if product.is_empty() {
+            format!("{label}{}{port_suffix}", adb.serial)
+        } else {
+            format!("{label}{} · {product}{port_suffix}", adb.serial)
+        });
+    }
+    response.on_hover_text(lines.join("\n"))
 }
 
 fn shell_display_name(path: &Path) -> String {

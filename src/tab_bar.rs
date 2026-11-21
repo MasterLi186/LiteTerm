@@ -1079,7 +1079,10 @@ mod tests {
             spec: crate::serial::SerialSpec {
                 device: "/dev/ttyUSB1".into(),
                 display_name: "FT232R USB UART".into(),
+                vid: Some(0x0403),
+                pid: Some(0x6001),
                 serial_number: Some("A10LCL3D".into()),
+                usb_interface: Some("1.0".into()),
                 baud_rate: crate::serial::DEFAULT_BAUD_RATE,
             },
         });
@@ -1094,7 +1097,10 @@ mod tests {
             spec: crate::serial::SerialSpec {
                 device: "/dev/ttyUSB1".into(),
                 display_name: "FT232R USB UART".into(),
+                vid: Some(0x0403),
+                pid: Some(0x6001),
                 serial_number: Some("A10LCL3D".into()),
+                usb_interface: Some("1.0".into()),
                 baud_rate: crate::serial::DEFAULT_BAUD_RATE,
             },
         };

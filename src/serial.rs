@@ -8,18 +8,59 @@ pub const BAUD_RATES: [u32; 8] = [
     9_600, 19_200, 38_400, 57_600, 115_200, 230_400, 460_800, 921_600,
 ];
 const IO_TIMEOUT: Duration = Duration::from_millis(80);
+#[cfg(target_os = "linux")]
+const UDEV_TIMEOUT: Duration = Duration::from_secs(1);
+const ADB_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdbSibling {
+    pub serial: String,
+    pub product: String,
+    pub manufacturer: String,
+    pub port: Option<String>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SerialPortInfo {
     pub name: String,
     pub path: String,
     pub port_type: String,
+    pub vid: Option<u16>,
+    pub pid: Option<u16>,
     pub serial_number: Option<String>,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+    pub usb_path: Option<String>,
+    pub usb_speed: Option<String>,
+    pub devpath: Option<String>,
+    pub vendor_full: Option<String>,
+    pub adb_siblings: Vec<AdbSibling>,
 }
 
 impl SerialPortInfo {
     pub fn device_label(&self) -> String {
         device_name(&self.path)
+    }
+
+    /// `VID:PID`（小写、四位十六进制），非 USB 设备返回 `None`。
+    pub fn vid_pid(&self) -> Option<String> {
+        Some(format!("{:04x}:{:04x}", self.vid?, self.pid?))
+    }
+
+    /// USB 接口号（`1-2.6.4:1.2` → `1.2`），用于区分复合设备上的多个串口。
+    pub fn interface_number(&self) -> Option<&str> {
+        self.devpath
+            .as_deref()
+            .and_then(interface_number_from_devpath)
+    }
+
+    /// 优先展示产品名，其次 udev 厂商全名和厂商名。
+    pub fn display_model(&self) -> String {
+        self.product
+            .clone()
+            .or_else(|| self.vendor_full.clone())
+            .or_else(|| self.manufacturer.clone())
+            .unwrap_or_else(|| self.name.clone())
     }
 }
 
@@ -27,7 +68,11 @@ impl SerialPortInfo {
 pub struct SerialSpec {
     pub device: String,
     pub display_name: String,
+    pub vid: Option<u16>,
+    pub pid: Option<u16>,
     pub serial_number: Option<String>,
+    /// USB 复合设备接口号（如 `1.0` / `1.2`），用于重连时区分同一设备的多个串口。
+    pub usb_interface: Option<String>,
     pub baud_rate: u32,
 }
 
@@ -138,42 +183,116 @@ impl Drop for SerialHandle {
 }
 
 pub fn list_ports() -> Result<Vec<SerialPortInfo>, String> {
-    let mut ports = serialport::available_ports()
-        .map_err(|error| format!("枚举串口失败：{error}"))?
+    let raw_ports =
+        serialport::available_ports().map_err(|error| format!("枚举串口失败：{error}"))?;
+    let has_usb = raw_ports
+        .iter()
+        .any(|port| matches!(&port.port_type, serialport::SerialPortType::UsbPort(_)));
+    let adb_devices = if has_usb { adb_devices() } else { Vec::new() };
+    let mut vendor_cache = std::collections::HashMap::new();
+    let mut ports = raw_ports
         .into_iter()
         .map(|port| {
-            let (name, port_type, serial_number) = match port.port_type {
-                serialport::SerialPortType::UsbPort(usb) => {
-                    let name = usb
-                        .product
-                        .or(usb.manufacturer)
-                        .unwrap_or_else(|| device_name(&port.port_name));
-                    let serial_number = usb
-                        .serial_number
-                        .map(|serial_number| serial_number.trim().to_owned())
-                        .filter(|serial_number| !serial_number.is_empty());
-                    (name, "USB".to_owned(), serial_number)
-                }
-                serialport::SerialPortType::PciPort => {
-                    (device_name(&port.port_name), "PCI".to_owned(), None)
-                }
-                serialport::SerialPortType::BluetoothPort => {
-                    (device_name(&port.port_name), "Bluetooth".to_owned(), None)
-                }
-                serialport::SerialPortType::Unknown => {
-                    (device_name(&port.port_name), "Unknown".to_owned(), None)
-                }
+            let path = port.port_name;
+            let mut info = SerialPortInfo {
+                name: device_name(&path),
+                path: path.clone(),
+                port_type: "Unknown".to_owned(),
+                vid: None,
+                pid: None,
+                serial_number: None,
+                manufacturer: None,
+                product: None,
+                usb_path: None,
+                usb_speed: None,
+                devpath: None,
+                vendor_full: None,
+                adb_siblings: Vec::new(),
             };
-            SerialPortInfo {
-                name,
-                path: port.port_name,
-                port_type,
-                serial_number,
+            match port.port_type {
+                serialport::SerialPortType::UsbPort(usb) => {
+                    info.port_type = "USB".to_owned();
+                    info.vid = Some(usb.vid);
+                    info.pid = Some(usb.pid);
+                    info.serial_number = normalize_text(usb.serial_number);
+                    info.manufacturer = normalize_text(usb.manufacturer);
+                    info.product = normalize_text(usb.product);
+                }
+                serialport::SerialPortType::PciPort => info.port_type = "PCI".to_owned(),
+                serialport::SerialPortType::BluetoothPort => {
+                    info.port_type = "Bluetooth".to_owned();
+                }
+                serialport::SerialPortType::Unknown => {}
             }
+            if let Some(sysfs) = read_usb_sysfs(&path) {
+                if info.vid.is_none() {
+                    info.vid = sysfs.vid;
+                }
+                if info.pid.is_none() {
+                    info.pid = sysfs.pid;
+                }
+                if info.serial_number.is_none() {
+                    info.serial_number = sysfs.serial_number;
+                }
+                if info.manufacturer.is_none() {
+                    info.manufacturer = sysfs.manufacturer;
+                }
+                if info.product.is_none() {
+                    info.product = sysfs.product;
+                }
+                info.usb_path = sysfs.usb_path;
+                info.usb_speed = sysfs.usb_speed;
+                info.devpath = sysfs.devpath;
+                info.adb_siblings = sysfs.adb_siblings;
+            }
+            info.vendor_full = info
+                .vid
+                .and_then(|vid| {
+                    vendor_cache
+                        .entry(vid)
+                        .or_insert_with(|| udev_vendor_name(&path))
+                        .clone()
+                })
+                .or_else(|| info.manufacturer.clone());
+            info.name = info
+                .product
+                .clone()
+                .or_else(|| info.manufacturer.clone())
+                .unwrap_or_else(|| info.name.clone());
+            if info.vid_pid().is_some() {
+                let matched = adb_devices
+                    .iter()
+                    .filter(|adb| adb_matches(&info, adb))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for adb in matched {
+                    if !info
+                        .adb_siblings
+                        .iter()
+                        .any(|existing| existing.serial == adb.serial)
+                    {
+                        info.adb_siblings.push(adb);
+                    }
+                }
+            }
+            info
         })
         .collect::<Vec<_>>();
     ports.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(ports)
+}
+
+fn normalize_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+}
+
+fn interface_number_from_devpath(devpath: &str) -> Option<&str> {
+    devpath
+        .rsplit_once(':')
+        .map(|(_, number)| number)
+        .filter(|number| !number.is_empty())
 }
 
 pub fn open(spec: SerialSpec) -> Result<SerialHandle, String> {
@@ -188,6 +307,310 @@ pub fn open(spec: SerialSpec) -> Result<SerialHandle, String> {
         .open()
         .map_err(|error| format!("打开串口 {device} 失败：{error}"))?;
     spawn_worker(port, device)
+}
+
+struct UsbSysfsInfo {
+    vid: Option<u16>,
+    pid: Option<u16>,
+    serial_number: Option<String>,
+    manufacturer: Option<String>,
+    product: Option<String>,
+    usb_path: Option<String>,
+    usb_speed: Option<String>,
+    devpath: Option<String>,
+    adb_siblings: Vec<AdbSibling>,
+}
+
+/// 读取 Linux sysfs 中的 USB 设备信息。非 Linux 或非 USB 串口返回 `None`。
+#[cfg(target_os = "linux")]
+fn read_usb_sysfs(device_path: &str) -> Option<UsbSysfsInfo> {
+    let tty_dir = std::path::Path::new("/sys/class/tty").join(device_name(device_path));
+    let mut interface_dir = std::fs::canonicalize(tty_dir.join("device")).ok()?;
+    for _ in 0..8 {
+        if interface_dir.join("bInterfaceClass").exists() {
+            break;
+        }
+        interface_dir = interface_dir.parent()?.to_path_buf();
+    }
+    if !interface_dir.join("bInterfaceClass").exists() {
+        return None;
+    }
+    let interface_name = interface_dir.file_name()?.to_str()?.to_owned();
+    let device_dir = interface_dir.parent()?;
+    let sysfs_path = device_dir.file_name()?.to_str()?.to_owned();
+    Some(UsbSysfsInfo {
+        vid: sysfs_u16(device_dir, "idVendor"),
+        pid: sysfs_u16(device_dir, "idProduct"),
+        serial_number: sysfs_text(device_dir, "serial"),
+        manufacturer: sysfs_text(device_dir, "manufacturer"),
+        product: sysfs_text(device_dir, "product"),
+        usb_speed: sysfs_text(device_dir, "speed").map(|speed| format_usb_speed(&speed)),
+        usb_path: serial_by_path_name(device_path)
+            .or_else(|| (!sysfs_path.is_empty()).then_some(sysfs_path)),
+        devpath: Some(interface_name),
+        adb_siblings: sysfs_adb_siblings(device_dir),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_usb_sysfs(_device_path: &str) -> Option<UsbSysfsInfo> {
+    None
+}
+
+/// 用 `/dev/serial/by-path` 的稳定物理路径名标识串口设备。
+#[cfg(target_os = "linux")]
+fn serial_by_path_name(device_path: &str) -> Option<String> {
+    let device = device_name(device_path);
+    let entries = std::fs::read_dir("/dev/serial/by-path").ok()?;
+    for entry in entries.flatten() {
+        let Ok(target) = std::fs::read_link(entry.path()) else {
+            continue;
+        };
+        if target.file_name().and_then(|name| name.to_str()) == Some(device.as_str()) {
+            return Some(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// 扫描同 hub 下带 ADB 接口（class ff:42:01）的 USB 设备。
+#[cfg(target_os = "linux")]
+fn sysfs_adb_siblings(usb_device_dir: &std::path::Path) -> Vec<AdbSibling> {
+    let Some(hub) = usb_device_dir.parent() else {
+        return Vec::new();
+    };
+    let self_name = usb_device_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let Ok(entries) = std::fs::read_dir(hub) else {
+        return Vec::new();
+    };
+    let mut siblings = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == self_name || name.contains(':') || !path.join("idVendor").exists() {
+            continue;
+        }
+        if !has_adb_interface(&path) {
+            continue;
+        }
+        let Some(serial) = sysfs_text(&path, "serial") else {
+            continue;
+        };
+        siblings.push(AdbSibling {
+            serial,
+            product: sysfs_text(&path, "product").unwrap_or_default(),
+            manufacturer: sysfs_text(&path, "manufacturer").unwrap_or_default(),
+            port: Some(name),
+        });
+    }
+    if has_adb_interface(usb_device_dir) {
+        if let Some(serial) = sysfs_text(usb_device_dir, "serial") {
+            siblings.push(AdbSibling {
+                serial,
+                product: sysfs_text(usb_device_dir, "product").unwrap_or_default(),
+                manufacturer: sysfs_text(usb_device_dir, "manufacturer").unwrap_or_default(),
+                port: Some(self_name.to_owned()),
+            });
+        }
+    }
+    siblings.sort_by(|left, right| left.port.cmp(&right.port));
+    let mut seen = std::collections::HashSet::new();
+    siblings.retain(|sibling| seen.insert(sibling.serial.clone()));
+    siblings
+}
+
+#[cfg(target_os = "linux")]
+fn has_adb_interface(device_dir: &std::path::Path) -> bool {
+    std::fs::read_dir(device_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|interface| {
+            let interface = interface.path();
+            sysfs_text(&interface, "bInterfaceClass").as_deref() == Some("ff")
+                && sysfs_text(&interface, "bInterfaceSubClass").as_deref() == Some("42")
+                && sysfs_text(&interface, "bInterfaceProtocol").as_deref() == Some("01")
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn sysfs_text(directory: &std::path::Path, name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(directory.join(name)).ok()?;
+    normalize_text(Some(text))
+}
+
+#[cfg(target_os = "linux")]
+fn sysfs_u16(directory: &std::path::Path, name: &str) -> Option<u16> {
+    let text = sysfs_text(directory, name)?;
+    u16::from_str_radix(text.trim_start_matches("0x"), 16).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn format_usb_speed(raw: &str) -> String {
+    match raw.trim().parse::<f64>() {
+        Ok(speed) if speed >= 1000.0 => format!("{:.0} Gbps", speed / 1000.0),
+        Ok(speed) if speed.fract() == 0.0 => format!("{speed:.0} Mbps"),
+        Ok(speed) => format!("{speed:.1} Mbps"),
+        Err(_) => raw.trim().to_owned(),
+    }
+}
+
+/// 执行外部命令并限制等待时间，超时则终止，避免串口扫描被挂起的工具卡住。
+fn command_output_with_timeout(
+    command: &mut std::process::Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    configure_hidden_command(command);
+    // 用临时文件而不是管道承接 stdout：子进程的后代即使继承 stdout，也不会阻塞读取线程。
+    let mut stdout_file = tempfile::tempfile().ok()?;
+    let child_stdout = stdout_file.try_clone().ok()?;
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(child_stdout))
+        .stderr(std::process::Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                use std::io::{Read as _, Seek as _, SeekFrom};
+                let mut stdout = Vec::new();
+                let _ = stdout_file.seek(SeekFrom::Start(0));
+                let _ = stdout_file.read_to_end(&mut stdout);
+                return Some(std::process::Output {
+                    status,
+                    stdout,
+                    stderr: Vec::new(),
+                });
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn configure_hidden_command(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn configure_hidden_command(_command: &mut std::process::Command) {}
+
+/// 通过 udev 数据库把 USB VID 转成厂商全名；命令不可用时返回 `None`。
+#[cfg(target_os = "linux")]
+fn udev_vendor_name(device_path: &str) -> Option<String> {
+    let output = command_output_with_timeout(
+        std::process::Command::new("udevadm").args([
+            "info",
+            "--query=property",
+            &format!("--name={device_path}"),
+        ]),
+        UDEV_TIMEOUT,
+    )?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find_map(|line| line.strip_prefix("ID_VENDOR_FROM_DATABASE="))
+        .map(str::trim)
+        .filter(|vendor| !vendor.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn udev_vendor_name(_device_path: &str) -> Option<String> {
+    None
+}
+
+/// 读取 `adb devices -l`，一次枚举供所有串口匹配。
+///
+/// 只在 adb server 已监听 5037 时查询，避免仅打开串口列表就拉起 adb 守护进程。
+fn adb_devices() -> Vec<AdbSibling> {
+    let Ok(address) = "127.0.0.1:5037".parse::<std::net::SocketAddr>() else {
+        return Vec::new();
+    };
+    if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(30)).is_err() {
+        return Vec::new();
+    }
+    let output = match command_output_with_timeout(
+        std::process::Command::new("adb").args(["devices", "-l"]),
+        ADB_TIMEOUT,
+    ) {
+        Some(output) if output.status.success() => output,
+        _ => return Vec::new(),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut devices: Vec<AdbSibling> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty()
+            || line.starts_with("List of devices")
+            || line.starts_with("* daemon")
+            || line.starts_with("adb server")
+        {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let Some(serial) = parts.next() else {
+            continue;
+        };
+        let Some(state) = parts.next() else {
+            continue;
+        };
+        if state != "device" {
+            continue;
+        }
+        let mut product = String::new();
+        let mut manufacturer = String::new();
+        let mut port = None;
+        for property in parts {
+            if let Some(value) = property.strip_prefix("product:") {
+                product = value.to_owned();
+            } else if let Some(value) = property.strip_prefix("manufacturer:") {
+                manufacturer = value.to_owned();
+            } else if let Some(value) = property.strip_prefix("usb:") {
+                port = Some(value.to_owned());
+            }
+        }
+        if devices.iter().any(|device| device.serial == serial) {
+            continue;
+        }
+        devices.push(AdbSibling {
+            serial: serial.to_owned(),
+            product,
+            manufacturer,
+            port,
+        });
+    }
+    devices
+}
+
+fn adb_matches(info: &SerialPortInfo, adb: &AdbSibling) -> bool {
+    if info.serial_number.as_deref().map(str::trim) == Some(adb.serial.trim()) {
+        return true;
+    }
+    if let (Some(adb_port), Some(devpath)) = (adb.port.as_deref(), info.devpath.as_deref()) {
+        let usb_device = devpath.split(':').next().unwrap_or(devpath);
+        return adb_port == usb_device;
+    }
+    info.vid_pid()
+        .is_some_and(|vid_pid| adb.serial.to_ascii_lowercase().starts_with(&vid_pid))
 }
 
 pub fn user_open_error_message(error: &str) -> String {
@@ -230,33 +653,111 @@ pub fn user_open_error_message(error: &str) -> String {
     format!("{hint}\n\n系统返回：{error}")
 }
 
-fn resolve_device_for_open(spec: &SerialSpec) -> Result<String, String> {
-    let Some(expected_serial) = spec
+/// 判断枚举到的原路径设备是否与保存的 USB 身份冲突；缺失元数据视为无法判断（不冲突）。
+fn port_matches_saved_identity(port: &serialport::SerialPortInfo, spec: &SerialSpec) -> bool {
+    let serialport::SerialPortType::UsbPort(usb) = &port.port_type else {
+        return true;
+    };
+    if let Some(expected) = spec
         .serial_number
         .as_deref()
         .map(str::trim)
         .filter(|serial| !serial.is_empty())
-    else {
-        return Ok(spec.device.clone());
+    {
+        if let Some(actual) = usb
+            .serial_number
+            .as_deref()
+            .map(str::trim)
+            .filter(|serial| !serial.is_empty())
+        {
+            if actual != expected {
+                return false;
+            }
+        }
+    }
+    spec.vid.map_or(true, |vid| usb.vid == vid) && spec.pid.map_or(true, |pid| usb.pid == pid)
+}
+
+fn resolve_device_for_open(spec: &SerialSpec) -> Result<String, String> {
+    let expected_serial = spec
+        .serial_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|serial| !serial.is_empty());
+    let vid_pid = match (spec.vid, spec.pid) {
+        (Some(vid), Some(pid)) => Some(format!("{vid:04x}:{pid:04x}")),
+        _ => None,
     };
-    let candidates = serialport::available_ports()
-        .map_err(|error| format!("按硬件 SN 查找串口失败：{error}"))?
+    if expected_serial.is_none() && vid_pid.is_none() {
+        return Ok(spec.device.clone());
+    }
+    let identity = match (expected_serial, vid_pid.as_deref()) {
+        (Some(serial), Some(vid_pid)) => format!("硬件 SN {serial}（VID:PID {vid_pid}）"),
+        (Some(serial), None) => format!("硬件 SN {serial}"),
+        (None, Some(vid_pid)) => format!("VID:PID {vid_pid}"),
+        (None, None) => unreachable!(),
+    };
+    let available = serialport::available_ports()
+        .map_err(|error| format!("按硬件标识查找串口失败：{error}"))?;
+    // 原路径仍然存在且没有身份冲突时直接使用，避免驱动未上报 USB 元数据时误判为设备丢失。
+    if available
+        .iter()
+        .find(|port| port.port_name == spec.device)
+        .is_some_and(|port| port_matches_saved_identity(port, spec))
+    {
+        return Ok(spec.device.clone());
+    }
+    let candidates = available
         .into_iter()
         .filter_map(|port| match port.port_type {
-            serialport::SerialPortType::UsbPort(usb)
-                if usb.serial_number.as_deref().map(str::trim) == Some(expected_serial) =>
-            {
-                Some(port.port_name)
+            serialport::SerialPortType::UsbPort(usb) => {
+                let actual_serial = usb
+                    .serial_number
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|serial| !serial.is_empty());
+                let serial_matches = match (expected_serial, actual_serial) {
+                    (Some(expected), Some(actual)) => actual == expected,
+                    // 驱动未上报 SN 时不能据此判定为不匹配，交由 VID/PID 和接口号继续筛选。
+                    _ => true,
+                };
+                let vid_matches = spec.vid.map(|vid| usb.vid == vid).unwrap_or(true);
+                let pid_matches = spec.pid.map(|pid| usb.pid == pid).unwrap_or(true);
+                if !(serial_matches && vid_matches && pid_matches) {
+                    return None;
+                }
+                let device = port.port_name;
+                let interface = read_usb_sysfs(&device)
+                    .and_then(|sysfs| sysfs.devpath)
+                    .and_then(|devpath| interface_number_from_devpath(&devpath).map(str::to_owned));
+                Some(UsbCandidate { device, interface })
             }
             _ => None,
         })
         .collect::<Vec<_>>();
-    choose_serial_device(&spec.device, expected_serial, &candidates)
+    if let Some(expected_interface) = spec.usb_interface.as_deref() {
+        let mut matching = candidates
+            .iter()
+            .filter(|candidate| candidate.interface.as_deref() == Some(expected_interface));
+        if let (Some(candidate), None) = (matching.next(), matching.next()) {
+            return Ok(candidate.device.clone());
+        }
+    }
+    let devices = candidates
+        .iter()
+        .map(|candidate| candidate.device.clone())
+        .collect::<Vec<_>>();
+    choose_serial_device(&spec.device, &identity, &devices)
+}
+
+struct UsbCandidate {
+    device: String,
+    interface: Option<String>,
 }
 
 fn choose_serial_device(
     original_device: &str,
-    expected_serial: &str,
+    identity: &str,
     candidates: &[String],
 ) -> Result<String, String> {
     if candidates.iter().any(|device| device == original_device) {
@@ -264,10 +765,8 @@ fn choose_serial_device(
     }
     match candidates {
         [device] => Ok(device.clone()),
-        [] => Err(format!("未找到硬件 SN 为 {expected_serial} 的串口设备")),
-        _ => Err(format!(
-            "硬件 SN {expected_serial} 对应多个串口接口，请重新选择具体设备"
-        )),
+        [] => Err(format!("未找到{identity}的串口设备")),
+        _ => Err(format!("{identity} 对应多个串口接口，请重新选择具体设备")),
     }
 }
 
@@ -464,7 +963,10 @@ mod tests {
         let mut spec = SerialSpec {
             device: " ".into(),
             display_name: "USB".into(),
+            vid: None,
+            pid: None,
             serial_number: None,
+            usb_interface: None,
             baud_rate: DEFAULT_BAUD_RATE,
         };
         assert!(spec.validate().is_err());
@@ -556,19 +1058,28 @@ mod tests {
         let linux = SerialSpec {
             device: "/dev/ttyUSB7".into(),
             display_name: "FT232R USB UART".into(),
+            vid: None,
+            pid: None,
             serial_number: None,
+            usb_interface: None,
             baud_rate: DEFAULT_BAUD_RATE,
         };
         let windows = SerialSpec {
             device: "COM12".into(),
             display_name: "USB Serial Port".into(),
+            vid: None,
+            pid: None,
             serial_number: None,
+            usb_interface: None,
             baud_rate: DEFAULT_BAUD_RATE,
         };
         let macos = SerialSpec {
             device: "/dev/tty.usbserial-A10K9".into(),
             display_name: "FTDI".into(),
+            vid: None,
+            pid: None,
             serial_number: None,
+            usb_interface: None,
             baud_rate: DEFAULT_BAUD_RATE,
         };
 
@@ -582,7 +1093,10 @@ mod tests {
         let spec = SerialSpec {
             device: "/dev/ttyUSB1".into(),
             display_name: "FT232R USB UART".into(),
+            vid: Some(0x0403),
+            pid: Some(0x6001),
             serial_number: Some(" A10LCL3D ".into()),
+            usb_interface: Some("1.0".into()),
             baud_rate: DEFAULT_BAUD_RATE,
         };
 

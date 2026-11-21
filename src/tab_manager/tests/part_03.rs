@@ -4,7 +4,10 @@
         let plan = manager.new_serial_placeholder(crate::serial::SerialSpec {
             device: "/dev/ttyTEST".into(),
             display_name: "测试串口".into(),
+            vid: None,
+            pid: None,
             serial_number: None,
+            usb_interface: None,
             baud_rate: crate::serial::DEFAULT_BAUD_RATE,
         });
 
@@ -38,7 +41,10 @@
         let initial = manager.new_serial_placeholder(crate::serial::SerialSpec {
             device: "/dev/ttyUSB1".into(),
             display_name: "FT232R USB UART".into(),
+            vid: Some(0x0403),
+            pid: Some(0x6001),
             serial_number: Some("A10LCL3D".into()),
+            usb_interface: Some("1.0".into()),
             baud_rate: crate::serial::DEFAULT_BAUD_RATE,
         });
         let old_session = manager.tabs[0].completion.session().clone();
@@ -61,7 +67,10 @@
         let initial = manager.new_serial_placeholder(crate::serial::SerialSpec {
             device: "/dev/ttyUSB2".into(),
             display_name: "FT232R USB UART".into(),
+            vid: Some(0x0403),
+            pid: Some(0x6001),
             serial_number: Some("A10LCQIM".into()),
+            usb_interface: Some("1.0".into()),
             baud_rate: crate::serial::DEFAULT_BAUD_RATE,
         });
         manager.tabs[0].status = PaneStatus::Connected;

@@ -23,7 +23,10 @@
         manager.new_serial_placeholder(crate::serial::SerialSpec {
             device: "/dev/ttyTEST".into(),
             display_name: "测试串口".into(),
+            vid: None,
+            pid: None,
             serial_number: None,
+            usb_interface: None,
             baud_rate: crate::serial::DEFAULT_BAUD_RATE,
         });
 
@@ -60,7 +63,10 @@
             spec: crate::serial::SerialSpec {
                 device: "/dev/ttyUSB0".into(),
                 display_name: "ttyUSB0".into(),
+                vid: None,
+                pid: None,
                 serial_number: None,
+                usb_interface: None,
                 baud_rate: crate::serial::DEFAULT_BAUD_RATE,
             },
         };
