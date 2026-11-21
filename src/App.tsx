@@ -800,6 +800,25 @@ function App() {
       });
       await loadConnections();
 
+      // 密码随连接配置一起保存，不依赖本次连接是否成功(否则网络超时/主机离线时密码会丢失)
+      if (params.password && params.authMethod === 'keyring') {
+        log('连接', `keyring store: ${params.user}@${params.host}:${params.port}`);
+        try {
+          await invoke('store_password', {
+            user: params.user,
+            host: params.host,
+            port: params.port,
+            password: params.password,
+          });
+          log('连接', 'keyring store 成功');
+        } catch (e) {
+          log('连接', `keyring store 失败: ${e}`);
+          setError(`密码保存失败: ${e}`);
+        }
+      } else {
+        log('连接', `跳过 keyring store: pw=${!!params.password} authMethod=${params.authMethod}`);
+      }
+
       const resolvedAuthMethod = params.authMethod === 'keyring' ? 'password' : params.authMethod;
 
       // Connect
@@ -813,19 +832,6 @@ function App() {
         label: params.label,
         proxyJump: params.proxyJump || null,
       });
-
-      if (params.password && params.authMethod === 'keyring') {
-        log('连接', `keyring store: ${params.user}@${params.host}:${params.port}`);
-        invoke('store_password', {
-          user: params.user,
-          host: params.host,
-          port: params.port,
-          password: params.password,
-        }).then(() => log('连接', 'keyring store 成功'))
-          .catch((e) => log('连接', `keyring store 失败: ${e}`));
-      } else {
-        log('连接', `跳过 keyring store: pw=${!!params.password} authMethod=${params.authMethod}`);
-      }
 
       const tab: Tab = {
         id,
