@@ -7,7 +7,8 @@ export const TERMINAL_THEMES: Record<string, ITheme> = {
   '暗色默认': {
     background: '#0d1117', foreground: '#e6edf3', cursor: '#00d4ff',
     selectionBackground: '#264f78',
-    black: '#ffffff', red: '#ff7b72', green: '#2e6b30', yellow: '#d29922',
+    // black 必须是深色：agnoster/powerline/tmux 等用它做背景，设成白色会变成白底浅字
+    black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
     blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#b1bac4',
     brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#7ec850',
     brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',

@@ -185,7 +185,7 @@ impl Sidebar {
         }
     }
 
-    fn do_save_connection(&self) -> Result<(), String> {
+    fn do_save_connection(&mut self) -> Result<(), String> {
         let f = &self.new_conn;
         if f.host.is_empty() {
             return Err(crate::i18n::tr("主机不能为空").into_owned());
@@ -233,7 +233,22 @@ impl Sidebar {
                 proxy_jump: String::new(),
             },
         );
-        store.save()
+        store.save()?;
+        // 连接配置保存成功后立即保存密码：不能等 SSH 认证成功，
+        // 否则主机离线/超时时密码会丢失，下次双击仍要重新输入。
+        let mut keyring_warning = None;
+        if f.auth_idx == 1 && !f.password.is_empty() {
+            let entry = crate::keyring::KeyringEntry::new(&f.user, &f.host, port);
+            if let Err(error) = entry.store_password(&f.password) {
+                log::warn!("[KEYRING] 连接配置已保存，但密码保存失败: {error}");
+                keyring_warning = Some(
+                    crate::i18n::tr("连接配置已保存，但密码保存失败：{error}")
+                        .replace("{error}", &error.to_string()),
+                );
+            }
+        }
+        self.connection_notice = keyring_warning;
+        Ok(())
     }
 
     // ── SSH 密钥管理 ──

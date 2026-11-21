@@ -939,6 +939,10 @@ pub struct Sidebar {
     pub connections: Vec<SshConnection>,
     pub selected: Option<usize>,
     pub on_connect: Option<SshConnection>,
+    /// 最近一次点击主机的唯一键与时间，用于忽略双击产生的第二次 click。
+    last_connect_click: Option<(String, std::time::Instant)>,
+    /// 连接保存过程中需要提示给用户的警告（如密码写入 keyring 失败）。
+    pub connection_notice: Option<String>,
     pub connections_visible: bool,
     // 连接右键菜单
     pub conn_context_menu: Option<(usize, egui::Pos2)>,
@@ -1016,6 +1020,8 @@ impl Sidebar {
             connections,
             selected: None,
             on_connect: None,
+            last_connect_click: None,
+            connection_notice: None,
             connections_visible: true,
             conn_context_menu: None,
             collapsed_groups: std::collections::HashSet::new(),

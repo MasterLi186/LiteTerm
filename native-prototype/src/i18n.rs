@@ -76,6 +76,10 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "远端监控尚未连接，请稍后重试" => {
             "Remote monitoring is not connected yet; try again later"
         }
+        "连接配置已保存，但密码保存失败：{error}" => {
+            "Connection saved, but the password could not be stored: {error}"
+        }
+        "不支持的链接类型" => "Unsupported link type",
         "终止进程失败（退出码 {code}）" => {
             "Failed to terminate the process (exit code {code})"
         }

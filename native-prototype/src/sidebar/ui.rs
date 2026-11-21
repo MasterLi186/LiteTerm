@@ -98,6 +98,7 @@ impl Sidebar {
                         r1.clone()
                             .on_hover_text(crate::i18n::tr("新建连接").into_owned());
                         if r1.clicked() {
+                            self.connection_notice = None;
                             self.show_new_connection = true;
                             self.new_conn = NewConnForm::default();
                         }
@@ -145,6 +146,14 @@ impl Sidebar {
                     .id_salt("sidebar_main_scroll")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
+                        if let Some(notice) = &self.connection_notice {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(notice)
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(0xf8, 0x51, 0x49)),
+                            );
+                        }
                         if self.connections_visible {
                             let mut current_group = String::new();
                             for (i, conn) in self.connections.iter().enumerate() {
@@ -245,7 +254,21 @@ impl Sidebar {
                                     );
                                     resp
                                 });
-                                if resp.inner.clicked() {
+                                let connect_clicked = resp.inner.clicked();
+                                let now = std::time::Instant::now();
+                                let connect_key =
+                                    format!("{}@{}:{}", conn.user, conn.host, conn.port);
+                                let duplicate_click = connect_clicked
+                                    && self.last_connect_click.as_ref().is_some_and(
+                                        |(last_key, last_at)| {
+                                            last_key == &connect_key
+                                                && now.duration_since(*last_at)
+                                                    < std::time::Duration::from_millis(700)
+                                        },
+                                    );
+                                if connect_clicked && !duplicate_click {
+                                    self.connection_notice = None;
+                                    self.last_connect_click = Some((connect_key, now));
                                     log::debug!(
                                         "[SIDEBAR] 点击连接: {} ({}:{}) auth={}",
                                         conn.label,

@@ -181,9 +181,16 @@ pub fn monospace_fallback_families() -> &'static [&'static str] {
         "Consolas",
         "Cascadia Mono",
         "Menlo",
+        "Meslo LG M for Powerline",
+        "MesloLGS NF",
         "Monaco",
         "Courier New",
     ]
+}
+
+/// 为 agnoster/powerlevel10k 等提示符补分隔符字形；主字体缺字时按顺序回退。
+pub fn powerline_fallback_families() -> &'static [&'static str] {
+    &["Meslo LG M for Powerline", "MesloLGS NF"]
 }
 
 /// 终端字号在设置里按逻辑像素保存（与 egui 界面同一坐标系），而终端渲染器按物理像素

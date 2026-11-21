@@ -171,6 +171,13 @@ fn shape_glyph_with_italic_fallback(
         families.extend(crate::font_support::color_emoji_families().iter().copied());
     }
     families.push(request.family);
+    // Powerline 分隔符优先于 CJK 回退；两者都只在主字体缺字时才生效。
+    families.extend(
+        crate::font_support::powerline_fallback_families()
+            .iter()
+            .copied()
+            .filter(|family| *family != request.family),
+    );
     families.extend(
         crate::font_support::cjk_fallback_families()
             .iter()

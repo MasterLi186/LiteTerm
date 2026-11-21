@@ -626,8 +626,8 @@ impl App {
         &self,
         link: &terminal_links::TerminalLink,
     ) -> Result<(), String> {
-        let target = match &link.target {
-            terminal_links::LinkTarget::Url(url) => std::path::PathBuf::from(url),
+        match &link.target {
+            terminal_links::LinkTarget::Url(url) => open_url(url),
             terminal_links::LinkTarget::LocalPath { path, .. } => {
                 let expanded = if let Some(rest) = path.strip_prefix("~/") {
                     dirs::home_dir()
@@ -639,14 +639,9 @@ impl App {
                 if !expanded.is_absolute() || !expanded.exists() {
                     return Err("链接路径不存在或不是绝对路径".into());
                 }
-                expanded
+                open_local_path(&expanded)
             }
-        };
-        std::process::Command::new("xdg-open")
-            .arg(target)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("打开链接失败：{error}"))
+        }
     }
 
     pub(super) fn next_tab(&mut self) {
@@ -836,4 +831,184 @@ impl App {
             }
         }
     }
+}
+
+// ── 终端链接打开：按平台选择系统命令 ──
+
+fn open_url(url: &str) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err("不支持的链接类型".into());
+    }
+    open_url_platform(url)
+}
+
+/// 终端输出可能来自远端。只直接打开目录和常见文档；应用包、可执行文件、
+/// 脚本和无扩展名文件只在文件管理器中定位，避免误执行。
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn is_document_path(path: &std::path::Path) -> bool {
+    if path.is_dir() {
+        // macOS 的 .app/.bundle 等本身就是目录，不能当作普通目录直接 open。
+        #[cfg(target_os = "macos")]
+        if is_macos_bundle(path) {
+            return false;
+        }
+        return true;
+    }
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "txt"
+            | "md"
+            | "markdown"
+            | "pdf"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "svg"
+            | "css"
+            | "ts"
+            | "json"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "xml"
+            | "csv"
+            | "log"
+            | "rs"
+            | "go"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "java"
+            | "conf"
+            | "ini"
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_bundle(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "app"
+                    | "bundle"
+                    | "framework"
+                    | "plugin"
+                    | "kext"
+                    | "prefpane"
+                    | "systemextension"
+                    | "appex"
+                    | "qlgenerator"
+            )
+        })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_url_platform(url: &str) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开链接失败：{error}"))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_local_path(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开链接失败：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_platform(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开链接失败：{error}"))
+}
+
+#[cfg(target_os = "macos")]
+fn open_local_path(path: &std::path::Path) -> Result<(), String> {
+    let mut command = std::process::Command::new("open");
+    if !is_document_path(path) {
+        command.arg("-R");
+    }
+    command
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开链接失败：{error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_platform(url: &str) -> Result<(), String> {
+    shell_execute("open", std::ffi::OsStr::new(url))
+}
+
+#[cfg(target_os = "windows")]
+fn open_local_path(path: &std::path::Path) -> Result<(), String> {
+    if is_document_path(path) {
+        return shell_execute("open", path.as_os_str());
+    }
+    // 非文档只在资源管理器中定位，避免打开 exe/脚本/应用包。
+    use std::os::windows::process::CommandExt;
+    let mut selection = std::ffi::OsString::from("/select,\"");
+    selection.push(path.as_os_str());
+    selection.push("\"");
+    std::process::Command::new("explorer.exe")
+        .raw_arg(selection)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("打开链接失败：{error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn shell_execute(operation: &str, target: &std::ffi::OsStr) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    let operation: Vec<u16> = std::ffi::OsStr::new(operation)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let target: Vec<u16> = target.encode_wide().chain(std::iter::once(0)).collect();
+    // SAFETY: 两个宽字符串均以 NUL 结尾，并在调用期间保持有效。
+    let result = unsafe {
+        windows_sys::Win32::UI::Shell::ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        )
+    };
+    if result as isize > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "打开链接失败（ShellExecuteW 返回 {}）",
+            result as isize
+        ))
+    }
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn open_url_platform(_url: &str) -> Result<(), String> {
+    Err("当前平台不支持打开链接".into())
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn open_local_path(_path: &std::path::Path) -> Result<(), String> {
+    Err("当前平台不支持打开链接".into())
 }
