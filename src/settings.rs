@@ -16,10 +16,11 @@ pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Ubuntu Sans Mono";
 pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Ubuntu Mono";
 /// 终端默认字号（逻辑像素，渲染时再乘以窗口缩放比），比 GNOME Terminal 默认的 13pt 小一号。
 pub const DEFAULT_TERMINAL_FONT_SIZE: f32 = 16.0;
+/// Ubuntu 保持 Native 原有配色；Windows / macOS 使用同伴提交的 GNOME Terminal 默认配色。
 #[cfg(target_os = "linux")]
-pub const DEFAULT_TERMINAL_COLOR_SCHEME: &str = crate::themes::GNOME_TERMINAL_THEME_NAME;
-#[cfg(not(target_os = "linux"))]
 pub const DEFAULT_TERMINAL_COLOR_SCHEME: &str = "AdventureTime";
+#[cfg(not(target_os = "linux"))]
+pub const DEFAULT_TERMINAL_COLOR_SCHEME: &str = crate::themes::GNOME_TERMINAL_THEME_NAME;
 pub const MIN_SIDEBAR_WIDTH: u32 = 150;
 pub const MAX_SIDEBAR_WIDTH: u32 = 500;
 pub const DEFAULT_SIDEBAR_WIDTH: u32 = 220;
@@ -626,9 +627,9 @@ mod tests {
         assert_eq!(DEFAULT_TERMINAL_FONT_FAMILY, "Ubuntu Mono");
         assert_eq!(DEFAULT_TERMINAL_FONT_SIZE, 16.0);
         #[cfg(target_os = "linux")]
-        assert_eq!(DEFAULT_TERMINAL_COLOR_SCHEME, "GNOME Terminal");
-        #[cfg(not(target_os = "linux"))]
         assert_eq!(DEFAULT_TERMINAL_COLOR_SCHEME, "AdventureTime");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(DEFAULT_TERMINAL_COLOR_SCHEME, "GNOME Terminal");
         assert!(crate::themes::theme_by_name(DEFAULT_TERMINAL_COLOR_SCHEME).is_some());
         assert_eq!(settings.terminal.font, DEFAULT_TERMINAL_FONT_FAMILY);
         assert_eq!(settings.terminal.font_size, DEFAULT_TERMINAL_FONT_SIZE);
