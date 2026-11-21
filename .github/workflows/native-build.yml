@@ -3,14 +3,14 @@ name: LiteTerm Multi-platform Build
 on:
   push:
     tags:
-      - native-v*
+      - v*
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-build-${{ github.ref }}
+  group: liteterm-build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -36,7 +36,7 @@ jobs:
             exit 1
           fi
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            TAG_VERSION=${GITHUB_REF_NAME#native-v}
+            TAG_VERSION=${GITHUB_REF_NAME#v}
             if [ "$TAG_VERSION" = "$GITHUB_REF_NAME" ] || [ "$TAG_VERSION" != "$VERSION" ]; then
               echo "::error::标签版本 $GITHUB_REF_NAME 与 Cargo.toml 版本 $VERSION 不一致"
               exit 1
@@ -281,7 +281,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'native-v')
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     needs:
       - prepare
       - build
@@ -299,9 +299,9 @@ jobs:
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#native-v}"
+          VERSION="${TAG#v}"
           DOWNLOAD_BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-          PREV_TAG="$(git tag --sort=-creatordate | grep '^native-v' | grep -v "^${TAG}$" | head -1 || true)"
+          PREV_TAG="$(git tag --sort=-creatordate | grep -E '^(native-)?v0\.1\.' | grep -v "^${TAG}$" | head -1 || true)"
 
           if [ -z "$PREV_TAG" ]; then
             COMMITS="$(git log --pretty=format:"%h %s" -50)"

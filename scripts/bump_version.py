@@ -2,7 +2,7 @@
 """Increment the Native package version and its lockfile entry.
 
 The release workflow calls this script so that Cargo.toml and Cargo.lock stay
-in sync before the version commit and native-vX.Y.Z tag are created.
+in sync before the version commit and vX.Y.Z tag are created.
 """
 
 from __future__ import annotations

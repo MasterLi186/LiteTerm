@@ -83,4 +83,4 @@ cargo build --locked --bin liteterm-native
 
 ## 发布
 
-推送 `native-v*` tag 会触发 GitHub Actions 在 Linux、Windows、macOS Intel 和 macOS Apple Silicon 上构建并生成 Release。版本号由发布流程同步到 `Cargo.toml` 与 `Cargo.lock`。
+推送 `v*` tag 会触发 GitHub Actions 在 Linux、Windows、macOS Intel 和 macOS Apple Silicon 上构建并生成 Release。版本号由发布流程同步到 `Cargo.toml` 与 `Cargo.lock`。旧的 `native-v*` 标签仅作为历史版本保留。

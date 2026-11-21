@@ -12,7 +12,7 @@ LiteTerm Native 是本仓库唯一实现：Rust + winit + wgpu + egui，无 WebV
   - 启动：仓库根目录执行 `./run-native.sh`（二进制缺失/过期时会自动执行同一条 cargo 构建；绝不生成安装包）。
   - Release 打包：只能在仓库根目录执行无参数的 `./build.sh`。它会做 locked release 构建、调用固定版本 `cargo-packager 0.11.8` 并生成 `dist/installers/LiteTerm-Native_<版本>_<架构>.deb`；不要单独执行 `cargo build --release` 或 `cargo packager` 代替它。
 - **测试默认禁止**：除非用户明确要求“运行测试/自动化测试”，否则不要执行 `cargo test`、`cargo test --no-run`、测试脚本、`cargo clippy --all-targets` 等会编译或执行测试目标的命令；普通实现工作也不要顺手添加测试代码。Native UI 变更的默认验证方式是：构建 → `./run-native.sh` → 实际启动窗口并交互检查。
-- **Tag 禁止**：未经用户当次明确授权，禁止创建/推送 `native-v*` tag。tag 会触发 CI 三/四平台构建与 Release；每次授权仅限一次。
+- **Tag 禁止**：未经用户当次明确授权，禁止创建/推送 `v*` tag。tag 会触发 CI 三/四平台构建与 Release；每次授权仅限一次。
 - **提交**：中文 Conventional Commits（`feat:`/`fix:`/`docs:`/`refactor:`/`perf:` 等）；提交前对改动的 Rust 执行 `cargo fmt --all`（CI 用 `cargo fmt --all -- --check` 校验）。
 
 Linux 构建依赖：`pkg-config libudev-dev libssl-dev`（CI 同样安装这些）。
@@ -147,8 +147,8 @@ node scripts/generate-themes.mjs   # 从 assets/themes.ts 生成 src/themes_gene
 
 ## CI 与发布
 
-- `.github/workflows/native-build.yml`：由 `native-v*` tag 或手动触发；quality job 运行 `cargo fmt --all -- --check` 和 `cargo clippy --locked --bin liteterm-native`；build job 在 Linux（deb）、Windows（nsis）、macOS Intel / Apple Silicon（dmg）上执行 `cargo build --release --locked` 并用 `cargo-packager 0.11.8` 打包。
-- `.github/workflows/native-release.yml`：手动 dispatch，按 patch/minor/major 调 `scripts/bump_version.py`，提交版本、创建并推送 `native-vX.Y.Z` tag，从而触发构建。本地不要模拟该流程。
+- `.github/workflows/native-build.yml`：由 `v*` tag 或手动触发；quality job 运行 `cargo fmt --all -- --check` 和 `cargo clippy --locked --bin liteterm-native`；build job 在 Linux（deb）、Windows（nsis）、macOS Intel / Apple Silicon（dmg）上执行 `cargo build --release --locked` 并用 `cargo-packager 0.11.8` 打包。
+- `.github/workflows/native-release.yml`：手动 dispatch，按 patch/minor/major 调 `scripts/bump_version.py`，提交版本、创建并推送 `vX.Y.Z` tag，从而触发构建。本地不要模拟该流程。
 - `build.sh` 会校验 deb 的 Package/Version/Architecture/Depends，以及包内二进制、desktop 入口和 5 个尺寸图标；输出目录中只允许存在一个 `.deb`。
 
 ## 相关文档
