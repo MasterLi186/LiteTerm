@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { downloadDir, homeDir } from '@tauri-apps/api/path';
 import type { FileEntry } from '../../types';
 import { log } from '../../utils/logger';
 import { IconSearch, IconRefresh, IconFolderUp, IconFolder, IconFile } from '../Icons';
@@ -30,10 +31,21 @@ function getExtType(name: string): string {
   return name.slice(dot + 1).toUpperCase();
 }
 
+// Windows 盘符路径(D:\foo / D:)统一成正斜杠(D:/foo / D:/),以复用下面按 / 处理的逻辑;其余路径原样返回
+function normalizeLocalPath(p: string): string {
+  if (!/^[A-Za-z]:([\\/]|$)/.test(p)) return p;
+  const s = p.replace(/\\/g, '/');
+  return s.length === 2 ? `${s}/` : s;
+}
+
 function joinPath(base: string, name: string): string {
   if (name === '..') {
+    // 已在 Windows 盘符根目录(D:/)时不再上移
+    if (/^[A-Za-z]:\/?$/.test(base)) return `${base.slice(0, 2)}/`;
     const parts = base.replace(/\/+$/, '').split('/');
     parts.pop();
+    // 上移到盘符时补 /:Windows 上 "D:" 表示 D 盘的当前目录而非根目录
+    if (parts.length === 1 && /^[A-Za-z]:$/.test(parts[0])) return `${parts[0]}/`;
     return parts.length === 0 ? '/' : parts.join('/');
   }
   if (base === '/') return `/${name}`;
@@ -377,7 +389,8 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
   const [showHidden, setShowHidden] = useState(false);
 
   // Local pane state
-  const [localPath, setLocalPath] = useState('~/Downloads');
+  // 初始为空,挂载后取系统登记的下载目录(用户可能已移动它,如 Win11 的 D:\Downloads)
+  const [localPath, setLocalPath] = useState('');
   const [localFiles, setLocalFiles] = useState<FileEntry[]>([]);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localLoading, setLocalLoading] = useState(false);
@@ -518,8 +531,20 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
     }
   }, [sessionId, sshUser]);
 
+  // 本地面板初始目录:系统下载目录 → 主目录 → ~
+  useEffect(() => {
+    downloadDir()
+      .catch(() => homeDir())
+      .then((dir) => setLocalPath(normalizeLocalPath(dir)))
+      .catch((e) => {
+        log('FileBrowser', `获取下载/主目录失败: ${e}`);
+        setLocalPath('~');
+      });
+  }, []);
+
   // Initial load
   useEffect(() => {
+    if (!localPath) return;
     loadLocalFiles(localPath);
   }, [localPath]);
 
@@ -590,7 +615,7 @@ export function FileBrowser({ sessionId, activeTerminalId, sshUser, sftpReady, o
   // --- Handlers ---
 
   function handleLocalPathChange(path: string) {
-    setLocalPath(path);
+    setLocalPath(normalizeLocalPath(path));
     setLocalSelected(null);
   }
 

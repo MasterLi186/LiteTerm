@@ -13,6 +13,7 @@ const FONT_OPTIONS = [
   'Liberation Mono',
   'Noto Sans Mono',
   // Windows
+  'Cascadia Mono',
   'Cascadia Code',
   'Consolas',
   'Courier New',
@@ -25,8 +26,11 @@ const FONT_OPTIONS = [
 ];
 
 
+const IS_WINDOWS = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
+
 export function getTerminalFont(): string {
-  return localStorage.getItem('guishell_terminal_font') || 'Ubuntu Mono';
+  // Windows 默认与 Windows Terminal 一致用 Cascadia Mono(Win11 自带)
+  return localStorage.getItem('guishell_terminal_font') || (IS_WINDOWS ? 'Cascadia Mono' : 'Ubuntu Mono');
 }
 
 export function getTerminalFontSize(): number {
@@ -38,7 +42,10 @@ export function getTerminalFontFamily(): string {
   const primary = getTerminalFont();
   // Menlo 是 macOS 自带等宽字体;WebKit 的通用 monospace 在 macOS 上是 Courier。
   // 其后的 Meslo(Menlo 衍生,含 Powerline 字形)只为 agnoster/powerlevel10k 等提示符补分隔符,未安装时无影响
-  return `'${primary}', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Menlo', 'Meslo LG M for Powerline', 'MesloLGS NF', monospace`;
+  // Cascadia Mono / Consolas 是 Windows 自带等宽字体;Windows 上 Microsoft YaHei 放在所有等宽字体之后,只承接中文字形。
+  // 缺少它们时 WebView2 在中文系统上把通用 monospace 解析为新宋体,中英文都会显示成新宋体
+  const cjk = IS_WINDOWS ? `'Microsoft YaHei', ` : '';
+  return `'${primary}', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Menlo', 'Cascadia Mono', 'Consolas', 'Meslo LG M for Powerline', 'MesloLGS NF', ${cjk}monospace`;
 }
 
 interface Props {
