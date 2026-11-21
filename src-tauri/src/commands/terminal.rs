@@ -37,6 +37,16 @@ pub struct ShellInfo {
     pub path: String,
 }
 
+/// 前端是 xterm.js,PTY 子进程的 TERM 必须声明为对应类型。
+/// 从 macOS Dock/Finder 启动时进程环境里没有 TERM,不显式设置会导致 tput/clear/vim 等失效。
+pub const PTY_TERM: &str = "xterm-256color";
+
+fn shell_command(shell: &str) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(shell);
+    cmd.env("TERM", PTY_TERM);
+    cmd
+}
+
 /// 本地终端核心逻辑(供 Tauri 命令和 HTTP API 共用)
 pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<String>) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -55,7 +65,7 @@ pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<St
         })?;
 
     let shell = shell_path.unwrap_or_else(default_shell);
-    let cmd = CommandBuilder::new(&shell);
+    let cmd = shell_command(&shell);
     let _child = pair.slave.spawn_command(cmd).map_err(|e| {
         app_log!("TERM", "ERROR: spawn shell failed: {} (shell={})", e, shell);
         e.to_string()
@@ -437,7 +447,11 @@ pub async fn open_file_path(
         return Err(format!("文件不存在: {}", resolved));
     }
 
-    std::process::Command::new("xdg-open")
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(not(target_os = "macos"))]
+    let opener = "xdg-open";
+    std::process::Command::new(opener)
         .arg(&resolved)
         .spawn()
         .map_err(|e| format!("打开失败: {}", e))?;
@@ -494,4 +508,15 @@ pub async fn update_settings(state: State<'_, AppState>, patch: serde_json::Valu
     updated.save().map_err(|e| e.to_string())?;
     *settings = updated;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_command_sets_term_for_xterm_js() {
+        let cmd = shell_command("/bin/sh");
+        assert_eq!(cmd.get_env("TERM"), Some(std::ffi::OsStr::new(PTY_TERM)));
+    }
 }

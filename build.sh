@@ -20,7 +20,12 @@ echo "=== Rust clippy 静态检查 ==="
 echo "  ✓ clippy 通过"
 
 echo "=== Rust 单元测试 ==="
-cargo test 2>&1 | tail -10
+# 根目录 Cargo.toml 是旧 GTK4 版本,依赖系统 gtk4(macOS/Windows 通常没有),缺失时跳过
+if pkg-config --exists gtk4 2>/dev/null; then
+    cargo test 2>&1 | tail -10
+else
+    echo "  - 跳过根目录旧 GTK4 代码测试(未找到 gtk4)"
+fi
 (cd src-tauri && cargo test 2>&1 | tail -10)
 echo "  ✓ 测试通过"
 

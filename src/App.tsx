@@ -21,7 +21,7 @@ import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 import { log, getLogText } from './utils/logger';
 import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay } from './components/Icons';
-import { SettingsPanel } from './components/Settings';
+import { SettingsPanel, getTerminalFontSize, getTerminalFontFamily } from './components/Settings';
 import { SettingsTab } from './components/settings/SettingsTab';
 
 // 从 DOM 直接测量终端区域的实际 cols/rows
@@ -31,16 +31,22 @@ function getTerminalSize() {
   if (!container) { log('PTY', 'getTerminalSize: container 未找到, 用默认 80x24'); return { cols: 80, rows: 24 }; }
   const rect = container.getBoundingClientRect();
   if (rect.width < 10 || rect.height < 10) return { cols: 80, rows: 24 };
-  // 用临时元素测量实际字符单元格大小
-  const fontSize = parseInt(localStorage.getItem('guishell_terminal_fontsize') || '15') || 15;
-  const fontFamily = localStorage.getItem('guishell_terminal_font') || "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', monospace";
-  const span = document.createElement('span');
-  span.style.cssText = `position:absolute;visibility:hidden;font-family:${fontFamily};font-size:${fontSize}px;`;
-  span.textContent = 'W';
-  document.body.appendChild(span);
-  const cellW = span.getBoundingClientRect().width || fontSize * 0.6;
-  const cellH = (span.getBoundingClientRect().height || fontSize) * 1.0;
-  document.body.removeChild(span);
+  // 与 xterm.js 5.x 的字符测量保持一致:同一字体串 + canvas measureText('W') 的 fontBoundingBox,
+  // 行高按 devicePixelRatio 向上取整。估算值会在新终端打开后补发给 PTY,若与 xterm 实际尺寸
+  // 不一致会覆盖 onResize 上报的正确值(macOS 上 DOM span 测得行高 24px,xterm 实际 17px)。
+  const fontSize = getTerminalFontSize();
+  const fontFamily = getTerminalFontFamily();
+  let cellW = fontSize * 0.6;
+  let cellH = fontSize;
+  const ctx = document.createElement('canvas').getContext('2d');
+  if (ctx) {
+    ctx.font = `${fontSize}px ${fontFamily}`;
+    const m = ctx.measureText('W');
+    const dpr = window.devicePixelRatio || 1;
+    const h = m.fontBoundingBoxAscent + m.fontBoundingBoxDescent;
+    if (m.width > 0) cellW = m.width;
+    if (h > 0) cellH = Math.ceil(h * dpr) / dpr;
+  }
   const cols = Math.max(40, Math.floor(rect.width / cellW));
   const rows = Math.max(10, Math.floor(rect.height / cellH));
   log('PTY', `getTerminalSize: container=${Math.floor(rect.width)}x${Math.floor(rect.height)} cell=${cellW.toFixed(1)}x${cellH.toFixed(1)} → ${cols}x${rows}`);
