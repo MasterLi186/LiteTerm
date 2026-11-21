@@ -301,7 +301,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           DOWNLOAD_BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-          PREV_TAG="$(git tag --sort=-creatordate | grep -E '^(native-)?v0\.1\.' | grep -v "^${TAG}$" | head -1 || true)"
+          PREV_TAG="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
 
           if [ -z "$PREV_TAG" ]; then
             COMMITS="$(git log --pretty=format:"%h %s" -50)"
