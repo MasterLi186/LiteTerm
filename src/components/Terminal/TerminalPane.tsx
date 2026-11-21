@@ -24,6 +24,10 @@ function getTerminalTheme(): ITheme {
   return TERMINAL_THEMES[getTerminalThemeName()] || TERMINAL_THEMES['暗色默认'];
 }
 
+/** 各终端 xterm 实际上报的尺寸(onResize)。App 在新开/重连后补发 terminal_resize 时优先用它,
+ *  避免估算值与 xterm 不一致时把 PTY 改成错误尺寸(zsh 的 % 提示和多余换行就是这样来的) */
+export const reportedTerminalSizes = new Map<string, { cols: number; rows: number }>();
+
 // Global event for theme change notification
 const themeChangeListeners = new Set<() => void>();
 function notifyThemeChange() {
@@ -798,6 +802,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
     // Resize -> Tauri
     term.onResize(({ cols, rows }) => {
       appLog('PTY', `onResize → terminal_resize: ${cols}x${rows}`);
+      reportedTerminalSizes.set(terminalId, { cols, rows });
       invoke('terminal_resize', { id: terminalId, cols, rows });
     });
 
@@ -915,6 +920,7 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       resizeTimers.forEach(t => clearTimeout(t));
       themeChangeListeners.delete(onThemeChange);
       window.removeEventListener('terminal-settings-changed', onSettingsChanged);
+      reportedTerminalSizes.delete(terminalId);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

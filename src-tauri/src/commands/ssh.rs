@@ -41,6 +41,8 @@ pub async fn do_ssh_connect(
                 .map_err(|e| format!("PTY open failed: {}", e))?;
 
             let mut cmd = CommandBuilder::new("ssh");
+            // 系统 ssh 会把本地 TERM 转发给远端;GUI 进程可能没有 TERM,显式设置
+            cmd.env("TERM", crate::commands::terminal::PTY_TERM);
             cmd.arg("-J");
             cmd.arg(proxy);
             cmd.arg("-p");

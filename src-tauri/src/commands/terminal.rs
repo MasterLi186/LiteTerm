@@ -37,6 +37,16 @@ pub struct ShellInfo {
     pub path: String,
 }
 
+/// 前端是 xterm.js,PTY 子进程的 TERM 必须声明为对应类型。
+/// 从 macOS Dock/Finder 启动时进程环境里没有 TERM,不显式设置会导致 tput/clear/vim 等失效。
+pub const PTY_TERM: &str = "xterm-256color";
+
+fn shell_command(shell: &str) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(shell);
+    cmd.env("TERM", PTY_TERM);
+    cmd
+}
+
 /// 本地终端核心逻辑(供 Tauri 命令和 HTTP API 共用)
 pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<String>) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -55,7 +65,7 @@ pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<St
         })?;
 
     let shell = shell_path.unwrap_or_else(default_shell);
-    let cmd = CommandBuilder::new(&shell);
+    let cmd = shell_command(&shell);
     let _child = pair.slave.spawn_command(cmd).map_err(|e| {
         app_log!("TERM", "ERROR: spawn shell failed: {} (shell={})", e, shell);
         e.to_string()
@@ -437,12 +447,68 @@ pub async fn open_file_path(
         return Err(format!("文件不存在: {}", resolved));
     }
 
-    std::process::Command::new("xdg-open")
-        .arg(&resolved)
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        if !macos_safe_to_open(std::path::Path::new(&resolved)) {
+            app_log!("OPEN", "非文档类型,仅在 Finder 中定位: {}", resolved);
+            c.arg("-R");
+        }
+        c
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(&resolved)
         .spawn()
         .map_err(|e| format!("打开失败: {}", e))?;
 
     Ok(())
+}
+
+/// Ctrl+Click 的路径取自终端输出,SSH 会话里由远端控制。macOS 的 `open` 会直接启动应用包、
+/// .command/.terminal 文件和替身指向的程序,所以只有普通目录和常见文档类型才直接打开,
+/// 其余用 `open -R` 在 Finder 中定位,不执行。
+#[cfg(target_os = "macos")]
+fn macos_safe_to_open(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    const SAFE_EXT: &[&str] = &[
+        "txt", "log", "md", "csv", "json", "yaml", "yml", "toml", "xml", "ini", "conf", "cfg",
+        "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "mp3", "wav", "mp4", "mov",
+    ];
+    // 先解析符号链接,按真实目标判断
+    let Ok(real) = std::fs::canonicalize(path) else { return false };
+    let Ok(meta) = std::fs::metadata(&real) else { return false };
+    let ext = real.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+    if meta.is_dir() {
+        // 带扩展名或含 Contents/ 的目录可能是包(.app/.workflow 等),open 会启动它
+        return ext.is_none() && !real.join("Contents").exists();
+    }
+    meta.is_file()
+        && meta.permissions().mode() & 0o111 == 0
+        && ext.is_some_and(|e| SAFE_EXT.contains(&e.as_str()))
+        && !macos_is_alias_file(&real)
+}
+
+/// Finder 替身不是符号链接,canonicalize 解析不了,`open` 却会打开它指向的程序。
+/// 替身由 com.apple.FinderInfo 扩展属性里的 kIsAlias 标志(fdFlags 0x8000)标识。
+#[cfg(target_os = "macos")]
+fn macos_is_alias_file(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    const K_IS_ALIAS: u16 = 0x8000;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return true };
+    let mut info = [0u8; 32];
+    // SAFETY: c_path 和属性名都以 NUL 结尾,info 缓冲区长度与传入的 size 一致
+    let n = unsafe {
+        libc::getxattr(
+            c_path.as_ptr(),
+            c"com.apple.FinderInfo".as_ptr(),
+            info.as_mut_ptr().cast(),
+            info.len(),
+            0,
+            0,
+        )
+    };
+    n >= 10 && u16::from_be_bytes([info[8], info[9]]) & K_IS_ALIAS != 0
 }
 
 /// HTTP API 标签页注册(前端打开标签时调用)
@@ -494,4 +560,47 @@ pub async fn update_settings(state: State<'_, AppState>, patch: serde_json::Valu
     updated.save().map_err(|e| e.to_string())?;
     *settings = updated;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_command_sets_term_for_xterm_js() {
+        let cmd = shell_command("/bin/sh");
+        assert_eq!(cmd.get_env("TERM"), Some(std::ffi::OsStr::new(PTY_TERM)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_open_only_documents_and_plain_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("liteterm-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("plain")).unwrap();
+        std::fs::create_dir_all(dir.join("Evil.app/Contents")).unwrap();
+        std::fs::create_dir_all(dir.join("noext/Contents")).unwrap();
+        for f in ["notes.txt", "run.command", "x.terminal", "README", "tool.txt"] {
+            std::fs::write(dir.join(f), "echo hi\n").unwrap();
+        }
+        std::fs::set_permissions(dir.join("tool.txt"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(dir.join("Evil.app"), dir.join("link.txt")).unwrap();
+        // 伪造 Finder 替身:FinderInfo 的 fdFlags 置 kIsAlias
+        std::fs::write(dir.join("alias.txt"), "book").unwrap();
+        let mut info = [0u8; 32];
+        info[8] = 0x80;
+        let p = std::ffi::CString::new(dir.join("alias.txt").to_str().unwrap()).unwrap();
+        let rc = unsafe {
+            libc::setxattr(p.as_ptr(), c"com.apple.FinderInfo".as_ptr(), info.as_ptr().cast(), info.len(), 0, 0)
+        };
+        assert_eq!(rc, 0);
+
+        assert!(macos_safe_to_open(&dir.join("notes.txt")));
+        assert!(macos_safe_to_open(&dir.join("plain")));
+        for bad in ["Evil.app", "noext", "run.command", "x.terminal", "README", "tool.txt", "link.txt", "alias.txt", "missing.txt"] {
+            assert!(!macos_safe_to_open(&dir.join(bad)), "{bad} 不应直接打开");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
