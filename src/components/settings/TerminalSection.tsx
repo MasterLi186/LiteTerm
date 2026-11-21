@@ -6,7 +6,7 @@ import { getTerminalFont, getTerminalFontSize } from '../Settings';
 const FONT_OPTIONS = [
   'JetBrains Mono', 'Fira Code', 'Source Code Pro',
   'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono',
-  'Cascadia Code', 'Consolas', 'Courier New',
+  'Cascadia Mono', 'Cascadia Code', 'Consolas', 'Courier New',
   'SF Mono', 'Menlo', 'Monaco', 'monospace',
 ];
 

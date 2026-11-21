@@ -1,4 +1,5 @@
 import type { ITheme } from '@xterm/xterm';
+import { getTerminalFontFamily } from '../Settings';
 
 interface Props {
   name: string;
@@ -34,7 +35,7 @@ export function ThemePreview({ name, theme, selected, onClick }: Props) {
       </div>
       <div style={{
         backgroundColor: theme.background || '#000',
-        fontFamily: "'Ubuntu Mono', 'DejaVu Sans Mono', monospace",
+        fontFamily: getTerminalFontFamily(),
         fontSize: '12px', lineHeight: 1.4, padding: '6px 10px',
       }}>
         <div>
