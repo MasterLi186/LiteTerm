@@ -299,6 +299,8 @@ jobs:
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#native-v}"
+          DOWNLOAD_BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           PREV_TAG="$(git tag --sort=-creatordate | grep '^native-v' | grep -v "^${TAG}$" | head -1 || true)"
 
           if [ -z "$PREV_TAG" ]; then
@@ -356,10 +358,12 @@ jobs:
             fi
             echo "### 下载"
             echo
-            echo "- **Windows x86_64**：简体中文 NSIS \`.exe\`"
-            echo "- **Linux x86_64**：Debian/Ubuntu \`.deb\`"
-            echo "- **macOS Intel**：x86_64 \`.dmg\`"
-            echo "- **macOS Apple Silicon**：aarch64 \`.dmg\`"
+            echo "| 平台 | 安装包 |"
+            echo "|---|---|"
+            echo "| Linux x86_64 | [LiteTerm_${VERSION}_amd64.deb](${DOWNLOAD_BASE}/LiteTerm_${VERSION}_amd64.deb) |"
+            echo "| Windows x86_64 | [LiteTerm_${VERSION}_x64-setup.exe](${DOWNLOAD_BASE}/LiteTerm_${VERSION}_x64-setup.exe) |"
+            echo "| macOS Intel | [LiteTerm_${VERSION}_x64.dmg](${DOWNLOAD_BASE}/LiteTerm_${VERSION}_x64.dmg) |"
+            echo "| macOS Apple Silicon | [LiteTerm_${VERSION}_aarch64.dmg](${DOWNLOAD_BASE}/LiteTerm_${VERSION}_aarch64.dmg) |"
             echo
             echo "安装包尚未进行商业代码签名，Windows 和 macOS 可能显示安全提示。"
             if [ -n "$COMPARE" ]; then
