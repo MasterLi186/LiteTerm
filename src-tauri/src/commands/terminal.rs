@@ -448,15 +448,44 @@ pub async fn open_file_path(
     }
 
     #[cfg(target_os = "macos")]
-    let opener = "open";
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        if !macos_safe_to_open(std::path::Path::new(&resolved)) {
+            app_log!("OPEN", "非文档类型,仅在 Finder 中定位: {}", resolved);
+            c.arg("-R");
+        }
+        c
+    };
     #[cfg(not(target_os = "macos"))]
-    let opener = "xdg-open";
-    std::process::Command::new(opener)
-        .arg(&resolved)
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(&resolved)
         .spawn()
         .map_err(|e| format!("打开失败: {}", e))?;
 
     Ok(())
+}
+
+/// Ctrl+Click 的路径取自终端输出,SSH 会话里由远端控制。macOS 的 `open` 会直接启动应用包、
+/// .command/.terminal 文件和替身指向的程序,所以只有普通目录和常见文档类型才直接打开,
+/// 其余用 `open -R` 在 Finder 中定位,不执行。
+#[cfg(target_os = "macos")]
+fn macos_safe_to_open(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    const SAFE_EXT: &[&str] = &[
+        "txt", "log", "md", "csv", "json", "yaml", "yml", "toml", "xml", "ini", "conf", "cfg",
+        "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "mp3", "wav", "mp4", "mov",
+    ];
+    // 先解析符号链接,按真实目标判断
+    let Ok(real) = std::fs::canonicalize(path) else { return false };
+    let Ok(meta) = std::fs::metadata(&real) else { return false };
+    let ext = real.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+    if meta.is_dir() {
+        // 带扩展名或含 Contents/ 的目录可能是包(.app/.workflow 等),open 会启动它
+        return ext.is_none() && !real.join("Contents").exists();
+    }
+    meta.is_file()
+        && meta.permissions().mode() & 0o111 == 0
+        && ext.is_some_and(|e| SAFE_EXT.contains(&e.as_str()))
 }
 
 /// HTTP API 标签页注册(前端打开标签时调用)
@@ -518,5 +547,28 @@ mod tests {
     fn shell_command_sets_term_for_xterm_js() {
         let cmd = shell_command("/bin/sh");
         assert_eq!(cmd.get_env("TERM"), Some(std::ffi::OsStr::new(PTY_TERM)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_open_only_documents_and_plain_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("liteterm-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("plain")).unwrap();
+        std::fs::create_dir_all(dir.join("Evil.app/Contents")).unwrap();
+        std::fs::create_dir_all(dir.join("noext/Contents")).unwrap();
+        for f in ["notes.txt", "run.command", "x.terminal", "README", "tool.txt"] {
+            std::fs::write(dir.join(f), "echo hi\n").unwrap();
+        }
+        std::fs::set_permissions(dir.join("tool.txt"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(dir.join("Evil.app"), dir.join("link.txt")).unwrap();
+
+        assert!(macos_safe_to_open(&dir.join("notes.txt")));
+        assert!(macos_safe_to_open(&dir.join("plain")));
+        for bad in ["Evil.app", "noext", "run.command", "x.terminal", "README", "tool.txt", "link.txt", "missing.txt"] {
+            assert!(!macos_safe_to_open(&dir.join(bad)), "{bad} 不应直接打开");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
