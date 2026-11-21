@@ -486,6 +486,29 @@ fn macos_safe_to_open(path: &std::path::Path) -> bool {
     meta.is_file()
         && meta.permissions().mode() & 0o111 == 0
         && ext.is_some_and(|e| SAFE_EXT.contains(&e.as_str()))
+        && !macos_is_alias_file(&real)
+}
+
+/// Finder 替身不是符号链接,canonicalize 解析不了,`open` 却会打开它指向的程序。
+/// 替身由 com.apple.FinderInfo 扩展属性里的 kIsAlias 标志(fdFlags 0x8000)标识。
+#[cfg(target_os = "macos")]
+fn macos_is_alias_file(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    const K_IS_ALIAS: u16 = 0x8000;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return true };
+    let mut info = [0u8; 32];
+    // SAFETY: c_path 和属性名都以 NUL 结尾,info 缓冲区长度与传入的 size 一致
+    let n = unsafe {
+        libc::getxattr(
+            c_path.as_ptr(),
+            c"com.apple.FinderInfo".as_ptr(),
+            info.as_mut_ptr().cast(),
+            info.len(),
+            0,
+            0,
+        )
+    };
+    n >= 10 && u16::from_be_bytes([info[8], info[9]]) & K_IS_ALIAS != 0
 }
 
 /// HTTP API 标签页注册(前端打开标签时调用)
@@ -563,10 +586,19 @@ mod tests {
         }
         std::fs::set_permissions(dir.join("tool.txt"), std::fs::Permissions::from_mode(0o755)).unwrap();
         std::os::unix::fs::symlink(dir.join("Evil.app"), dir.join("link.txt")).unwrap();
+        // 伪造 Finder 替身:FinderInfo 的 fdFlags 置 kIsAlias
+        std::fs::write(dir.join("alias.txt"), "book").unwrap();
+        let mut info = [0u8; 32];
+        info[8] = 0x80;
+        let p = std::ffi::CString::new(dir.join("alias.txt").to_str().unwrap()).unwrap();
+        let rc = unsafe {
+            libc::setxattr(p.as_ptr(), c"com.apple.FinderInfo".as_ptr(), info.as_ptr().cast(), info.len(), 0, 0)
+        };
+        assert_eq!(rc, 0);
 
         assert!(macos_safe_to_open(&dir.join("notes.txt")));
         assert!(macos_safe_to_open(&dir.join("plain")));
-        for bad in ["Evil.app", "noext", "run.command", "x.terminal", "README", "tool.txt", "link.txt", "missing.txt"] {
+        for bad in ["Evil.app", "noext", "run.command", "x.terminal", "README", "tool.txt", "link.txt", "alias.txt", "missing.txt"] {
             assert!(!macos_safe_to_open(&dir.join(bad)), "{bad} 不应直接打开");
         }
         let _ = std::fs::remove_dir_all(&dir);
