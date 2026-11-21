@@ -36,8 +36,9 @@ export function getTerminalFontSize(): number {
 export function getTerminalFontFamily(): string {
   if (localStorage.getItem('guishell_use_system_font') === 'true') return 'monospace';
   const primary = getTerminalFont();
-  // Menlo 是 macOS 自带等宽字体;WebKit 的通用 monospace 在 macOS 上是 Courier
-  return `'${primary}', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Menlo', monospace`;
+  // Menlo 是 macOS 自带等宽字体;WebKit 的通用 monospace 在 macOS 上是 Courier。
+  // 其后的 Meslo(Menlo 衍生,含 Powerline 字形)只为 agnoster/powerlevel10k 等提示符补分隔符,未安装时无影响
+  return `'${primary}', 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans Mono', 'Menlo', 'Meslo LG M for Powerline', 'MesloLGS NF', monospace`;
 }
 
 interface Props {
