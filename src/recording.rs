@@ -52,7 +52,7 @@ impl RecordingRegistry {
             "width": cols.max(1),
             "height": rows.max(1),
             "timestamp": timestamp,
-            "title": "LiteTerm Native Recording"
+            "title": "LiteTerm Recording"
         });
         let mut writer = BufWriter::new(file);
         writeln!(writer, "{header}").map_err(|error| format!("无法写入录屏头：{error}"))?;

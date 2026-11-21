@@ -1,4 +1,4 @@
-name: Native Multi-platform Build
+name: LiteTerm Multi-platform Build
 
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read Native version
+      - name: Read version
         id: version
         shell: bash
         run: |
@@ -38,15 +38,15 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             TAG_VERSION=${GITHUB_REF_NAME#native-v}
             if [ "$TAG_VERSION" = "$GITHUB_REF_NAME" ] || [ "$TAG_VERSION" != "$VERSION" ]; then
-              echo "::error::Native 标签版本 $GITHUB_REF_NAME 与 Cargo.toml 版本 $VERSION 不一致"
+              echo "::error::标签版本 $GITHUB_REF_NAME 与 Cargo.toml 版本 $VERSION 不一致"
               exit 1
             fi
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Native version: $VERSION"
+          echo "version: $VERSION"
 
   quality:
-    name: Native compile checks
+    name: Compile checks
     needs: prepare
     runs-on: ubuntu-22.04
     defaults:
@@ -88,23 +88,23 @@ jobs:
             runner: ubuntu-22.04
             slug: linux-x86_64
             formats: deb
-            artifact: LiteTerm-Native-Linux
+            artifact: LiteTerm-Linux
           - display: Windows x86_64
             runner: windows-2022
             slug: windows-x86_64
             formats: nsis
-            artifact: LiteTerm-Native-Windows
+            artifact: LiteTerm-Windows
           - display: macOS Intel
             runner: macos-15-intel
             slug: macos-x86_64
             formats: dmg
-            artifact: LiteTerm-Native-macOS-Intel
+            artifact: LiteTerm-macOS-Intel
             package_arch: x64
           - display: macOS Apple Silicon
             runner: macos-15
             slug: macos-aarch64
             formats: dmg
-            artifact: LiteTerm-Native-macOS-Apple-Silicon
+            artifact: LiteTerm-macOS-Apple-Silicon
             package_arch: aarch64
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -149,7 +149,7 @@ jobs:
             echo "::error::cargo-packager 未生成 .deb 安装包"
             exit 1
           fi
-          mv "$PACKAGE" "dist/installers/LiteTerm-Native_${BUILD_VERSION}_amd64.deb"
+          mv "$PACKAGE" "dist/installers/LiteTerm_${BUILD_VERSION}_amd64.deb"
 
       - name: Build Windows installer
         if: runner.os == 'Windows'
@@ -161,7 +161,7 @@ jobs:
           cargo packager --release --formats "${{ matrix.formats }}" --verbose
           $exe = Get-ChildItem -Path dist/installers -Filter *.exe -File | Select-Object -First 1
           if (-not $exe) { throw "cargo-packager 未生成 NSIS .exe 安装包" }
-          Move-Item $exe.FullName "dist/installers/LiteTerm-Native_${env:BUILD_VERSION}_x64-setup.exe"
+          Move-Item $exe.FullName "dist/installers/LiteTerm_${env:BUILD_VERSION}_x64-setup.exe"
 
       - name: Build macOS installer
         if: runner.os == 'macOS'
@@ -194,7 +194,7 @@ jobs:
           start = contents.find("icons = [")
           end = contents.find("]", start)
           if start < 0 or end < 0:
-              raise SystemExit("Could not locate the Native icon list")
+              raise SystemExit("Could not locate the icon list")
           contents = contents[:start] + 'icons = ["assets/icons/icon.icns"]' + contents[end + 1:]
           cargo_toml.write_text(contents)
           PY
@@ -213,9 +213,9 @@ jobs:
           trap 'rm -rf "$STAGING"' EXIT
           cp -R "$APP" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
-          PACKAGE="dist/installers/LiteTerm-Native_${BUILD_VERSION}_${{ matrix.package_arch }}.dmg"
+          PACKAGE="dist/installers/LiteTerm_${BUILD_VERSION}_${{ matrix.package_arch }}.dmg"
           hdiutil create \
-            -volname "LiteTerm Native" \
+            -volname "LiteTerm" \
             -srcfolder "$STAGING" \
             -ov \
             -format UDZO \
@@ -256,7 +256,7 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
           {
-            echo "## LiteTerm Native 编译产物"
+            echo "## LiteTerm 编译产物"
             echo
             echo "- 版本：\`$VERSION\`"
             echo "- 触发来源：\`${GITHUB_REF_NAME}\`"
@@ -268,10 +268,10 @@ jobs:
               echo
               echo "在当前 Actions 运行页面向下滚动到 **Artifacts**，下载以下目录："
               echo
-              echo "- \`LiteTerm-Native-Windows-v$VERSION\`：简体中文 NSIS \`.exe\`"
-              echo "- \`LiteTerm-Native-Linux-v$VERSION\`：Debian/Ubuntu \`.deb\`"
-              echo "- \`LiteTerm-Native-macOS-Intel-v$VERSION\`：Intel \`.dmg\`"
-              echo "- \`LiteTerm-Native-macOS-Apple-Silicon-v$VERSION\`：Apple Silicon \`.dmg\`"
+              echo "- \`LiteTerm-Windows-v$VERSION\`：简体中文 NSIS \`.exe\`"
+              echo "- \`LiteTerm-Linux-v$VERSION\`：Debian/Ubuntu \`.deb\`"
+              echo "- \`LiteTerm-macOS-Intel-v$VERSION\`：Intel \`.dmg\`"
+              echo "- \`LiteTerm-macOS-Apple-Silicon-v$VERSION\`：Apple Silicon \`.dmg\`"
               echo
               echo "产物保留 30 天，每个目录中直接包含对应平台的安装包。"
             else
@@ -290,6 +290,85 @@ jobs:
       actions: read
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release changelog
+        id: changelog
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PREV_TAG="$(git tag --sort=-creatordate | grep '^native-v' | grep -v "^${TAG}$" | head -1 || true)"
+
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS="$(git log --pretty=format:"%h %s" -50)"
+            COMPARE=""
+          else
+            COMMITS="$(git log --pretty=format:"%h %s" "${PREV_TAG}..${TAG}")"
+            COMPARE="**完整对比**：https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${TAG}"
+          fi
+
+          FEAT=""
+          FIX=""
+          OTHER=""
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            hash="${line%% *}"
+            msg="${line#* }"
+            if [[ "$msg" == feat:* ]]; then
+              FEAT+="- ✨ ${msg} (${hash})"$'\n'
+            elif [[ "$msg" == fix:* ]]; then
+              FIX+="- 🐛 ${msg} (${hash})"$'\n'
+            elif [[ "$msg" == chore:* || "$msg" == docs:* || "$msg" == refactor:* || "$msg" == perf:* ]]; then
+              OTHER+="- 📝 ${msg} (${hash})"$'\n'
+            else
+              OTHER+="- ${msg} (${hash})"$'\n'
+            fi
+          done <<< "$COMMITS"
+
+          TOTAL="$(printf '%s\n' "$COMMITS" | grep -c . || true)"
+
+          {
+            echo "body<<ENDOFLOG"
+            echo "## 更新内容"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              echo "对比 \`${PREV_TAG}\` → \`${TAG}\`，共 ${TOTAL} 个提交。"
+            else
+              echo "初始版本，共 ${TOTAL} 个提交。"
+            fi
+            echo
+            if [ -n "$FEAT" ]; then
+              echo "### 新功能"
+              echo
+              printf '%s\n' "$FEAT"
+            fi
+            if [ -n "$FIX" ]; then
+              echo "### 修复"
+              echo
+              printf '%s\n' "$FIX"
+            fi
+            if [ -n "$OTHER" ]; then
+              echo "### 其他"
+              echo
+              printf '%s\n' "$OTHER"
+            fi
+            echo "### 下载"
+            echo
+            echo "- **Windows x86_64**：简体中文 NSIS \`.exe\`"
+            echo "- **Linux x86_64**：Debian/Ubuntu \`.deb\`"
+            echo "- **macOS Intel**：x86_64 \`.dmg\`"
+            echo "- **macOS Apple Silicon**：aarch64 \`.dmg\`"
+            echo
+            echo "安装包尚未进行商业代码签名，Windows 和 macOS 可能显示安全提示。"
+            if [ -n "$COMPARE" ]; then
+              echo
+              echo "$COMPARE"
+            fi
+            echo "ENDOFLOG"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Download platform installers
         uses: actions/download-artifact@v4
         with:
@@ -300,18 +379,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: LiteTerm Native v${{ needs.prepare.outputs.version }}
-          body: |
-            ## LiteTerm Native v${{ needs.prepare.outputs.version }}
-
-            下载对应平台的安装包：
-
-            - **Windows x86_64**：简体中文 NSIS `.exe`
-            - **Linux x86_64**：Debian/Ubuntu `.deb`
-            - **macOS Intel**：x86_64 `.dmg`
-            - **macOS Apple Silicon**：aarch64 `.dmg`
-
-            安装包尚未进行商业代码签名，Windows 和 macOS 可能显示安全提示。
+          name: LiteTerm v${{ needs.prepare.outputs.version }}
+          body: ${{ steps.changelog.outputs.body }}
           files: release-assets/*
           fail_on_unmatched_files: true
           draft: false

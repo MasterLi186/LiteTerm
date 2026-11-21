@@ -23,23 +23,23 @@ native_needs_build() {
     done
 
     if [ ! -d src ] || [ ! -r src ] || [ ! -x src ]; then
-        echo "Native 源码目录缺失或不可遍历：src" >&2
+        echo "LiteTerm 源码目录缺失或不可遍历：src" >&2
         return 0
     fi
 
     if [ ! -d assets/icons ]; then
-        echo "Native 图标目录缺失：assets/icons" >&2
+        echo "LiteTerm 图标目录缺失：assets/icons" >&2
         return 0
     fi
 
     if [ ! -f assets/icons/256x256.png ]; then
-        echo "Native 窗口图标缺失：assets/icons/256x256.png" >&2
+        echo "LiteTerm 窗口图标缺失：assets/icons/256x256.png" >&2
         return 0
     fi
 
     local newer_input
     if ! newer_input="$(find src assets/icons -newer "$build_reference" -print -quit)"; then
-        echo "无法检查 Native 源码或图标目录的更新时间" >&2
+        echo "无法检查 LiteTerm 源码或图标目录的更新时间" >&2
         return 0
     fi
     if [ -n "$newer_input" ]; then
@@ -50,29 +50,29 @@ native_needs_build() {
 }
 
 if native_needs_build; then
-    echo "Native 构建产物缺失或已过期，开始构建..."
+    echo "LiteTerm 构建产物缺失或已过期，开始构建..."
     if ! cargo build --locked --bin liteterm-native; then
-        echo "Native 构建失败" >&2
+        echo "LiteTerm 构建失败" >&2
         exit 1
     fi
     if [ ! -x "$BINARY" ]; then
-        echo "未找到 Native 构建产物：$BINARY" >&2
+        echo "未找到 LiteTerm 构建产物：$BINARY" >&2
         exit 1
     fi
     touch -- "$BUILD_STAMP"
 fi
 
 if [ ! -x "$BINARY" ]; then
-    echo "未找到 Native 构建产物：$BINARY" >&2
+    echo "未找到 LiteTerm 构建产物：$BINARY" >&2
     exit 1
 fi
 
 OLD_PID="$(pgrep -x 'liteterm-native' 2>/dev/null || true)"
 if [ -n "$OLD_PID" ]; then
-    echo "关闭旧 Native 进程: $OLD_PID"
+    echo "关闭旧 LiteTerm 进程: $OLD_PID"
     kill $OLD_PID 2>/dev/null || true
     sleep 0.5
 fi
 
-echo "启动 LiteTerm Native..."
+echo "启动 LiteTerm..."
 exec "$BINARY" "$@"

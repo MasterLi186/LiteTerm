@@ -54,7 +54,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         let mut attrs = Window::default_attributes()
-            .with_title("LiteTerm Native")
+            .with_title("LiteTerm")
             .with_decorations(false)
             .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 400.0))
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));

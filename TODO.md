@@ -1,4 +1,4 @@
-# LiteTerm Native Prototype — TODO
+# LiteTerm — TODO
 
 ## ✅ 已实现
 

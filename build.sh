@@ -53,11 +53,11 @@ if [[ "$PACKAGER_VERSION" != "$REQUIRED_PACKAGER_VERSION" ]]; then
     die "cargo-packager 版本不符合要求（需要 $REQUIRED_PACKAGER_VERSION，实际版本：${PACKAGER_VERSION:-缺失}；完整输出：${PACKAGER_VERSION_OUTPUT:-缺失}）"
 fi
 
-echo "=== Native release 编译 ==="
+echo "=== LiteTerm release 编译 ==="
 cargo build --release --locked --bin liteterm-native
 
 BINARY="$SCRIPT_DIR/target/release/liteterm-native"
-[[ -x "$BINARY" ]] || die "未找到 Native release 构建产物：$BINARY"
+[[ -x "$BINARY" ]] || die "未找到 LiteTerm release 构建产物：$BINARY"
 
 # Only remove the exact installer directory owned by this script. Refuse to
 # operate on symlinks or unexpected path shapes before invoking rm.
@@ -80,7 +80,7 @@ mapfile -t DEB_CANDIDATES < <(find "$DIST_DIR" -maxdepth 1 -type f -name '*.deb'
 [[ "${#DEB_CANDIDATES[@]}" -eq 1 ]] || \
     die "cargo-packager 应生成且仅生成一个 .deb，实际 ${#DEB_CANDIDATES[@]} 个"
 
-PACKAGE="$DIST_DIR/LiteTerm-Native_${PACKAGE_VERSION}_${DEB_ARCH}.deb"
+PACKAGE="$DIST_DIR/LiteTerm_${PACKAGE_VERSION}_${DEB_ARCH}.deb"
 if [[ "${DEB_CANDIDATES[0]}" != "$PACKAGE" ]]; then
     mv -- "${DEB_CANDIDATES[0]}" "$PACKAGE"
 fi

@@ -14,11 +14,11 @@ name = "liteterm_native_api"
 path = "src/api.rs"
 
 [package.metadata.packager]
-product-name = "LiteTerm Native"
+product-name = "LiteTerm"
 identifier = "com.liteterm.native"
 category = "Utility"
 description = "轻量级跨平台终端、SSH 与串口客户端"
-long-description = "LiteTerm Native 是 LiteTerm 的原生客户端，支持本地终端、SSH、串口、文件管理和系统监控。"
+long-description = "LiteTerm 是轻量级跨平台终端客户端，支持本地终端、SSH、串口、文件管理和系统监控。"
 homepage = "https://github.com/MasterLi186/LiteTerm"
 icons = [
     "assets/icons/32x32.png",

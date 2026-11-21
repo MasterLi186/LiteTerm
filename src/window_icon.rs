@@ -13,7 +13,7 @@ pub(crate) fn load() -> Option<Icon> {
     let image = match image::load_from_memory(ICON_PNG) {
         Ok(image) => image.to_rgba8(),
         Err(error) => {
-            log::warn!("无法解码 LiteTerm Native 窗口图标：{error}");
+            log::warn!("无法解码 LiteTerm 窗口图标：{error}");
             return None;
         }
     };
@@ -22,7 +22,7 @@ pub(crate) fn load() -> Option<Icon> {
     match Icon::from_rgba(image.into_raw(), width, height) {
         Ok(icon) => Some(icon),
         Err(error) => {
-            log::warn!("无法创建 LiteTerm Native 窗口图标：{error}");
+            log::warn!("无法创建 LiteTerm 窗口图标：{error}");
             None
         }
     }

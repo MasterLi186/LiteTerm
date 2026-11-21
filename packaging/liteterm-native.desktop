@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=LiteTerm Native
+Name=LiteTerm
 Comment=轻量级跨平台终端、SSH 与串口客户端
 Exec=liteterm-native
 Icon=liteterm-native

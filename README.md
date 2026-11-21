@@ -1,8 +1,8 @@
-# LiteTerm Native
+# LiteTerm
 
 轻量级跨平台 SSH / 串口终端客户端，使用 Rust + winit + wgpu + egui 原生实现，无 WebView。
 
-LiteTerm Native 是本仓库唯一的活跃实现。历史上的 React/Tauri/GTK 版本已移除，仅保留在 `legacy-tauri` 分支和旧 tag 中。
+LiteTerm 是本仓库唯一的活跃实现。历史上的 React/Tauri/GTK 版本已移除，仅保留在 `legacy-tauri` 分支和旧 tag 中。
 
 ## 功能
 
@@ -52,7 +52,7 @@ cargo build --locked --bin liteterm-native
 ./build.sh
 ```
 
-产物：`dist/installers/LiteTerm-Native_<版本>_<架构>.deb`。
+产物：`dist/installers/LiteTerm_<版本>_<架构>.deb`。
 
 ## 配置
 
@@ -77,7 +77,7 @@ cargo build --locked --bin liteterm-native
 ## 文档
 
 - [HTTP API v1](docs/api/http-api.md)
-- [Native-only 开发约束](docs/NATIVE_ONLY.md)
+- [开发约束](docs/NATIVE_ONLY.md)
 - [开发策略](AGENTS.md)
 - [待办与技术债](TODO.md)
 

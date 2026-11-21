@@ -1,10 +1,10 @@
-name: Native Version Release
+name: LiteTerm Version Release
 
 on:
   workflow_dispatch:
     inputs:
       bump:
-        description: Native SemVer 自动递增级别
+        description: SemVer 自动递增级别
         required: true
         default: patch
         type: choice
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   bump-and-tag:
-    name: Bump Native version and create tag
+    name: Bump version and create tag
     runs-on: ubuntu-22.04
     steps:
       - name: Check out branch history
@@ -58,7 +58,7 @@ jobs:
             LATEST_VERSION=${LATEST_TAG#native-v}
             OLDER_VERSION=$(printf '%s\n' "$CURRENT" "$LATEST_VERSION" | sort -V | head -1)
             if [ "$OLDER_VERSION" != "$LATEST_VERSION" ]; then
-              echo "::error::Cargo.toml 版本 $CURRENT 落后于最新 Native 标签 $LATEST_VERSION"
+              echo "::error::Cargo.toml 版本 $CURRENT 落后于最新标签 $LATEST_VERSION"
               exit 1
             fi
             echo "最新标签版本: $LATEST_VERSION（当前 Cargo 版本可继续递增）"
@@ -79,7 +79,7 @@ jobs:
           cargo metadata --manifest-path Cargo.toml --locked --no-deps >/dev/null
           cargo fmt --manifest-path Cargo.toml --all -- --check
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Native 新版本: $VERSION"
+          echo "新版本: $VERSION"
 
       - name: Commit version and create tag
         shell: bash
@@ -89,8 +89,8 @@ jobs:
           set -euo pipefail
           git add Cargo.toml Cargo.lock
           git diff --cached --check
-          git commit -m "chore: bump native version to ${VERSION}"
-          git tag -a "native-v${VERSION}" -m "LiteTerm Native v${VERSION}"
+          git commit -m "chore: bump version to ${VERSION}"
+          git tag -a "native-v${VERSION}" -m "LiteTerm v${VERSION}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
           git push origin "native-v${VERSION}"
 
@@ -99,9 +99,9 @@ jobs:
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
           {
-            echo "## LiteTerm Native 版本已递增"
+            echo "## LiteTerm 版本已递增"
             echo
             echo "- 新版本：\`${VERSION}\`"
             echo "- 标签：\`native-v${VERSION}\`"
-            echo "- 后续构建：Native Multi-platform Build 将由新标签自动触发"
+            echo "- 后续构建：LiteTerm Multi-platform Build 将由新标签自动触发"
           } >> "$GITHUB_STEP_SUMMARY"

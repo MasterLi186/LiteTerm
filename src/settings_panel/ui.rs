@@ -335,7 +335,7 @@ fn section_heading(section: SettingsSection) -> (&'static str, &'static str) {
         SettingsSection::Ssh => ("SSH 连接", "配置新连接默认使用的超时、保活与字符集。"),
         SettingsSection::Transfer => ("文件传输", "管理默认下载位置、并发任务和失败重试。"),
         SettingsSection::Zmodem => ("ZMODEM", "配置终端内文件传输检测和接收行为。"),
-        SettingsSection::About => ("关于 LiteTerm", "Native 多协议终端与远程管理工具。"),
+        SettingsSection::About => ("关于 LiteTerm", "多协议终端与远程管理工具。"),
     }
 }
 
@@ -694,7 +694,7 @@ fn render_zmodem(ui: &mut egui::Ui, panel: &mut SettingsPanel) {
 fn render_about(ui: &mut egui::Ui) {
     card(
         ui,
-        "LiteTerm Native",
+        "LiteTerm",
         "轻量、跨平台的多协议终端工作区。",
         |ui| {
             ui.horizontal(|ui| {
