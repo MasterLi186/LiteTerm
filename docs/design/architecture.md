@@ -1,6 +1,6 @@
 # LiteTerm 架构设计文档
 
-> 本文描述的是历史 React/Tauri 架构，仅供参考，不是当前开发目标。当前唯一实现位于 `native-prototype/`；修改边界见 [Native-only 开发约束](../NATIVE_ONLY.md)。
+> 本文描述的是历史 React/Tauri 架构，仅供参考，不是当前开发目标。当前唯一实现位于仓库根目录；修改边界见 [Native-only 开发约束](../NATIVE_ONLY.md)。
 
 ## 技术栈
 

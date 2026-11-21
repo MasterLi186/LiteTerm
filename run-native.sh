@@ -2,9 +2,9 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 
-BINARY="native-prototype/target/debug/liteterm-native"
+BINARY="target/debug/liteterm-native"
 # Cargo 可能确认新输入无需重新链接；时间戳用于补充二进制时间。
-BUILD_STAMP="native-prototype/target/debug/.liteterm-native-build-stamp"
+BUILD_STAMP="target/debug/.liteterm-native-build-stamp"
 
 native_needs_build() {
     if [ ! -x "$BINARY" ]; then
@@ -16,29 +16,29 @@ native_needs_build() {
         build_reference="$BUILD_STAMP"
     fi
 
-    for input in native-prototype/Cargo.toml native-prototype/Cargo.lock; do
+    for input in Cargo.toml Cargo.lock; do
         if [ ! -f "$input" ] || [ "$input" -nt "$build_reference" ]; then
             return 0
         fi
     done
 
-    if [ ! -d native-prototype/src ] || [ ! -r native-prototype/src ] || [ ! -x native-prototype/src ]; then
-        echo "Native 源码目录缺失或不可遍历：native-prototype/src" >&2
+    if [ ! -d src ] || [ ! -r src ] || [ ! -x src ]; then
+        echo "Native 源码目录缺失或不可遍历：src" >&2
         return 0
     fi
 
-    if [ ! -d native-prototype/assets/icons ]; then
-        echo "Native 图标目录缺失：native-prototype/assets/icons" >&2
+    if [ ! -d assets/icons ]; then
+        echo "Native 图标目录缺失：assets/icons" >&2
         return 0
     fi
 
-    if [ ! -f native-prototype/assets/icons/256x256.png ]; then
-        echo "Native 窗口图标缺失：native-prototype/assets/icons/256x256.png" >&2
+    if [ ! -f assets/icons/256x256.png ]; then
+        echo "Native 窗口图标缺失：assets/icons/256x256.png" >&2
         return 0
     fi
 
     local newer_input
-    if ! newer_input="$(find native-prototype/src native-prototype/assets/icons -newer "$build_reference" -print -quit)"; then
+    if ! newer_input="$(find src assets/icons -newer "$build_reference" -print -quit)"; then
         echo "无法检查 Native 源码或图标目录的更新时间" >&2
         return 0
     fi
@@ -51,7 +51,7 @@ native_needs_build() {
 
 if native_needs_build; then
     echo "Native 构建产物缺失或已过期，开始构建..."
-    if ! (cd -- native-prototype && cargo build --locked --bin liteterm-native); then
+    if ! cargo build --locked --bin liteterm-native; then
         echo "Native 构建失败" >&2
         exit 1
     fi

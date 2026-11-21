@@ -244,10 +244,10 @@ Native 当前接受可选的 `pane_id`，并在关闭前验证该面板属于标
 
 ## Native 冒烟测试
 
-仓库中的 `native-prototype/scripts/test_http_api.sh` 只读取 Native discovery 文件，不会启动应用，也不会读取 legacy token。它验证认证、列表、本地终端打开、写入、增量读取和关闭；异常退出时只尝试关闭由脚本自己创建的标签页。
+仓库中的 `scripts/test_http_api.sh` 只读取 Native discovery 文件，不会启动应用，也不会读取 legacy token。它验证认证、列表、本地终端打开、写入、增量读取和关闭；异常退出时只尝试关闭由脚本自己创建的标签页。
 
 先由用户手动启动 Native 应用，再运行：
 
 ```bash
-native-prototype/scripts/test_http_api.sh
+scripts/test_http_api.sh
 ```

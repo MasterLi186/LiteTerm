@@ -4,11 +4,7 @@
 /.dev-deps
 /.superpowers
 /.ccb/
-src-tauri/target
-src-tauri/gen
 .cargo/config.toml
 158BitNet/
 credentials.enc
 passwords.toml
-/native-prototype/target/
-/native-prototype/dist/

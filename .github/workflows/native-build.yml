@@ -30,9 +30,9 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' native-prototype/Cargo.toml | head -1)
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           if [ -z "$VERSION" ]; then
-            echo "::error::无法从 native-prototype/Cargo.toml 读取版本号"
+            echo "::error::无法从 Cargo.toml 读取版本号"
             exit 1
           fi
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-22.04
     defaults:
       run:
-        working-directory: native-prototype
+        working-directory: .
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +61,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native-prototype
+          workspaces: .
           shared-key: native-linux-quality
 
       - name: Install Linux dependencies
@@ -109,7 +109,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
-        working-directory: native-prototype
+        working-directory: .
     env:
       BUILD_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
@@ -119,7 +119,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: native-prototype
+          workspaces: .
           shared-key: native-${{ matrix.slug }}
 
       - name: Install Linux dependencies
@@ -233,9 +233,9 @@ jobs:
         with:
           name: ${{ matrix.artifact }}-v${{ needs.prepare.outputs.version }}
           path: |
-            native-prototype/dist/installers/*.exe
-            native-prototype/dist/installers/*.deb
-            native-prototype/dist/installers/*.dmg
+            dist/installers/*.exe
+            dist/installers/*.deb
+            dist/installers/*.dmg
           if-no-files-found: error
           retention-days: 30
 

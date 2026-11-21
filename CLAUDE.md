@@ -1,144 +1,161 @@
 # CLAUDE.md
 
-**禁止单独执行 `npm run build` 或 `cargo build`，构建统一且只能用 `./build.sh`。**
-
-**禁止未经用户明确允许执行 `git tag` 和 `git push origin <tag>`。tag 会触发 CI 构建 + Release，必须由用户决定何时打 tag。用户的每次 tag 授权是一次性的——只允许打那一次 tag，不能连续打多个。**
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目概述
+## 项目定位与硬性约束
 
-LiteTerm 是一个轻量级跨平台 SSH 客户端（FinalShell / Tabby / XShell 开源替代品），基于 Tauri 2 (Rust) + React (TypeScript) + xterm.js 构建。所有界面文本为中文。commit 信息也使用中文。
+LiteTerm Native 是本仓库唯一实现：Rust + winit + wgpu + egui，无 WebView。包名 `liteterm-native`，版本以根目录 `Cargo.toml` 为准。历史上的 React/Tauri/GTK 实现已从当前分支移除，只在 `legacy-tauri` 分支和旧 tag 中保留。
 
-## 构建与运行
+- **产品代码位置**：仓库根目录 `src/`。`assets/`、`scripts/`、`packaging/`、`Cargo.toml` 也都在根目录；不要再创建 `native-prototype/` 子目录。
+- **构建入口**：
+  - 日常 debug 构建：仓库根目录执行 `cargo build --locked --bin liteterm-native`。
+  - 启动：仓库根目录执行 `./run-native.sh`（二进制缺失/过期时会自动执行同一条 cargo 构建；绝不生成安装包）。
+  - Release 打包：只能在仓库根目录执行无参数的 `./build.sh`。它会做 locked release 构建、调用固定版本 `cargo-packager 0.11.8` 并生成 `dist/installers/LiteTerm-Native_<版本>_<架构>.deb`；不要单独执行 `cargo build --release` 或 `cargo packager` 代替它。
+- **测试默认禁止**：除非用户明确要求“运行测试/自动化测试”，否则不要执行 `cargo test`、`cargo test --no-run`、测试脚本、`cargo clippy --all-targets` 等会编译或执行测试目标的命令；普通实现工作也不要顺手添加测试代码。Native UI 变更的默认验证方式是：构建 → `./run-native.sh` → 实际启动窗口并交互检查。
+- **Tag 禁止**：未经用户当次明确授权，禁止创建/推送 `native-v*` tag。tag 会触发 CI 三/四平台构建与 Release；每次授权仅限一次。
+- **提交**：中文 Conventional Commits（`feat:`/`fix:`/`docs:`/`refactor:`/`perf:` 等）；提交前对改动的 Rust 执行 `cargo fmt --all`（CI 用 `cargo fmt --all -- --check` 校验）。
+
+Linux 构建依赖：`pkg-config libudev-dev libssl-dev`（CI 同样安装这些）。
+
+## 常用命令
 
 ```bash
-./build.sh      # 清理缓存 → 编译前端 → 编译后端（每次都全量重建）
-./run.sh        # 直接运行已编译的二进制（不编译，需先 build）
+# 仓库根目录
+cargo build --locked --bin liteterm-native   # 日常 debug 构建
+cargo fmt --all                              # 格式化
+cargo fmt --all -- --check                   # CI 格式检查
+cargo clippy --locked --bin liteterm-native  # CI 使用的 lint（不含测试目标）
+./build.sh                                   # Release + .deb 打包（仅此入口）
+./run-native.sh                              # 启动 Native 应用
 ```
 
-手动步骤：
+仅在用户明确授权测试时：
+
 ```bash
-npm run build                      # 前端 → dist/
-cd src-tauri && cargo build        # 后端 → src-tauri/target/debug/guishell-tauri
+cargo test                                   # lib + bin 全部单元测试
+cargo test --bin liteterm-native             # 只跑二进制 crate 内测试
+cargo test --bin liteterm-native <过滤名>     # 单个测试
+cargo test --lib                             # 只跑 liteterm_native_api 库测试
+./scripts/test_http_api.sh                   # HTTP API 冒烟（需应用已启动）
 ```
 
-**禁止使用 `npx tauri dev`** — 系统文件描述符不足，file watcher 会崩溃。
+主题文件是生成的，不要手改 `src/themes_generated.rs`：
 
-发布构建：
 ```bash
-npx tauri build                    # 生成 deb/rpm/AppImage/dmg/msi/exe
-git tag v0.x.0 && git push origin v0.x.0  # 触发 CI 三平台构建 + Release
+node scripts/generate-themes.mjs   # 从 assets/themes.ts 生成 src/themes_generated.rs（191 套主题）
 ```
 
-## 测试
+版本号由发布流程用 `scripts/bump_version.py patch|minor|major` 同步 `Cargo.toml` 与 `Cargo.lock`；本地不要自行改版本或打 tag。
 
-Rust 核心层测试（使用项目根目录的 Cargo.toml）：
-```bash
-cargo test                                    # 全部测试
-cargo test --test zmodem_frame_test           # 单个测试文件
-cargo test --test monitor_parse_test -v       # 详细输出
-```
+## 架构总览
 
-测试文件在 `tests/`，测试 `src/` 下的旧 GTK4 代码模块（与 `src-tauri/src/` 中的核心逻辑相同）。
+### 线程模型：主线程独占 UI，后台线程只发事件
 
-## 架构
+- 主线程运行 winit `EventLoop`，`App`（`src/app.rs`）持有全部 UI 状态。**任何后台线程都不能直接修改 `App`**。
+- 后台 → 主线程：`EventLoopProxy<UserEvent>`；`UserEvent` 定义在 `src/main.rs`（SSH 就绪、串口、补全历史、ZMODEM、SFTP、监控、进程详情、HTTP API、Redraw 等）。
+- 主线程 → 后台：`std::sync::mpsc` 命令通道 / `AtomicBool` 停止标志 / 关闭信号。
+- 典型后台线程：每个终端 pane 的 reader 线程（`terminal::read_loop_with_zmodem`，内部还有可取消的 reader pump）、SSH 连接/IO 线程、每个 SSH pane 的 SFTP worker、按 `MonitorKey` 共享的远程监控线程、本地监控采集线程、隧道监听线程、HTTP API 的 tokio 线程、ADB 历史写入线程。
+- **陈旧事件防护**是贯穿全局的模式：后台事件都带 generation/session 标识（`CompletionSessionKey`、ZMODEM `TransferIdentity`、monitor generation、request_id），主线程应用事件前必须校验其仍对应当前 tab/pane，否则丢弃。
 
-### 两套代码共存
+### `App` 与模块划分
 
-| 路径 | 用途 | 状态 |
-|------|------|------|
-| `src/*.rs` + 根 `Cargo.toml` | 旧 GTK4 版本 | 仅保留测试 |
-| `src-tauri/` | Tauri 2 Rust 后端 | 活跃开发 |
-| `src/*.tsx` + `index.html` | React 前端 | 活跃开发 |
+`src/app.rs` 中的 `App` 是中心状态，按职责拆分到 `src/app/`：
 
-### 后端 Rust (`src-tauri/src/`)
+- `runtime.rs`：创建终端/启动 read loop、ZMODEM 控制槽、补全填充派发。
+- `events.rs` / `user_events.rs` / `window_events.rs`：winit 生命周期、后台事件与窗口事件分发。
+- `render.rs` / `render_actions.rs` / `render_overlays.rs`：每帧 egui + 终端渲染与交互结果。
+- `layout.rs`：窗口区域 → pane 矩形 → 终端 cols/rows。
+- `tabs.rs` / `session.rs`：标签创建/关闭、会话恢复与重连。
+- `pointer_motion.rs` / `terminal_interaction.rs`：鼠标选择、拖拽、终端交互。
+- `api_ops.rs`：HTTP API 主线程操作映射。
+- `ui_state.rs`：模态框/IME 归属/焦点仲裁。
 
-```
-lib.rs            — Tauri 应用启动、命令注册、AppState 初始化
-state.rs          — AppState（Mutex HashMap 管理会话、终端、连接、SFTP、隧道、录屏）
-commands/
-  terminal.rs     — 本地终端（portable-pty）、Shell 列表
-  ssh.rs          — SSH 连接（libssh2 / ProxyJump 走系统 ssh -J）
-  connection.rs   — 连接配置 CRUD（TOML 持久化）
-  keyring.rs      — GNOME Keyring 密码存取
-  monitor.rs      — 系统监控采集（SSH exec / 本地 /proc）
-  sftp.rs         — SFTP 文件操作 + 下载上传 + save_file
-  serial.rs       — 串口终端（serialport crate）
-  tunnel.rs       — SSH 端口转发（本地隧道）
-  process.rs      — 远程进程列表 + 详情
-  recording.rs    — 终端录屏（asciicast v2 格式）
-  config_io.rs    — 导入/导出配置
-  ssh_keys.rs     — SSH 密钥管理
-config/           — 数据模型（Settings, ConnectionStore, KeyringEntry）
-core/             — 业务逻辑（无 UI 依赖）
-  monitor.rs      — /proc 解析器、MetricBuffer 环形缓冲区
-  zmodem/         — ZMODEM 协议（帧编解码、检测器、收发状态机）
-```
+领域模块（`src/*.rs`）：
 
-### 关键线程模型
+- 终端：`terminal.rs`（`TerminalState`，封装 `alacritty_terminal::Term` + `vte` parser + pty/SSH 读写 + 选择/搜索/IME/ZMODEM）、`terminal/read_loop.rs`、`terminal_search.rs`、`terminal_links.rs`、`terminal_log.rs`。
+- 连接：`ssh.rs`、`sftp.rs`、`serial.rs`、`tunnel.rs`、`connections.rs`、`keyring.rs`。
+- 监控：`monitor.rs`（本地 sysinfo + 通用数据结构）、`remote_monitor.rs`（远程 `/proc` 快照）、`process_manager.rs`、`network_detail.rs`。
+- 补全：`bash_integration.rs`、`smart_completion.rs`、`completion_popup.rs`、`adb_history.rs`、`app_completion.rs`。
+- UI：`sidebar/`、`tab_bar.rs`、`command_bar/`、`settings_panel/`、`file_browser/`、`new_tab_selector.rs`、`tunnel_manager.rs`、`batch_command.rs`、`recording.rs`。
+- 渲染：`renderer.rs` + `renderer/core.rs`、`atlas.rs`、`font_support.rs`。
+- 其他：`themes.rs`（含生成的 `themes_generated.rs`）、`i18n.rs`、`ime.rs`、`x11_ime_reattach.rs`、`workspace_session.rs`、`settings.rs`、`shortcuts.rs`、`split.rs`、`tab_manager/`、`zmodem/`、`api.rs`（同时是 `liteterm_native_api` 库目标）。
 
-`ssh2::Session` 是 `!Send` — 每个 SSH 子系统（终端、监控、SFTP）在独立线程上创建自己的 TCP+SSH 连接。通信方式：
-- `std::sync::mpsc` 通道：前端 → 后端输入
-- `app_handle.emit("event-name", payload)`：后端 → 前端输出
-- `AtomicBool` stop flag：用于终止线程（串口、隧道、监控）
+`src/api.rs` 被声明为 `[lib] liteterm_native_api`，刻意不依赖 winit：HTTP 层通过 `api::Bridge` 把请求转成 `UserEvent::Api`，由主线程 `App::handle_api_call` 执行。这样 API 层可独立编译/测试。
 
-Reader 线程有 500ms 启动延迟，等前端注册事件监听器。
+### 渲染：wgpu 终端层 + egui 界面层
 
-### 前端 React (`src/`)
+- 终端文本由自研 wgpu 渲染器绘制：`cosmic-text` 做字形 shaping/布局，`GlyphAtlas` 生成字形纹理图集，instanced quad 绘制 cell 背景与字形。
+- 活动终端标签的**所有 pane** 都会按各自矩形渲染；每个 pane 渲染前 `term.resize(cols, rows)` 同步尺寸。
+- egui（`egui_winit` + `egui_wgpu`）渲染标签栏、侧边栏、对话框、菜单、补全弹窗等，最后叠加在终端之上。
+- 布局：`app/layout.rs` 用窗口尺寸减去侧边栏、标签栏、底部命令栏、文件管理器高度，得到终端区域；`split.rs` 的 `PaneNode`/`PaneTree` 维护分屏树，`tab_manager/model.rs` 的 `TerminalLayout` 维护每个标签的 pane 集合与活动 pane。
+- 渲染由事件驱动，`UserEvent::Redraw` 节流，另有 530ms 光标闪烁线程；pane 级实例缓存会复用内容未变化的 GPU buffer（cell 级 dirty tracking 仍是 TODO）。
 
-```
-App.tsx                           — 主布局、标签管理、连接流程、快捷键、重连逻辑
-components/Terminal/TerminalPane  — xterm.js 封装（双 div resize 架构、搜索、主题、录屏、ZMODEM）
-components/Terminal/SplitContainer— 分屏递归渲染
-components/Sidebar/SystemInfoPanel— 卡片式系统监控面板（CPU/内存/进程/网络/磁盘）
-components/FileManager/FileBrowser— FileZilla 风格双栏文件管理器（本地+远程 SFTP）
-components/ProcessManager/        — 进程表格 + 进程详情
-components/ConnectionDialog       — SSH 连接新建/编辑对话框
-components/NewTabSelector         — 新建标签选择器（Shell/SSH/串口）
-components/TunnelManager          — SSH 端口转发管理
-components/BatchCommand           — 批量命令执行
-components/ShortcutSettings       — 快捷键自定义
-components/SshKeyManager          — SSH 密钥管理
-components/RecordingPlayer        — 终端录屏回放
-```
+### 终端、补全与 IME
 
-### xterm.js Resize 架构
+- `TerminalState` 统一本地 PTY、SSH channel、串口三类后端；读线程把字节交给 `vte::ansi::Processor` 解析进 `alacritty_terminal::Term`。
+- 补全不是单纯的 UI 功能：`bash_integration.rs` 会给 bash 注入 rc/OSC 标记，用于识别提示符、历史文件路径和提交命令；`smart_completion.rs` 维护每个 pane 的命令行状态与候选，历史从本地文件或远程 SFTP worker 读取；ADB 场景按设备序列号保存独立历史。
+- `ime.rs` 是纯状态机，负责在“终端 / egui”之间仲裁输入归属并去重预编辑/提交；`x11_ime_reattach.rs` 处理 X11 下 winit 输入法在按键时重连的兼容问题。
 
-TerminalPane 使用双 div 模式防止 xterm 画布撑爆 flex 布局：
-- **wrapperRef**（外层）：`position: absolute; inset: 0` — 由父级 flex 决定大小，ResizeObserver 监听此 div
-- **containerRef**（内层）：在 fit() 前从 wrapper 的 `getBoundingClientRect()` 获取精确像素尺寸
+### SSH / SFTP / 监控 / 隧道
 
-Resize 在 50/150/400ms 三个延迟点触发。fit() 后必须调用 `term.refresh()`。
+- `ssh2::Session` 是 `!Send`，因此**每个子系统在自己的线程上创建独立 TCP + SSH 连接**：终端每个 pane 一条、远端监控按 `MonitorKey`（`user@host:port`）共享一条、SFTP 每个 SSH pane 一条。
+- `connections.toml` 与 API 请求里保留了 `proxy_jump` 字段，但当前 Native 终端连接没有实际实现跳板机（API 明确返回“暂不受支持”）；不要假设它可用。
+- `remote_monitor.rs` 通过一条组合 shell 命令批量读取远端 `/proc`、`df`、`ps` 等（见 `REMOTE_SNAPSHOT_COMMAND`），并对输出做严格的字节上限与解析。
+- `tunnel.rs` 本地端口转发只监听 `127.0.0.1`，每个隧道独立线程 + 停止信号。
+- `serial.rs` 使用 `serialport` crate，独立 reader/writer 线程。
 
-### SSH 连接初始 PTY 尺寸
+### ZMODEM
 
-`sshConnect()` 辅助函数从窗口尺寸估算 cols/rows 传给后端，避免硬编码 80x24。连接后 xterm.js 的 `onResize` 事件会持续同步实际尺寸。
+`zmodem/` 包含帧编解码、检测、发送/接收状态机、runtime 和 UI 状态。runtime 嵌在终端 reader pump 中，使阻塞读取期间仍能轮询取消/超时/关闭；支持本地终端与直连 SSH，串口禁用。下载目录来自 `settings.zmodem.download_dir`，所有传输事件带 `TransferIdentity` 以防陈旧 UI 操作。
 
-## 配置文件
+### HTTP API
 
-用户配置存储在 `~/.config/guishell/`：
-- `connections.toml` — SSH 连接书签（密码在 GNOME Keyring，不写入磁盘）
-- `settings.toml` — 终端字体、外观、传输、SSH keepalive 设置
+- `src/api/server.rs` 用 axum 在后台 tokio 线程启动，仅监听 IPv4 loopback，默认端口 19526。
+- 启动时在配置目录写入 `native-api-token`（32 字节随机数的 64 位 hex）和 `native-api-port`（JSON：port/pid/instance）；客户端必须读发现文件，不要混用 legacy token。
+- 请求经 `api::Bridge` → `UserEvent::Api` 进入主线程执行；终端输出通过 `OutputRegistry` 以游标增量读取。
+- 限额：请求体 64 KiB、请求体读取 5 秒、主线程调用 5 秒、最多 32 并发。接口文档在 `docs/api/http-api.md`。
 
-前端本地存储（localStorage）：
-- `guishell_terminal_theme` — 终端主题名称
-- `guishell_cmd_history` — 命令历史
-- `guishell_snippets` — 命令收藏
-- `guishell_sessions` — 会话持久化（自动重连）
-- `guishell_shortcuts` — 自定义快捷键
+## 配置与持久化（`~/.config/guishell/`）
 
-## 跨平台注意事项
+| 文件 | 内容 |
+|---|---|
+| `native-settings.toml` | 终端字体/字号/配色、侧边栏、传输、SSH keepalive、ZMODEM、快捷键（刻意用 `native-` 前缀，避免与旧 Tauri `settings.toml` 混淆） |
+| `connections.toml` | 分组 + SSH 连接书签（TOML） |
+| `credentials.enc` | 密码 AES-256-GCM 加密文件，PBKDF2（hostname+username）派生密钥，绑定机器 |
+| `native-session.toml` | 上次标签页会话（仅本地/SSH/串口，最多 64 个） |
+| `native_cmd_history.json` / `native_cmd_favorites.json` / `native_quick_commands.json` | 底部命令栏历史/收藏/快捷命令 |
+| `native-api-token` / `native-api-port` | HTTP API 发现文件 |
+| `crash.log`、`crash.log.old` | panic/SIGSEGV/SIGBUS/SIGABRT 崩溃记录 |
 
-- `secret-service` crate 仅 Linux（`cfg(target_os = "linux")`），其他平台 keyring 返回 stub
-- `std::os::unix::fs::MetadataExt` 用 `cfg(unix)` 条件编译，Windows 回退
-- `exec_local_command` 在非 Unix 平台返回错误（本地监控依赖 /proc）
-- `.cargo/config.toml` 是本地开发用的 PKG_CONFIG_PATH，已加入 .gitignore 不提交
+## 国际化与主题
 
-## CI/CD
+- 源码中的用户可见文案以中文为准；`i18n::tr()` 根据 `LC_ALL` / `LC_MESSAGES` / `LANG` 是否以 `zh` 开头返回中文或英文。新增文案必须同时加入 `i18n.rs` 的映射表，否则英文环境会回退为中文。
+- 主题由 `scripts/generate-themes.mjs` 从历史文件 `assets/themes.ts` 解析生成 `src/themes_generated.rs`；`themes.rs` 只做查询封装。生成文件禁止手改，改主题应改生成脚本/来源并重新生成。
 
-GitHub Actions（`.github/workflows/build.yml`）：
-- 触发条件：推送 `v*` tag 或手动触发
-- 三平台构建：Ubuntu 22.04 / macOS-latest / Windows-latest
-- 自动生成 changelog（上一个 tag 到当前的 commit 列表）
-- 产物：deb/rpm/AppImage/dmg/msi/exe
+## 代码组织约定
+
+- 手写 Rust 模块控制在 ~1000 行以内；大模块已按职责拆成子模块，测试放到 `<module>/tests.rs` 与 `part_NN.rs`。新增测试时沿用该模式。
+- 中文注释、中文错误/日志文案与现有代码保持一致；标识符用英文 `snake_case`/`PascalCase`。
+- 耗时或阻塞操作（SSH/SFTP/文件 IO/进程详情/历史读取）放到后台线程，主线程只做状态应用与绘制。
+
+## 测试组织（仅在获授权时运行）
+
+- 单元测试内联在 `#[cfg(test)]` 模块中；大块测试位于 `src/<module>/tests.rs` 及 `part_NN.rs`。
+- 应用级/布局级测试在 `src/main_tests/`，由 `main.rs` 的 `#[cfg(test)] #[path = ...]` 挂载（`layout_tests`、`api_main_tests`、`zmodem_main_tests`）。
+- 库目标测试在 `src/api.rs` 的 tests 模块。
+- 仓库没有独立 `tests/` 集成测试目录；不要按旧 GTK 仓库的习惯去找。
+
+## CI 与发布
+
+- `.github/workflows/native-build.yml`：由 `native-v*` tag 或手动触发；quality job 运行 `cargo fmt --all -- --check` 和 `cargo clippy --locked --bin liteterm-native`；build job 在 Linux（deb）、Windows（nsis）、macOS Intel / Apple Silicon（dmg）上执行 `cargo build --release --locked` 并用 `cargo-packager 0.11.8` 打包。
+- `.github/workflows/native-release.yml`：手动 dispatch，按 patch/minor/major 调 `scripts/bump_version.py`，提交版本、创建并推送 `native-vX.Y.Z` tag，从而触发构建。本地不要模拟该流程。
+- `build.sh` 会校验 deb 的 Package/Version/Architecture/Depends，以及包内二进制、desktop 入口和 5 个尺寸图标；输出目录中只允许存在一个 `.deb`。
+
+## 相关文档
+
+- `AGENTS.md` — Native-only 开发策略、测试授权规则（最高优先级）。
+- `docs/NATIVE_ONLY.md` — 修改边界与构建入口。
+- `docs/api/http-api.md` — HTTP API v1 接口与认证。
+- `docs/design/http-api-feature.md` — API 设计背景。
+- `TODO.md` — 已实现/未实现功能与技术债清单。
+- 注意：`docs/design/architecture.md` 描述的是历史 React/Tauri 架构，**不适用于本目录**。

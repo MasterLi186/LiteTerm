@@ -1,24 +1,100 @@
 [package]
-name = "guishell"
-version = "0.8.17"
+name = "liteterm-native"
+version = "0.1.17"
 edition = "2021"
-description = "Lightweight native Linux SSH client"
+description = "LiteTerm 的轻量级原生终端、SSH、串口和文件管理客户端"
+authors = ["LiteTerm Contributors"]
+
+[[bin]]
+name = "liteterm-native"
+path = "src/main.rs"
+
+[lib]
+name = "liteterm_native_api"
+path = "src/api.rs"
+
+[package.metadata.packager]
+product-name = "LiteTerm Native"
+identifier = "com.liteterm.native"
+category = "Utility"
+description = "轻量级跨平台终端、SSH 与串口客户端"
+long-description = "LiteTerm Native 是 LiteTerm 的原生客户端，支持本地终端、SSH、串口、文件管理和系统监控。"
+homepage = "https://github.com/MasterLi186/LiteTerm"
+icons = [
+    "assets/icons/32x32.png",
+    "assets/icons/128x128.png",
+    "assets/icons/256x256.png",
+    "assets/icons/512x512.png",
+    "assets/icons/1024x1024.png",
+    "assets/icons/icon.ico",
+]
+out-dir = "dist/installers"
+binaries-dir = "target/release"
+
+[[package.metadata.packager.binaries]]
+path = "liteterm-native"
+main = true
+
+[package.metadata.packager.nsis]
+installer-icon = "assets/icons/icon.ico"
+installer-mode = "currentUser"
+languages = ["SimpChinese"]
+
+[package.metadata.packager.deb]
+package-name = "liteterm-native"
+depends = ["libc6", "libgcc-s1", "libudev1", "zlib1g"]
+desktop-template = "packaging/liteterm-native.desktop"
 
 [dependencies]
-gtk = { package = "gtk4", version = "0.11" }
-adw = { package = "libadwaita", version = "0.9" }
-vte = { package = "vte4", version = "0.10" }
-cairo-rs = { version = "0.22", features = ["png"] }
-ssh2 = "0.9"
-secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-dirs = "6"
+winit = "0.30"
+wgpu = "24"
+cosmic-text = "0.12"
+alacritty_terminal = "0.25"
+vte = "0.15"
+portable-pty = "0.8"
+pollster = "0.4"
 log = "0.4"
 env_logger = "0.11"
-crc32fast = "1"
+bytemuck = { version = "1", features = ["derive"] }
+arboard = "3"
+rfd = "0.16"
+unicode-width = "0.2"
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"
+ssh2 = { version = "0.9", features = ["openssl-on-win32", "vendored-openssl"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+dirs = "6"
 shellexpand = "3"
-
-[dev-dependencies]
+os_pipe = "1"
+uuid = { version = "1", features = ["v4"] }
+openssl = "0.10"
+hex = "0.4"
+hostname = "0.4"
+whoami = "1"
+serde_json = "1"
+libc = "0.2"
+sysinfo = "0.34"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+base64 = "0.22"
 tempfile = "3"
+fs2 = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serialport = "4"
+crc32fast = "1"
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tower = { version = "0.5", features = ["limit", "util"] }
+subtle = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
