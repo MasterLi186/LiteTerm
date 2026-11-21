@@ -5,7 +5,7 @@ import { save, open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize, LogicalPosition } from '@tauri-apps/api/dpi';
-import { TerminalPane } from './components/Terminal/TerminalPane';
+import { TerminalPane, reportedTerminalSizes } from './components/Terminal/TerminalPane';
 import { QuickCommandBar } from './components/QuickCommandBar';
 import { SplitContainer } from './components/Terminal/SplitContainer';
 import { ConnectionDialog } from './components/ConnectionDialog';
@@ -24,8 +24,13 @@ import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconSta
 import { SettingsPanel, getTerminalFontSize, getTerminalFontFamily } from './components/Settings';
 import { SettingsTab } from './components/settings/SettingsTab';
 
-// 从 DOM 直接测量终端区域的实际 cols/rows
-function getTerminalSize() {
+// 终端的 cols/rows:xterm 已上报实际尺寸时直接用它;否则(如 SSH 连接前还没有 xterm)从 DOM 估算
+function getTerminalSize(id?: string) {
+  const reported = id ? reportedTerminalSizes.get(id) : undefined;
+  if (reported) {
+    log('PTY', `getTerminalSize: 用 xterm 实际尺寸 ${reported.cols}x${reported.rows}`);
+    return { ...reported };
+  }
   // 终端容器
   const container = document.querySelector('[data-terminal-area]') as HTMLElement | null;
   if (!container) { log('PTY', 'getTerminalSize: container 未找到, 用默认 80x24'); return { cols: 80, rows: 24 }; }
@@ -455,7 +460,7 @@ function App() {
                 setActiveTabId(id);
                 setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
                 setFocusedTerminalId(id);
-                setTimeout(() => invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {}), 300);
+                setTimeout(() => invoke('terminal_resize', { id, ...getTerminalSize(id) }).catch(() => {}), 300);
                 startMonitorAndSftp(id, s.sshParams.host, s.sshParams.port, s.sshParams.user, pw || null, s.sshParams.authMethod, s.sshParams.keyPath);
               }
             } catch (e) {
@@ -479,7 +484,7 @@ function App() {
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
       setTimeout(() => {
-        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize(id) }).catch(() => {});
       }, 300);
     });
 
@@ -589,7 +594,7 @@ function App() {
       setFocusedTerminalId(id);
 
       setTimeout(() => {
-        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize(id) }).catch(() => {});
       }, 300);
     } catch (e) {
       setError(`打开终端失败: ${e}`);
@@ -606,7 +611,7 @@ function App() {
       setSplitTrees(prev => ({ ...prev, [id]: { type: 'terminal', terminalId: id } }));
       setFocusedTerminalId(id);
       setTimeout(() => {
-        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize(id) }).catch(() => {});
       }, 300);
     } catch (e) {
       setError(`打开终端失败: ${e}`);
@@ -726,7 +731,7 @@ function App() {
       });
       setActiveTabId(newId);
       setFocusedTerminalId(newId);
-      setTimeout(() => invoke('terminal_resize', { id: newId, ...getTerminalSize() }).catch(() => {}), 300);
+      setTimeout(() => invoke('terminal_resize', { id: newId, ...getTerminalSize(newId) }).catch(() => {}), 300);
       // 清理旧的监控去重标记,允许重新启动监控线程
       const mk = `${tab.sshParams!.user}@${tab.sshParams!.host}:${tab.sshParams!.port}`;
       monitorStartedRef.current.delete(mk);
@@ -843,7 +848,7 @@ function App() {
       setFocusedTerminalId(id);
 
       setTimeout(() => {
-        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize(id) }).catch(() => {});
       }, 300);
 
       // Start monitor and SFTP
@@ -947,7 +952,7 @@ function App() {
       setFocusedTerminalId(id);
 
       setTimeout(() => {
-        invoke('terminal_resize', { id, ...getTerminalSize() }).catch(() => {});
+        invoke('terminal_resize', { id, ...getTerminalSize(id) }).catch(() => {});
       }, 300);
 
       // Start monitor and SFTP
@@ -1100,7 +1105,7 @@ function App() {
         setSplitTrees(prev => ({ ...prev, [newId]: { type: 'terminal', terminalId: newId } }));
         setFocusedTerminalId(newId);
         setTimeout(() => {
-          invoke('terminal_resize', { id: newId, ...getTerminalSize() }).catch(() => {});
+          invoke('terminal_resize', { id: newId, ...getTerminalSize(newId) }).catch(() => {});
         }, 300);
         startMonitorAndSftp(
           newId,
@@ -1168,7 +1173,7 @@ function App() {
         newTerminalId = await invoke<string>('open_local_terminal');
       }
 
-      setTimeout(() => invoke('terminal_resize', { id: newTerminalId, ...getTerminalSize() }).catch(() => {}), 300);
+      setTimeout(() => invoke('terminal_resize', { id: newTerminalId, ...getTerminalSize(newTerminalId) }).catch(() => {}), 300);
 
       setSplitTrees(prev => {
         const tree = prev[tabId];
@@ -1376,7 +1381,8 @@ function App() {
                       Object.entries(group.hosts).map(([hostId, host]) => (
                         <button
                           key={hostId}
-                          onClick={() => handleConnectExisting(groupId, hostId)}
+                          // 单击即连接;习惯双击的用户会触发两次 click,忽略第二次(detail=2),否则会开出两个连接
+                          onClick={(e) => { if (e.detail > 1) return; handleConnectExisting(groupId, hostId); }}
                           onContextMenu={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -1690,7 +1696,7 @@ function App() {
                         });
                         setActiveTabId(newId);
                         setFocusedTerminalId(newId);
-                        setTimeout(() => invoke('terminal_resize', { id: newId, ...getTerminalSize() }).catch(() => {}), 300);
+                        setTimeout(() => invoke('terminal_resize', { id: newId, ...getTerminalSize(newId) }).catch(() => {}), 300);
                         startMonitorAndSftp(newId, sp.host, sp.port, sp.user, pw, sp.authMethod, sp.keyPath);
                       } catch (e) {
                         log('重连', `失败: ${e}`);
