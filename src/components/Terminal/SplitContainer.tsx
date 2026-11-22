@@ -19,6 +19,7 @@ export function SplitContainer({ node, isActive, activeTerminalId, onSplit, onCl
         key={node.terminalId}
         terminalId={node.terminalId}
         isActive={isActive}
+        isFocused={activeTerminalId === node.terminalId}
         onSplit={(direction) => onSplit(node.terminalId, direction)}
         onClosePane={() => onClose(node.terminalId)}
         onFocus={() => onFocusTerminal(node.terminalId)}

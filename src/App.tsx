@@ -1840,7 +1840,13 @@ function App() {
                   <SplitContainer
                     node={splitTrees[tab.id]}
                     isActive={tab.id === activeTabId}
-                    activeTerminalId={focusedTerminalId}
+                    // 本标签的焦点窗格;快捷键切换/关闭标签等路径不同步 focusedTerminalId,不在本标签时退回第一个窗格。
+                    // 重连遮罩显示时不给终端焦点,让遮罩拿焦点(回车重连)
+                    activeTerminalId={(() => {
+                      if (reconnecting[tab.id]) return null;
+                      const ids = collectTerminalIds(splitTrees[tab.id]);
+                      return focusedTerminalId && ids.includes(focusedTerminalId) ? focusedTerminalId : ids[0] ?? null;
+                    })()}
                     onSplit={(termId, dir) => handleSplit(tab.id, termId, dir)}
                     onClose={(termId) => handleClosePane(tab.id, termId)}
                     onFocusTerminal={setFocusedTerminalId}
@@ -1929,6 +1935,7 @@ function App() {
                   <TerminalPane
                     terminalId={tab.id}
                     isActive={tab.id === activeTabId}
+                    isFocused={!reconnecting[tab.id]}
                     onOpenRecording={openRecordingTab}
                   />
                   {reconnecting[tab.id] && (

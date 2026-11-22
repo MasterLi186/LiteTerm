@@ -201,13 +201,15 @@ async function handleZmodemDetection(
 interface Props {
   terminalId: string;
   isActive: boolean;
+  /** 分屏时是否为本标签的焦点窗格;不传(非分屏)视为是 */
+  isFocused?: boolean;
   onSplit?: (direction: 'horizontal' | 'vertical') => void;
   onClosePane?: () => void;
   onFocus?: () => void;
   onOpenRecording?: (filePath: string) => void;
 }
 
-export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFocus, onOpenRecording }: Props) {
+export function TerminalPane({ terminalId, isActive, isFocused = true, onSplit, onClosePane, onFocus, onOpenRecording }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -952,6 +954,11 @@ export function TerminalPane({ terminalId, isActive, onSplit, onClosePane, onFoc
       return () => clearTimeout(t);
     }
   }, [isActive]);
+
+  // 启动/新建/切换标签后键盘焦点直接进终端,不用再点一下(对标 WindTerm)
+  useEffect(() => {
+    if (isActive && isFocused) termRef.current?.focus();
+  }, [isActive, isFocused]);
 
 
   function handleContextMenu(e: React.MouseEvent) {
