@@ -22,12 +22,26 @@ fn locale() -> Locale {
             .unwrap_or_default()
             .replace('_', "-")
             .to_ascii_lowercase();
-        if language.starts_with("zh") {
+        if language.starts_with("zh") || (language.is_empty() && system_ui_is_chinese()) {
             Locale::Chinese
         } else {
             Locale::English
         }
     })
+}
+
+/// 未设置 LC_ALL/LC_MESSAGES/LANG 时的系统界面语言。Windows 从资源管理器启动时
+/// 没有这些环境变量，改读系统显示语言；其他平台保持原行为（英文）。
+#[cfg(target_os = "windows")]
+fn system_ui_is_chinese() -> bool {
+    // LANGID 低 10 位是主语言，0x04 = LANG_CHINESE（简体、繁体都算）
+    let lang_id = unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() };
+    lang_id & 0x3ff == 0x04
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_ui_is_chinese() -> bool {
+    false
 }
 
 pub(crate) fn is_english() -> bool {
