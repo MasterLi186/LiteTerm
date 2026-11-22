@@ -31,6 +31,85 @@ pub fn is_wide_char(c: char) -> bool {
     unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) >= 2
 }
 
+/// 内置 Powerline 分隔符（参照 iTerm2 的 built-in Powerline glyphs）：不取字体字形，
+/// 按字符格像素尺寸直接绘制，保证三角形与相邻色块等高、无缝衔接。
+/// 回退字体里的字形度量与主字体不一致，常被缩小或错位，agnoster 等提示符会很难看。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PowerlineGlyph {
+    /// U+E0B0 实心右三角
+    SolidRight,
+    /// U+E0B1 细右箭头
+    ThinRight,
+    /// U+E0B2 实心左三角
+    SolidLeft,
+    /// U+E0B3 细左箭头
+    ThinLeft,
+}
+
+impl PowerlineGlyph {
+    fn from_char(ch: char) -> Option<Self> {
+        match ch {
+            '\u{E0B0}' => Some(Self::SolidRight),
+            '\u{E0B1}' => Some(Self::ThinRight),
+            '\u{E0B2}' => Some(Self::SolidLeft),
+            '\u{E0B3}' => Some(Self::ThinLeft),
+            _ => None,
+        }
+    }
+
+    /// 字符格内 (x, y) 处（像素坐标）是否落在形状内。
+    fn contains(self, x: f32, y: f32, w: f32, h: f32, stroke: f32) -> bool {
+        // 左向形状按水平镜像处理，统一成右向：顶点 (0,0)、(w,h/2)、(0,h)。
+        let x = match self {
+            Self::SolidLeft | Self::ThinLeft => w - x,
+            Self::SolidRight | Self::ThinRight => x,
+        };
+        let half = h * 0.5;
+        match self {
+            Self::SolidRight | Self::SolidLeft => x <= w * (1.0 - (y - half).abs() / half),
+            Self::ThinRight | Self::ThinLeft => {
+                let upper = distance_to_segment((x, y), (0.0, 0.0), (w, half));
+                let lower = distance_to_segment((x, y), (w, half), (0.0, h));
+                upper.min(lower) <= stroke * 0.5
+            }
+        }
+    }
+
+    /// 生成 w×h 的 alpha 遮罩，4×4 超采样抗锯齿。
+    fn rasterize(self, w: u32, h: u32, stroke: f32) -> Vec<u8> {
+        const SAMPLES: u32 = 4;
+        let mut mask = vec![0_u8; (w * h) as usize];
+        for py in 0..h {
+            for px in 0..w {
+                let mut hits = 0;
+                for sy in 0..SAMPLES {
+                    for sx in 0..SAMPLES {
+                        let x = px as f32 + (sx as f32 + 0.5) / SAMPLES as f32;
+                        let y = py as f32 + (sy as f32 + 0.5) / SAMPLES as f32;
+                        if self.contains(x, y, w as f32, h as f32, stroke) {
+                            hits += 1;
+                        }
+                    }
+                }
+                mask[(py * w + px) as usize] = (hits * 255 / (SAMPLES * SAMPLES)) as u8;
+            }
+        }
+        mask
+    }
+}
+
+fn distance_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len_sq = dx * dx + dy * dy;
+    let t = if len_sq > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
+    ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
+}
+
 fn shape_once(
     font_system: &mut FontSystem,
     metrics: Metrics,
@@ -378,6 +457,9 @@ impl GlyphAtlas {
         if let Some(entry) = self.entries.get(&key) {
             return Some(*entry);
         }
+        if let Some(glyph) = PowerlineGlyph::from_char(ch) {
+            return self.insert_powerline_glyph(key, glyph);
+        }
 
         let char_width = if is_wide_char(ch) {
             self.cell_width * 2.0
@@ -482,6 +564,54 @@ impl GlyphAtlas {
         self.row_height = self.row_height.max(h);
         self.dirty = true;
 
+        Some(entry)
+    }
+
+    /// 绘制内置 Powerline 字形：遮罩正好等于一个字符格，偏移为 0，渲染时铺满整格。
+    fn insert_powerline_glyph(
+        &mut self,
+        key: GlyphKey,
+        glyph: PowerlineGlyph,
+    ) -> Option<GlyphEntry> {
+        let w = self.cell_width.round().max(1.0) as u32;
+        let h = self.cell_height.round().max(1.0) as u32;
+        // 细箭头线宽随行高缩放：常规字号 1px，Retina 2px。
+        let stroke = (self.cell_height / 18.0).round().max(1.0);
+        let mask = glyph.rasterize(w, h, stroke);
+
+        if self.cursor_x + w + 1 >= self.atlas_width {
+            self.cursor_x = 1;
+            self.cursor_y += self.row_height + 1;
+            self.row_height = 0;
+        }
+        if self.cursor_y + h + 1 >= self.atlas_height {
+            return None;
+        }
+        for iy in 0..h {
+            for ix in 0..w {
+                let dst =
+                    (((self.cursor_y + iy) * self.atlas_width + self.cursor_x + ix) as usize) * 4;
+                self.data[dst..dst + 3].fill(255);
+                self.data[dst + 3] = mask[(iy * w + ix) as usize];
+            }
+        }
+
+        self.dirty_top = self.dirty_top.min(self.cursor_y);
+        self.dirty_bottom = self.dirty_bottom.max(self.cursor_y + h);
+        let entry = GlyphEntry {
+            x: self.cursor_x,
+            y: self.cursor_y,
+            width: w,
+            height: h,
+            bearing_x: 0,
+            bearing_y: 0,
+            advance_width: self.cell_width,
+            is_color: false,
+        };
+        self.entries.insert(key, entry);
+        self.cursor_x += w + 1;
+        self.row_height = self.row_height.max(h);
+        self.dirty = true;
         Some(entry)
     }
 }

@@ -935,6 +935,8 @@ impl Default for NewConnForm {
 pub struct Sidebar {
     pub visible: bool,
     pub width: f32,
+    /// 顶部额外留白（逻辑像素）。macOS 非全屏时为系统红黄绿按钮让出标题栏高度。
+    pub top_inset: f32,
     width_commit_requested: bool,
     pub connections: Vec<SshConnection>,
     pub selected: Option<usize>,
@@ -1016,6 +1018,7 @@ impl Sidebar {
         Self {
             visible: true,
             width: crate::settings::DEFAULT_SIDEBAR_WIDTH as f32,
+            top_inset: 0.0,
             width_commit_requested: false,
             connections,
             selected: None,
