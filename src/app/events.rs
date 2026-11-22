@@ -55,9 +55,24 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let mut attrs = Window::default_attributes()
             .with_title("LiteTerm")
-            .with_decorations(false)
             .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 400.0))
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
+
+        // macOS 使用系统红黄绿按钮（全屏/缩放/边缘缩放都由系统处理）：标题栏透明、
+        // 隐藏标题文字、内容延伸到标题栏下方，标签栏仍画在窗口最顶部。
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs = attrs
+                .with_titlebar_transparent(true)
+                .with_title_hidden(true)
+                .with_fullsize_content_view(true);
+        }
+        // 其他平台使用自绘标题栏（标签栏右侧的最小化/最大化/关闭）。
+        #[cfg(not(target_os = "macos"))]
+        {
+            attrs = attrs.with_decorations(false);
+        }
 
         #[cfg(target_os = "linux")]
         {

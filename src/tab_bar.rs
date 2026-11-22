@@ -32,9 +32,6 @@ pub enum TabBarAction {
     ToggleSidebar,
     NewTab,
     ToggleMaximize,
-    /// macOS 无边框窗口没有系统绿色按钮，由窗口按钮切换原生全屏。
-    #[cfg(target_os = "macos")]
-    ToggleFullscreen,
     MinimizeWindow,
     CloseWindow,
 }
@@ -56,6 +53,12 @@ impl TabDragState {
 pub const TAB_BAR_HEIGHT: f32 = 38.0;
 const TITLE_ACTION_WIDTH: f32 = 40.0;
 const TITLE_ACTIONS_RESERVED_WIDTH: f32 = 210.0;
+/// 使用系统窗口按钮时右侧只保留“工具/设置”两个按钮的宽度。
+const TITLE_ACTIONS_RESERVED_WIDTH_SYSTEM_CONTROLS: f32 = 2.0 * TITLE_ACTION_WIDTH + 2.0;
+/// macOS 系统标题栏高度；红黄绿按钮位于窗口左上角 x 7..61、y 6..22（逻辑像素）。
+pub const MACOS_TITLEBAR_HEIGHT: f32 = 28.0;
+/// 侧边栏隐藏时标签栏左侧为红黄绿按钮让出的宽度。
+const MACOS_TRAFFIC_LIGHTS_WIDTH: f32 = 72.0;
 /// 标签栏最左侧“显示/隐藏侧边栏”按钮的宽度。
 const SIDEBAR_TOGGLE_WIDTH: f32 = 34.0;
 const TAB_ITEM_SPACING: f32 = 2.0;
@@ -453,9 +456,16 @@ pub fn render_tab_bar(
     tab_manager: &TabManager,
     drag: &mut TabDragState,
     sidebar_visible: bool,
+    system_window_controls: bool,
+    reserve_traffic_lights: bool,
 ) -> TabBarAction {
     let mut action = TabBarAction::None;
     drag.title_drag_rect = None;
+    let actions_reserved_width = if system_window_controls {
+        TITLE_ACTIONS_RESERVED_WIDTH_SYSTEM_CONTROLS
+    } else {
+        TITLE_ACTIONS_RESERVED_WIDTH
+    };
 
     // 持久化的右键菜单状态
     let menu_id = egui::Id::new("tab_context_menu");
@@ -471,10 +481,16 @@ pub fn render_tab_bar(
         .show(ctx, |ui| {
             let panel_rect = ui.max_rect();
             let tabs_right =
-                (panel_rect.right() - TITLE_ACTIONS_RESERVED_WIDTH).max(panel_rect.left() + 1.0);
-            let toggle_right = (panel_rect.left() + SIDEBAR_TOGGLE_WIDTH).min(tabs_right - 1.0);
+                (panel_rect.right() - actions_reserved_width).max(panel_rect.left() + 1.0);
+            // 侧边栏隐藏时标签栏顶到窗口左边，需避开 macOS 红黄绿按钮。
+            let toggle_left = if reserve_traffic_lights && !sidebar_visible {
+                (panel_rect.left() + MACOS_TRAFFIC_LIGHTS_WIDTH).min(tabs_right - 2.0)
+            } else {
+                panel_rect.left()
+            };
+            let toggle_right = (toggle_left + SIDEBAR_TOGGLE_WIDTH).min(tabs_right - 1.0);
             let toggle_rect = egui::Rect::from_min_max(
-                panel_rect.left_top(),
+                egui::pos2(toggle_left, panel_rect.top()),
                 egui::pos2(toggle_right, panel_rect.bottom()),
             );
             if sidebar_toggle_button(ui, toggle_rect, sidebar_visible) {
@@ -779,6 +795,10 @@ pub fn render_tab_bar(
                 if top_action_button(ui, TopActionIcon::Settings, "设置").clicked() {
                     action = TabBarAction::OpenSettings;
                 }
+                // 使用系统窗口按钮（macOS 红黄绿）时不再自绘最小化/最大化/关闭。
+                if system_window_controls {
+                    return;
+                }
                 let separator = ui
                     .allocate_exact_size(egui::vec2(8.0, TAB_BAR_HEIGHT), egui::Sense::hover())
                     .0;
@@ -795,17 +815,10 @@ pub fn render_tab_bar(
                 {
                     action = TabBarAction::MinimizeWindow;
                 }
-                let maximize = window_action_button(ui, WindowActionIcon::Maximize);
-                // macOS 惯例：窗口按钮切换原生全屏（同系统绿色按钮），双击标题栏仍为缩放。
-                #[cfg(target_os = "macos")]
-                if maximize
-                    .on_hover_text(crate::i18n::tr("全屏 / 退出全屏").into_owned())
+                if window_action_button(ui, WindowActionIcon::Maximize)
+                    .on_hover_text("最大化 / 还原")
                     .clicked()
                 {
-                    action = TabBarAction::ToggleFullscreen;
-                }
-                #[cfg(not(target_os = "macos"))]
-                if maximize.on_hover_text("最大化 / 还原").clicked() {
                     action = TabBarAction::ToggleMaximize;
                 }
                 if window_action_button(ui, WindowActionIcon::Close)
@@ -821,7 +834,7 @@ pub fn render_tab_bar(
         let screen = ctx.input(|input| input.screen_rect);
         let width = 176.0;
         let position = egui::pos2(
-            (screen.right() - TITLE_ACTIONS_RESERVED_WIDTH + TITLE_ACTION_WIDTH - width)
+            (screen.right() - actions_reserved_width + TITLE_ACTION_WIDTH - width)
                 .max(screen.left()),
             TAB_BAR_HEIGHT,
         );

@@ -133,7 +133,6 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "隐藏侧边栏" => "Hide sidebar",
         "最小化" => "Minimize",
         "最大化 / 还原" => "Maximize / Restore",
-        "全屏 / 退出全屏" => "Full Screen / Exit Full Screen",
         "远端进程" => "Remote processes",
         "串口连接失败" => "Serial connection failed",
         "重新连接串口" => "Reconnect serial port",

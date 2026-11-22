@@ -391,8 +391,6 @@ impl App {
                     }
                 }
             }
-            #[cfg(target_os = "macos")]
-            tab_bar::TabBarAction::ToggleFullscreen => self.toggle_fullscreen(),
             tab_bar::TabBarAction::MinimizeWindow => {
                 if let Some(window) = &self.window {
                     window.set_minimized(true);

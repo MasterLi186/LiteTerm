@@ -226,6 +226,19 @@ impl App {
         let terminal_notice = self.terminal_notice.clone();
         let mut dismiss_terminal_notice = false;
         let mut sidebar_width_commit = None;
+        // macOS 窗口带系统红黄绿按钮（is_decorated）；非全屏时它们占住左上角标题栏区域，
+        // 侧边栏顶部和（侧边栏隐藏时）标签栏左侧需要让出位置。
+        let system_window_controls = self.window.as_ref().is_some_and(|w| w.is_decorated());
+        let reserve_traffic_lights = system_window_controls
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|w| w.fullscreen().is_none());
+        self.sidebar.top_inset = if reserve_traffic_lights {
+            tab_bar::MACOS_TITLEBAR_HEIGHT
+        } else {
+            0.0
+        };
         let egui_ctx = self.egui_ctx.clone();
         let egui_output = egui_ctx.run(egui_input, |ctx| {
             let pane_painter = ctx.layer_painter(egui::LayerId::new(
@@ -287,6 +300,8 @@ impl App {
                 &self.tab_manager,
                 &mut self.tab_drag_state,
                 self.sidebar.visible,
+                system_window_controls,
+                reserve_traffic_lights,
             );
             tab_rename_request = self.tab_rename_dialog.render(ctx);
             if active_settings_tab {

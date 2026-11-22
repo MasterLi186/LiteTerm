@@ -61,7 +61,7 @@ impl Sidebar {
                     Some(egui::Color32::from_rgb(0x8b, 0x94, 0x9e));
 
                 // Header + toolbar
-                ui.add_space(6.0);
+                ui.add_space(6.0 + self.top_inset);
                 ui.horizontal_wrapped(|ui| {
                     ui.add_space(6.0);
                     let arrow = if self.connections_visible {

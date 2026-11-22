@@ -20,7 +20,8 @@ impl App {
         position: (f64, f64),
     ) -> Option<winit::window::ResizeDirection> {
         let window = self.window.as_ref()?;
-        if window.is_maximized() || window.fullscreen().is_some() {
+        // 带系统装饰的窗口（macOS）由系统处理边缘缩放。
+        if window.is_decorated() || window.is_maximized() || window.fullscreen().is_some() {
             return None;
         }
         let size = window.inner_size();
@@ -245,8 +246,14 @@ impl App {
                     self.mouse_position,
                     self.egui_ctx.pixels_per_point(),
                 );
+                // 侧边栏顶部为 macOS 红黄绿按钮留出的空白条同样作为标题栏拖动区域。
+                let in_sidebar_titlebar = self.sidebar.visible
+                    && self.sidebar.top_inset > 0.0
+                    && logical_position.y < self.sidebar.top_inset
+                    && logical_position.x < self.sidebar_width - 4.0;
                 self.pending_window_drag_origin = (!has_dialog
-                    && self.tab_drag_state.title_drag_contains(logical_position))
+                    && (in_sidebar_titlebar
+                        || self.tab_drag_state.title_drag_contains(logical_position)))
                 .then_some(self.mouse_position);
             }
             WindowEvent::MouseInput {
