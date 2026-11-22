@@ -177,6 +177,7 @@ impl TerminalState {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         if let Some(runtime) = &local_bash_runtime {
             cmd.arg("--rcfile");
             cmd.arg(crate::bash_integration::bash_path_for_shell(
