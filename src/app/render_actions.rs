@@ -385,9 +385,14 @@ impl App {
             }
             tab_bar::TabBarAction::ToggleMaximize => {
                 if let Some(window) = &self.window {
-                    window.set_maximized(!window.is_maximized());
+                    // 全屏时 winit 只记下最大化状态、退出全屏后才生效，这里直接忽略。
+                    if window.fullscreen().is_none() {
+                        window.set_maximized(!window.is_maximized());
+                    }
                 }
             }
+            #[cfg(target_os = "macos")]
+            tab_bar::TabBarAction::ToggleFullscreen => self.toggle_fullscreen(),
             tab_bar::TabBarAction::MinimizeWindow => {
                 if let Some(window) = &self.window {
                     window.set_minimized(true);

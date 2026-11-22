@@ -32,6 +32,9 @@ pub enum TabBarAction {
     ToggleSidebar,
     NewTab,
     ToggleMaximize,
+    /// macOS 无边框窗口没有系统绿色按钮，由窗口按钮切换原生全屏。
+    #[cfg(target_os = "macos")]
+    ToggleFullscreen,
     MinimizeWindow,
     CloseWindow,
 }
@@ -792,10 +795,17 @@ pub fn render_tab_bar(
                 {
                     action = TabBarAction::MinimizeWindow;
                 }
-                if window_action_button(ui, WindowActionIcon::Maximize)
-                    .on_hover_text("最大化 / 还原")
+                let maximize = window_action_button(ui, WindowActionIcon::Maximize);
+                // macOS 惯例：窗口按钮切换原生全屏（同系统绿色按钮），双击标题栏仍为缩放。
+                #[cfg(target_os = "macos")]
+                if maximize
+                    .on_hover_text(crate::i18n::tr("全屏 / 退出全屏").into_owned())
                     .clicked()
                 {
+                    action = TabBarAction::ToggleFullscreen;
+                }
+                #[cfg(not(target_os = "macos"))]
+                if maximize.on_hover_text("最大化 / 还原").clicked() {
                     action = TabBarAction::ToggleMaximize;
                 }
                 if window_action_button(ui, WindowActionIcon::Close)

@@ -1,12 +1,26 @@
 use super::*;
 
 impl App {
+    /// 切换 macOS 原生全屏（独立 Space）。窗口无边框、没有系统绿色按钮，
+    /// winit 的 Borderless 全屏会临时补上标题栏样式再调用 toggleFullScreen。
+    #[cfg(target_os = "macos")]
+    pub(super) fn toggle_fullscreen(&mut self) {
+        if let Some(window) = &self.window {
+            let next = if window.fullscreen().is_some() {
+                None
+            } else {
+                Some(winit::window::Fullscreen::Borderless(None))
+            };
+            window.set_fullscreen(next);
+        }
+    }
+
     pub(super) fn window_resize_direction_at(
         &self,
         position: (f64, f64),
     ) -> Option<winit::window::ResizeDirection> {
         let window = self.window.as_ref()?;
-        if window.is_maximized() {
+        if window.is_maximized() || window.fullscreen().is_some() {
             return None;
         }
         let size = window.inner_size();
@@ -21,7 +35,7 @@ impl App {
         let Some(window) = self.window.clone() else {
             return false;
         };
-        if window.is_maximized() {
+        if window.is_maximized() || window.fullscreen().is_some() {
             return false;
         }
         window.set_cursor(CursorIcon::from(direction));
@@ -955,6 +969,18 @@ impl App {
                 let alt = self.modifiers.state().alt_key();
                 let egui_wants_keyboard = self.egui_ctx.wants_keyboard_input();
                 let search_owns = self.search_field_owns_focus;
+
+                // macOS 标准全屏快捷键 Ctrl+Cmd+F；窗口级操作，不受对话框/输入框影响。
+                #[cfg(target_os = "macos")]
+                if ctrl
+                    && self.modifiers.state().super_key()
+                    && !shift
+                    && !alt
+                    && event.physical_key == PhysicalKey::Code(KeyCode::KeyF)
+                {
+                    self.toggle_fullscreen();
+                    return;
+                }
 
                 // Ctrl+Shift + X/O/E：最大化、水平分屏、垂直分屏（Terminator 默认键）。
                 if ctrl && shift && !alt && !has_dialog && !egui_wants_keyboard && !search_owns {
