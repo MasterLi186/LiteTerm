@@ -343,6 +343,8 @@ function App() {
   // 恢复上次关闭时的窗口大小和位置
   useEffect(() => {
     const appWindow = getCurrentWindow();
+    // 恢复完成前不保存:否则启动时的默认尺寸会先把已保存的状态覆盖掉
+    let restoring = true;
     // 恢复
     (async () => {
       try {
@@ -357,11 +359,14 @@ function App() {
               await appWindow.setPosition(new LogicalPosition(s.x, s.y));
             }
           }
+          log('窗口', `窗口恢复: ${s.maximized ? '最大化' : `${s.width}x${s.height}`}`);
         }
       } catch (e) { log('窗口', '窗口恢复失败: ' + String(e)); }
+      finally { restoring = false; }
     })();
     // 每次 resize/move 直接写 localStorage
     const saveWindowState = async () => {
+      if (restoring) return;
       try {
         const maximized = await appWindow.isMaximized();
         let state;
@@ -370,28 +375,30 @@ function App() {
           const old = prev ? JSON.parse(prev) : { width: 1200, height: 800, x: 100, y: 100 };
           state = { width: old.width, height: old.height, x: old.x, y: old.y, maximized: true };
         } else {
+          // 尺寸取网页可视区(CSS 像素 = 逻辑像素),与 setSize 设置的内容区口径一致。
+          // 不用 innerSize():Linux Wayland 下它含 GTK 客户端装饰(阴影等),恢复后窗口每次重启都变大。
           const scaleFactor = await appWindow.scaleFactor();
-          const physSize = await appWindow.innerSize();
           const physPos = await appWindow.outerPosition();
-          const size = physSize.toLogical(scaleFactor);
           const pos = physPos.toLogical(scaleFactor);
           state = {
-            width: Math.round(size.width), height: Math.round(size.height),
+            width: window.innerWidth, height: window.innerHeight,
             x: Math.round(pos.x), y: Math.round(pos.y), maximized: false,
           };
         }
         localStorage.setItem('guishell_window_state', JSON.stringify(state));
       } catch (_) {}
     };
-    saveWindowState();
     const unlistenResize = appWindow.onResized(() => saveWindowState());
     const unlistenMove = appWindow.onMoved(() => saveWindowState());
+    // Tauri 的 Resized 可能早于网页可视区更新,再监听 DOM resize 保证存下的是最终尺寸
+    window.addEventListener('resize', saveWindowState);
 
     // 不注册 onCloseRequested — 让 Tauri 原生关闭(v0.8.7 的行为)
     // 窗口状态已在 resize/move 时实时写入 localStorage,关闭时无需干预
     return () => {
       unlistenResize.then(fn => fn());
       unlistenMove.then(fn => fn());
+      window.removeEventListener('resize', saveWindowState);
     };
   }, []);
 
