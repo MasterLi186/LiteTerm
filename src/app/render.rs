@@ -288,6 +288,13 @@ impl App {
                 self.command_bar_height = 0.0;
             } else {
                 self.command_bar_height = command_bar::COMMAND_BAR_HEIGHT;
+                let command_target = match self.tab_manager.active().map(|tab| &tab.tab_type) {
+                    Some(TabType::Local { shell_path }) => {
+                        command_bar::CommandTarget::for_local_shell(shell_path)
+                    }
+                    _ => command_bar::CommandTarget::Unix,
+                };
+                self.command_bar.set_target(command_target);
                 cmd_bar_action = self.command_bar.ui(ctx, self.sidebar_width);
             }
             if let Some(tab_id) = active_sftp_tab.as_ref() {

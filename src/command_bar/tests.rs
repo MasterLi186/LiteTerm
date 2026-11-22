@@ -44,6 +44,7 @@ fn test_command_bar(history: &[&str]) -> CommandBar {
         edit_index: None,
         last_history_button_rect: None,
         last_favorites_button_rect: None,
+        target: super::CommandTarget::default(),
     }
 }
 
