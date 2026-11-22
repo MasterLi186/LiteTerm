@@ -37,6 +37,22 @@ pub struct ShellInfo {
     pub path: String,
 }
 
+/// 构造本地 shell 命令。
+///
+/// Unix 下显式设置 TERM/COLORTERM:从桌面菜单(.desktop)启动时进程环境里没有 TERM,
+/// shell 继承后 clear/vim/less 等报 "TERM environment variable not set"。
+/// 前端是 xterm.js,和其他终端模拟器一样总是声明自己的类型,不沿用父进程的值。
+fn shell_command(shell: &str) -> CommandBuilder {
+    #[allow(unused_mut)]
+    let mut cmd = CommandBuilder::new(shell);
+    #[cfg(unix)]
+    {
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+    }
+    cmd
+}
+
 /// 本地终端核心逻辑(供 Tauri 命令和 HTTP API 共用)
 pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<String>) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -55,7 +71,7 @@ pub fn do_open_terminal(state: &AppState, app: &AppHandle, shell_path: Option<St
         })?;
 
     let shell = shell_path.unwrap_or_else(default_shell);
-    let cmd = CommandBuilder::new(&shell);
+    let cmd = shell_command(&shell);
     let _child = pair.slave.spawn_command(cmd).map_err(|e| {
         app_log!("TERM", "ERROR: spawn shell failed: {} (shell={})", e, shell);
         e.to_string()
@@ -494,4 +510,18 @@ pub async fn update_settings(state: State<'_, AppState>, patch: serde_json::Valu
     updated.save().map_err(|e| e.to_string())?;
     *settings = updated;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn shell_command_sets_term_regardless_of_parent_env() {
+        // 父进程(cargo test 或桌面启动)的 TERM 可能缺失或是别的值,都应被覆盖
+        let cmd = shell_command("/bin/bash");
+        assert_eq!(cmd.get_env("TERM"), Some(OsStr::new("xterm-256color")));
+        assert_eq!(cmd.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
+    }
 }
