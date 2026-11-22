@@ -20,7 +20,7 @@ import { TunnelManager } from './components/TunnelManager';
 import { RecordingPlayer } from './components/RecordingPlayer';
 import type { Tab, ConnectionStore, AuthMethod, SplitNode } from './types';
 import { log, getLogText } from './utils/logger';
-import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay } from './components/Icons';
+import { IconImport, IconExport, IconKey, IconPlus, IconClose, IconStar, IconStarFilled, IconTrash, IconHistory, IconBatchCmd, IconTunnel, IconSettings, IconLog, IconChevronDown, IconChevronRight, IconReconnect, IconCopy, IconPlay, IconWinMinimize, IconWinMaximize, IconWinRestore } from './components/Icons';
 import { SettingsPanel } from './components/Settings';
 import { SettingsTab } from './components/settings/SettingsTab';
 
@@ -1218,6 +1218,17 @@ function App() {
   const [sftpReady, setSftpReady] = useState(0);
   const [dragOverTerminal, setDragOverTerminal] = useState(false);
   const [showLogPanel, setShowLogPanel] = useState(false);
+  // Linux 下隐藏了系统标题栏(tauri.linux.conf.json),由标签栏提供窗口按钮;有系统标题栏的平台不显示
+  const [frameless, setFrameless] = useState(false);
+  const [winMaximized, setWinMaximized] = useState(false);
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    appWindow.isDecorated().then(d => setFrameless(!d)).catch(() => {});
+    const syncMaximized = () => { appWindow.isMaximized().then(setWinMaximized).catch(() => {}); };
+    syncMaximized();
+    const unlisten = appWindow.onResized(syncMaximized);
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
   const [globalTransfers, setGlobalTransfers] = useState<Record<string, { filename: string; direction: string; bytes: number; total: number; speed: number; target?: string }>>({});
   const transferStatsRef = useRef<Record<string, { lastBytes: number; lastTime: number; ema: number }>>({});
   // 记录文件管理器当前远程路径 + 其所属会话；拖拽上传时按会话校验，避免跨会话误用旧路径
@@ -1474,8 +1485,10 @@ function App() {
       {/* Right: Main content */}
       <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {/* Tab bar */}
+        {/* 无系统标题栏时(Linux),标签栏空白处兼作标题栏:拖动移动窗口、双击最大化 */}
         <div className="h-9 bg-surface-light border-b border-surface-border flex items-center px-1 gap-1 overflow-x-auto"
           onContextMenu={(e) => e.preventDefault()}
+          data-tauri-drag-region
         >
           {tabs.map((tab) => (
             <div
@@ -1582,7 +1595,7 @@ function App() {
           >
             <IconPlus size={14} />
           </button>
-          <div className="flex-1" />
+          <div className="flex-1 self-stretch" data-tauri-drag-region />
           <button
             onClick={() => setShowBatchCommand(true)}
             className="px-2 py-1.5 text-gray-500 hover:text-accent-cyan flex-shrink-0"
@@ -1612,6 +1625,33 @@ function App() {
             >
               <IconLog size={16} />
             </button>
+          )}
+          {frameless && (
+            // sticky:标签多到横向滚动时窗口按钮仍固定在右侧可见
+            <div className="sticky right-0 self-stretch flex items-center flex-shrink-0 bg-surface-light">
+              <div className="w-px h-4 bg-surface-border mx-1" />
+              <button
+                onClick={() => getCurrentWindow().minimize()}
+                className="px-2 py-1.5 text-gray-500 hover:text-white"
+                title="最小化"
+              >
+                <IconWinMinimize size={16} />
+              </button>
+              <button
+                onClick={() => getCurrentWindow().toggleMaximize()}
+                className="px-2 py-1.5 text-gray-500 hover:text-white"
+                title={winMaximized ? '还原' : '最大化'}
+              >
+                {winMaximized ? <IconWinRestore size={16} /> : <IconWinMaximize size={16} />}
+              </button>
+              <button
+                onClick={() => getCurrentWindow().close()}
+                className="px-2 py-1.5 text-gray-500 hover:text-white hover:bg-accent-red/80 rounded"
+                title="关闭"
+              >
+                <IconClose size={16} />
+              </button>
+            </div>
           )}
         </div>
 

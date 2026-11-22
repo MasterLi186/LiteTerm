@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicehash/tauri/refs/heads/v2/crates/tauri-cli/schema.json",
+  "app": {
+    "windows": [
+      {
+        "title": "LiteTerm",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false
+      }
+    ]
+  }
+}

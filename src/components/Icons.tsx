@@ -42,6 +42,18 @@ export function IconClose(p: IconProps) {
   return <I {...p}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></I>;
 }
 
+export function IconWinMinimize(p: IconProps) {
+  return <I {...p}><line x1="5" y1="12" x2="19" y2="12" /></I>;
+}
+
+export function IconWinMaximize(p: IconProps) {
+  return <I {...p}><rect x="5" y="5" width="14" height="14" rx="1" /></I>;
+}
+
+export function IconWinRestore(p: IconProps) {
+  return <I {...p}><rect x="5" y="9" width="10" height="10" rx="1" /><path d="M9 9V6a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-3" /></I>;
+}
+
 export function IconSearch(p: IconProps) {
   return <I {...p}><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></I>;
 }
