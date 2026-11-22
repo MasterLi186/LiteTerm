@@ -163,11 +163,11 @@ export function SystemInfoPanel({ sessionId, hostIp, onOpenProcessManager }: Pro
         <div style={{ padding: '10px 12px', display: 'flex', gap: '16px' }}>
           <div style={{ flex: 1 }}>
             <div style={{ color: '#484f58', fontSize: '10px', marginBottom: '2px' }}>运行时间</div>
-            <div style={{ color: '#e6edf3', fontSize: '12px', fontWeight: 500 }}>{data.uptime_text}</div>
+            <div style={{ color: '#e6edf3', fontSize: '11px' }}>{data.uptime_text}</div>
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ color: '#484f58', fontSize: '10px', marginBottom: '2px' }}>系统负载</div>
-            <div style={{ color: '#e6edf3', fontSize: '12px', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>{data.load_text}</div>
+            <div style={{ color: '#e6edf3', fontSize: '11px', fontVariantNumeric: 'tabular-nums' }}>{data.load_text}</div>
           </div>
         </div>
       </Card>
