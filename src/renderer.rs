@@ -466,8 +466,17 @@ impl GpuState {
             .await
             .expect("无法获取 GPU adapter");
 
+        // 终端的显存用量只有十几 MB（主要是 16MB 字形图集），默认的 Performance 策略却会一次申请
+        // 128MB（Vulkan）/ 256MB+64MB（DX12）的显存块；核显没有独立显存时这些块全部计入进程内存。
+        // MemoryUsage 改用 8MB 起步的小块。
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    memory_hints: wgpu::MemoryHints::MemoryUsage,
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .expect("无法获取 GPU device");
 

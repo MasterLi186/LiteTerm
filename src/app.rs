@@ -229,9 +229,12 @@ impl App {
                 let mut fonts = egui::FontDefinitions::default();
                 if let Some(font_path) = crate::font_support::find_cjk_font() {
                     if let Ok(font_data) = std::fs::read(&font_path) {
+                        // from_owned 时 epaint 解析字体会再 clone 一份整个文件（微软雅黑约 19MB）；
+                        // 改用 'static 借用避免重复。字体整个进程期间都在用，且只加载这一次，泄漏不会累积。
+                        let font_data: &'static [u8] = Box::leak(font_data.into_boxed_slice());
                         fonts.font_data.insert(
                             "liteterm_cjk".to_owned(),
-                            egui::FontData::from_owned(font_data).into(),
+                            egui::FontData::from_static(font_data).into(),
                         );
                         fonts
                             .families
