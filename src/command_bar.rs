@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 mod popup_geometry;
+mod target;
 
 use popup_geometry::{above_button, constrained_size};
+pub use target::CommandTarget;
 
 pub const COMMAND_BAR_HEIGHT: f32 = 50.0; // 两行：按钮 + 输入框
 
@@ -107,6 +109,8 @@ pub struct CommandBar {
     edit_index: Option<usize>,
     last_history_button_rect: Option<egui::Rect>,
     last_favorites_button_rect: Option<egui::Rect>,
+    /// 当前标签的终端类型，决定内置命令的适配方式和回车字符
+    target: CommandTarget,
 }
 
 #[derive(Clone)]
@@ -219,7 +223,13 @@ impl CommandBar {
             edit_index: None,
             last_history_button_rect: None,
             last_favorites_button_rect: None,
+            target: CommandTarget::default(),
         }
+    }
+
+    /// 设置命令发送目标，每帧按当前标签更新
+    pub fn set_target(&mut self, target: CommandTarget) {
+        self.target = target;
     }
 
     /// Whether the command bar currently owns terminal-directed keyboard input.

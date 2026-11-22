@@ -146,7 +146,7 @@ pub(crate) fn local_shell_paths() -> Vec<PathBuf> {
 }
 
 #[cfg(windows)]
-fn find_windows_executable(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_windows_executable(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())

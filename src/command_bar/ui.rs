@@ -1,10 +1,12 @@
 use super::*;
+use std::borrow::Cow;
 
 impl CommandBar {
-    /// 返回要发送到终端的命令（已带 `\n`）。
+    /// 返回要发送到终端的命令（已带回车：按目标终端为 `\n` 或 `\r`）。
     /// `sidebar_width`：添加/编辑弹窗仍使用该值保持在终端内容区域内。
     pub fn ui(&mut self, ctx: &egui::Context, sidebar_width: f32) -> Option<String> {
         let mut clicked_cmd: Option<String> = None;
+        let target = self.target;
         let btn_color = egui::Color32::from_rgb(0xc9, 0xd1, 0xd9);
         let btn_bg = egui::Color32::from_rgb(0x16, 0x1b, 0x22);
         let btn_border = egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x36, 0x3d));
@@ -51,12 +53,22 @@ impl CommandBar {
                     let mut edit_req: Option<usize> = None;
                     let mut delete_req: Option<usize> = None;
                     let mut fav_req: Option<usize> = None;
-                    let cmd_snapshot: Vec<(String, String)> = self
+                    // 内置命令按目标终端适配，不支持的不显示；用户添加或改过的命令原样发送。
+                    // 保留原下标，右键菜单的编辑/删除/收藏按下标操作 self.commands。
+                    let cmd_snapshot: Vec<(usize, String, String)> = self
                         .commands
                         .iter()
-                        .map(|c| (c.label.clone(), c.command.clone()))
+                        .enumerate()
+                        .filter_map(|(i, c)| {
+                            let command = if c.system {
+                                target.adapt_builtin(&c.command)?
+                            } else {
+                                Cow::Borrowed(c.command.as_str())
+                            };
+                            Some((i, c.label.clone(), command.into_owned()))
+                        })
                         .collect();
-                    for (i, (label, command)) in cmd_snapshot.iter().enumerate() {
+                    for (i, label, command) in cmd_snapshot {
                         let btn = ui
                             .add(
                                 egui::Button::new(
@@ -67,9 +79,13 @@ impl CommandBar {
                                 .corner_radius(3.0)
                                 .min_size(egui::vec2(0.0, 20.0)),
                             )
-                            .on_hover_text(command);
+                            .on_hover_text(&command);
                         if btn.clicked() {
-                            clicked_cmd = Some(format!("{}\n", command.trim_end_matches('\n')));
+                            clicked_cmd = Some(format!(
+                                "{}{}",
+                                command.trim_end_matches('\n'),
+                                target.line_ending()
+                            ));
                         }
                         btn.context_menu(|ui| {
                             if ui.button(crate::i18n::tr("编辑").into_owned()).clicked() {
@@ -145,7 +161,7 @@ impl CommandBar {
                     {
                         let cmd = self.input_text.trim().to_string();
                         self.push_history(&cmd);
-                        clicked_cmd = Some(format!("{}\n", cmd));
+                        clicked_cmd = Some(format!("{}{}", cmd, target.line_ending()));
                         self.input_text.clear();
                     }
 
@@ -553,7 +569,7 @@ impl CommandBar {
                 self.save_history();
             }
             if let Some(cmd) = execute_cmd {
-                clicked_cmd = Some(format!("{}\n", cmd));
+                clicked_cmd = Some(format!("{}{}", cmd, target.line_ending()));
                 self.show_history = false;
             }
 
@@ -681,7 +697,11 @@ impl CommandBar {
             }
             if let Some(cmd) = pick {
                 self.push_history(&cmd);
-                clicked_cmd = Some(format!("{}\n", cmd.trim_end_matches('\n')));
+                clicked_cmd = Some(format!(
+                    "{}{}",
+                    cmd.trim_end_matches('\n'),
+                    target.line_ending()
+                ));
                 self.show_favorites = false;
             }
             if close {
