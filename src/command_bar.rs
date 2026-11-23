@@ -185,16 +185,6 @@ fn default_commands() -> Vec<QuickCommand> {
             command: "ls -la".into(),
             system: true,
         },
-        QuickCommand {
-            label: "加载docker".into(),
-            command: "docker ps".into(),
-            system: true,
-        },
-        QuickCommand {
-            label: "nfs".into(),
-            command: "showmount -e".into(),
-            system: true,
-        },
     ]
 }
 
