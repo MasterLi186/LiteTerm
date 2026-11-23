@@ -15,7 +15,11 @@ pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Ubuntu Sans Mono";
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub const DEFAULT_TERMINAL_FONT_FAMILY: &str = "Ubuntu Mono";
 /// 终端默认字号（逻辑像素，渲染时再乘以窗口缩放比），比 GNOME Terminal 默认的 13pt 小一号。
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_TERMINAL_FONT_SIZE: f32 = 16.0;
+/// macOS 实际使用的 Menlo 比 Ubuntu Mono 宽（0.6em 对 0.5em），同字号显得偏大，默认小一号。
+#[cfg(target_os = "macos")]
+pub const DEFAULT_TERMINAL_FONT_SIZE: f32 = 15.0;
 /// Ubuntu 保持 Native 原有配色；Windows / macOS 使用同伴提交的 GNOME Terminal 默认配色。
 #[cfg(target_os = "linux")]
 pub const DEFAULT_TERMINAL_COLOR_SCHEME: &str = "AdventureTime";
