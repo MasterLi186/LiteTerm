@@ -224,6 +224,22 @@ fn resolve_installed_family(font_system: &FontSystem, requested: &str) -> String
     requested.to_string()
 }
 
+/// 回退字体中全角字（中文等）相对终端字号的放大比例：默认字号下正好大一号（+1pt），
+/// 其他字号按同比例缩放，保持中英文大小关系一致。
+const WIDE_FALLBACK_SCALE: f32 = (crate::settings::DEFAULT_TERMINAL_FONT_SIZE + 1.0)
+    / crate::settings::DEFAULT_TERMINAL_FONT_SIZE;
+
+/// 字形按实际塑形字号计算的步进宽度（物理像素）。
+fn glyph_advance(font_system: &mut FontSystem, glyph: &PhysicalGlyph) -> Option<f32> {
+    let size = f32::from_bits(glyph.cache_key.font_size_bits);
+    font_system.get_font(glyph.cache_key.font_id).map(|font| {
+        font.as_swash()
+            .glyph_metrics(&[])
+            .scale(size)
+            .advance_width(glyph.cache_key.glyph_id)
+    })
+}
+
 #[derive(Clone, Copy)]
 struct GlyphShapeRequest<'a> {
     family: &'a str,
@@ -492,6 +508,37 @@ impl GlyphAtlas {
             synthetic_bold = false;
             physical = shape_glyph_with_italic_fallback(font_system, request)?;
         }
+        // 回退字体里的全角字（中文等）放大一号，但字面宽不超过两格（Ubuntu Mono 这类
+        // 两格正好 1em 的字体不会放大）。emoji 有自己的缩放逻辑，不在此处理。
+        if is_wide_char(ch)
+            && !color_emoji
+            && !face_in_family(font_system, physical.cache_key.font_id, request.family)
+        {
+            if let Some(advance) = glyph_advance(font_system, &physical).filter(|a| *a > 0.0) {
+                let target = (self.font_size * WIDE_FALLBACK_SCALE)
+                    .min(self.font_size * char_width / advance);
+                if target > self.font_size + 0.5 {
+                    let enlarged = GlyphShapeRequest {
+                        font_size: target,
+                        bold: bold && !synthetic_bold,
+                        ..request
+                    };
+                    if let Some(glyph) = shape_glyph_with_italic_fallback(font_system, enlarged) {
+                        physical = glyph;
+                    }
+                }
+            }
+        }
+        // 全角字（中文等）的字面宽通常小于两格（Menlo 两格为 1.2em），默认左对齐会把空白
+        // 全挤在字的右侧，中英文交界处显得空一大块。按字面框（advance）居中而不是按墨迹
+        // 居中，标点（，。）在框内的相对位置保持不变。
+        let wide_center_shift = if is_wide_char(ch) {
+            glyph_advance(font_system, &physical)
+                .filter(|advance| *advance > 0.0 && *advance < char_width)
+                .map_or(0, |advance| ((char_width - advance) * 0.5).round() as i32)
+        } else {
+            0
+        };
         let image = swash_cache
             .get_image(font_system, physical.cache_key)
             .as_ref()?;
@@ -553,7 +600,8 @@ impl GlyphAtlas {
             width: w,
             height: h,
             // 假粗体向右加宽了 embolden 像素，左移一半保持字形居中。
-            bearing_x: physical.x + image.placement.left - (embolden / 2) as i32,
+            bearing_x: physical.x + image.placement.left - (embolden / 2) as i32
+                + if is_mask { wide_center_shift } else { 0 },
             bearing_y: physical.y - image.placement.top + self.baseline as i32,
             advance_width: char_width,
             is_color: !is_mask,
