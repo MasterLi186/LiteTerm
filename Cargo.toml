@@ -49,6 +49,8 @@ desktop-template = "packaging/liteterm-native.desktop"
 winit = "0.30"
 wgpu = "24"
 cosmic-text = "0.12"
+# 与 egui(epaint) 相同的字体度量库，用于计算中文回退字体的基线校正
+ab_glyph = "0.2"
 alacritty_terminal = "0.25"
 vte = "0.15"
 portable-pty = "0.8"

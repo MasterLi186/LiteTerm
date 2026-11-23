@@ -100,6 +100,47 @@ pub fn find_cjk_font() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// egui 摆放回退字体字形时，基线 = 该字体自身 ascent + (主字体行高 − 该字体行高) / 2。
+/// 行距（line gap）很大的中文字体（如 macOS 的 Hiragino Sans GB，line gap 达 0.5em）
+/// 会因此整体偏上，中英文混排不在同一基线。按两种字体的实际度量算出需要的下移量，
+/// 返回对应 `family` 首选字体的 `FontTweak`。
+pub fn egui_fallback_tweak(
+    fonts: &egui::FontDefinitions,
+    family: &egui::FontFamily,
+    fallback: &[u8],
+) -> egui::FontTweak {
+    let offset = fonts
+        .families
+        .get(family)
+        .and_then(|names| names.first())
+        .and_then(|name| fonts.font_data.get(name))
+        .and_then(|primary| baseline_offset_factor(&primary.font, primary.index, fallback, 0));
+    egui::FontTweak {
+        y_offset_factor: offset.unwrap_or(0.0),
+        ..Default::default()
+    }
+}
+
+/// 回退字体相对主字体需要下移的距离（字号的比例），度量方式与 epaint 一致（ab_glyph）。
+fn baseline_offset_factor(
+    primary: &[u8],
+    primary_index: u32,
+    fallback: &[u8],
+    fallback_index: u32,
+) -> Option<f32> {
+    use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+    let vertical = |data: &[u8], index: u32| {
+        let font = FontRef::try_from_slice_and_index(data, index).ok()?;
+        let scaled = font.as_scaled(PxScale::from(1.0));
+        let height = scaled.ascent() - scaled.descent() + scaled.line_gap();
+        Some((scaled.ascent(), height))
+    };
+    let (primary_ascent, primary_height) = vertical(primary, primary_index)?;
+    let (fallback_ascent, fallback_height) = vertical(fallback, fallback_index)?;
+    let offset = primary_ascent - (fallback_ascent + 0.5 * (primary_height - fallback_height));
+    offset.is_finite().then_some(offset)
+}
+
 /// Common CJK family names used by Windows, macOS and Linux installations.
 /// The list is intentionally broader than cosmic-text's platform defaults:
 /// Windows images in particular may expose `Microsoft YaHei` instead of the

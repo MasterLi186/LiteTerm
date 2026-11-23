@@ -232,20 +232,29 @@ impl App {
                         // from_owned 时 epaint 解析字体会再 clone 一份整个文件（微软雅黑约 19MB）；
                         // 改用 'static 借用避免重复。字体整个进程期间都在用，且只加载这一次，泄漏不会累积。
                         let font_data: &'static [u8] = Box::leak(font_data.into_boxed_slice());
-                        fonts.font_data.insert(
-                            "liteterm_cjk".to_owned(),
-                            egui::FontData::from_static(font_data).into(),
-                        );
-                        fonts
-                            .families
-                            .entry(egui::FontFamily::Proportional)
-                            .or_default()
-                            .push("liteterm_cjk".to_owned());
-                        fonts
-                            .families
-                            .entry(egui::FontFamily::Monospace)
-                            .or_default()
-                            .push("liteterm_cjk".to_owned());
+                        // 比例字体与等宽字体的首选字体度量不同，各注册一份（共用同一份字体字节），
+                        // 分别校正基线，使中文与英文/数字在同一基线上。
+                        for (family, key) in [
+                            (egui::FontFamily::Proportional, "liteterm_cjk"),
+                            (egui::FontFamily::Monospace, "liteterm_cjk_mono"),
+                        ] {
+                            let tweak = crate::font_support::egui_fallback_tweak(
+                                &fonts, &family, font_data,
+                            );
+                            log::debug!(
+                                "CJK UI 字体基线校正 {family:?}: y_offset_factor={:.4}",
+                                tweak.y_offset_factor
+                            );
+                            fonts.font_data.insert(
+                                key.to_owned(),
+                                egui::FontData::from_static(font_data).tweak(tweak).into(),
+                            );
+                            fonts
+                                .families
+                                .entry(family)
+                                .or_default()
+                                .push(key.to_owned());
+                        }
                         log::debug!("加载 CJK UI 字体：{}", font_path.display());
                     } else {
                         log::debug!("读取 CJK UI 字体失败：{}", font_path.display());
