@@ -220,6 +220,14 @@ impl ApplicationHandler<UserEvent> for App {
         self.tunnel_registry.close_all();
         self.shutdown_remote_monitors();
         self.adb_history_writer.shutdown();
+        // Wayland：egui_winit::State 内的 smithay-clipboard 线程和 wgpu 的 EGL 实例都只借用
+        // winit 的 wl_display，不持有连接。若留到 App 析构时才释放，连接可能已先断开，
+        // 销毁协议对象会 SIGSEGV（崩溃栈 wl_proxy_destroy / eglTerminate）。
+        // 趁窗口和连接仍在时按依赖顺序先释放：egui 状态 → 渲染器 → GPU（surface/device）。
+        self.egui_state = None;
+        self.egui_renderer = None;
+        self.renderer = None;
+        self.gpu = None;
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
