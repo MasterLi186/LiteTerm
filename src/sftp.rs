@@ -683,7 +683,19 @@ fn write_remote_candidate_with_ops(
             .map_err(|error| format!("无法写入远端候选临时文件: {error}"))?;
         ops.close()
             .map_err(|error| format!("无法关闭远端候选临时文件: {error}"))?;
-        ops.rename(temporary_path, Path::new(path))
+        let target = Path::new(path);
+        ops.rename(temporary_path, target)
+            .or_else(|rename_error| {
+                // OpenSSH 的 sftp-server 只实现 SFTP v3：普通 rename 不会覆盖已存在的目标，
+                // 直接返回 SSH_FX_FAILURE（OVERWRITE 标志 v5 起才会发送）。候选文件在会话
+                // 建立时就已创建，所以替换失败时删掉旧候选文件再重试一次。路径短暂空出不会
+                // 被误读：只有写入成功后才会发送按键序列让 Bash 读取候选文件。
+                ops.unlink(target)
+                    .and_then(|()| ops.rename(temporary_path, target))
+                    .map_err(|retry_error| {
+                        format!("{rename_error}；删除旧文件后重试仍失败: {retry_error}")
+                    })
+            })
             .map_err(|error| format!("无法替换远端候选文件: {error}"))
     })();
     if result.is_err() {
