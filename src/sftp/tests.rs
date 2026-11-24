@@ -51,6 +51,7 @@ struct FakeRemoteCandidateOps {
     open_mode: Option<i32>,
     fail_write: bool,
     fail_rename: bool,
+    fail_first_rename: bool,
 }
 
 impl RemoteCandidateOps for FakeRemoteCandidateOps {
@@ -76,7 +77,8 @@ impl RemoteCandidateOps for FakeRemoteCandidateOps {
     fn rename(&mut self, from: &Path, to: &Path) -> Result<(), String> {
         self.calls
             .push(format!("rename:{}:{}", from.display(), to.display()));
-        (!self.fail_rename)
+        let fail_first = std::mem::take(&mut self.fail_first_rename);
+        (!self.fail_rename && !fail_first)
             .then_some(())
             .ok_or_else(|| "rename failed".to_string())
     }
@@ -321,7 +323,32 @@ fn remote_candidate_algorithm_opens_writes_closes_then_renames() {
 }
 
 #[test]
-fn remote_candidate_failures_unlink_only_their_own_temporary_file() {
+fn remote_candidate_replaces_existing_target_when_plain_rename_refuses() {
+    // OpenSSH sftp-server (SFTP v3) refuses to rename over the pre-created
+    // candidate; the writer must remove it and retry instead of failing.
+    let mut ops = FakeRemoteCandidateOps {
+        fail_first_rename: true,
+        ..Default::default()
+    };
+
+    write_remote_candidate_with_ops(&mut ops, "/tmp/liteterm.candidate", 42, b"git status")
+        .unwrap();
+
+    assert_eq!(
+        ops.calls,
+        [
+            "open:/tmp/.liteterm.candidate.42.tmp",
+            "write:10",
+            "close",
+            "rename:/tmp/.liteterm.candidate.42.tmp:/tmp/liteterm.candidate",
+            "unlink:/tmp/liteterm.candidate",
+            "rename:/tmp/.liteterm.candidate.42.tmp:/tmp/liteterm.candidate",
+        ]
+    );
+}
+
+#[test]
+fn remote_candidate_failures_clean_up_their_temporary_file() {
     let expected_temporary = "unlink:/tmp/.liteterm.candidate.42.tmp";
 
     let mut write_failure = FakeRemoteCandidateOps {
@@ -362,12 +389,11 @@ fn remote_candidate_failures_unlink_only_their_own_temporary_file() {
             "write:10",
             "close",
             "rename:/tmp/.liteterm.candidate.42.tmp:/tmp/liteterm.candidate",
+            "unlink:/tmp/liteterm.candidate",
+            "rename:/tmp/.liteterm.candidate.42.tmp:/tmp/liteterm.candidate",
             expected_temporary,
         ]
     );
-    assert!(!rename_failure
-        .calls
-        .contains(&"unlink:/tmp/liteterm.candidate".to_string()));
 }
 
 #[test]
