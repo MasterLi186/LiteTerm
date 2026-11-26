@@ -174,11 +174,17 @@ impl App {
                             };
                         }
                         "delete" => {
-                            // 从 connections.toml 删除
+                            // 从 connections.toml 删除。不能按 "host:port" 反推存储键：
+                            // 历史配置里键可能与 host 字段不一致（旧版本改过 host 后键没同步），
+                            // 反推删除会静默失败。改按连接身份逐项匹配。
                             let mut store = crate::connections::ConnectionStore::load();
-                            let host_key = format!("{}:{}", conn.host, conn.port);
                             for (_, group) in store.groups.iter_mut() {
-                                group.hosts.remove(&host_key);
+                                group.hosts.retain(|_, host| {
+                                    !(host.host == conn.host
+                                        && host.port == conn.port
+                                        && host.user == conn.user
+                                        && host.label == conn.label)
+                                });
                             }
                             if let Err(e) = store.save() {
                                 log::warn!("[SIDEBAR] 删除失败: {}", e);
