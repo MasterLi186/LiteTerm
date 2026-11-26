@@ -288,8 +288,12 @@ impl RemoteBashPaths {
     }
 
     pub fn launch_command(&self, bash: &str) -> String {
+        // rc/candidate 已由 SFTP 以 0600 显式创建，退出时由 trap 清理，
+        // 这里不需要（也不能）给整个交互会话设置 umask 077：
+        // 那会让该标签里的一切产物权限过严，例如 Yocto/BitBake 的
+        // sanity.bbclass 检测到 umask 不是 0022 会直接报错退出。
         format!(
-            "umask 077; trap 'rm -f -- \"{}\" \"{}\"' EXIT HUP INT TERM; '{}' --rcfile '{}' -i",
+            "trap 'rm -f -- \"{}\" \"{}\"' EXIT HUP INT TERM; '{}' --rcfile '{}' -i",
             self.rc, self.candidate, bash, self.rc
         )
     }
