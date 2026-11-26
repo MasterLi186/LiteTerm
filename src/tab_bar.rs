@@ -11,6 +11,10 @@ const TAB_EDGE_GAP: f32 = 2.0;
 const TAB_LABEL_LEFT: f32 = 22.0;
 /// 标签文字裁剪区的左边界。
 const TAB_LABEL_CLIP_LEFT: f32 = 20.0;
+/// 面板最大化状态的强调色（与新建标签页弹窗的强调色一致）。
+const ACCENT_MAXIMIZED: egui::Color32 = egui::Color32::from_rgb(0x00, 0xd4, 0xff);
+/// 最大化标签底部的指示条高度。
+const MAXIMIZED_BAR_HEIGHT: f32 = 2.0;
 
 pub enum TabBarAction {
     None,
@@ -547,6 +551,9 @@ pub fn render_tab_bar(
                             tab_dot_color(&tab.tab_type, &tab.status)
                         };
 
+                        // 面板最大化是容易被忽略的状态：强调色底条 + 更亮的标题 +
+                        // 强调色还原图标三重提示；标签被压窄、图标放不下时底条仍然可见。
+                        let maximized = tab.layout.is_maximized();
                         let bg = if is_active {
                             egui::Color32::from_rgb(0x21, 0x26, 0x2d)
                         } else {
@@ -554,6 +561,8 @@ pub fn render_tab_bar(
                         };
                         let text_color = if is_active {
                             egui::Color32::from_rgb(0xe6, 0xed, 0xf3)
+                        } else if maximized {
+                            egui::Color32::from_rgb(0xd6, 0xe4, 0xf0)
                         } else {
                             egui::Color32::from_rgb(0x8b, 0x94, 0x9e)
                         };
@@ -572,6 +581,24 @@ pub fn render_tab_bar(
                                 egui::Color32::from_rgba_unmultiplied(0x30, 0x36, 0x3d, 0x60),
                             );
                         }
+                        if maximized {
+                            // 淡强调色底 + 底部实心条：远距离也能看出哪个标签处于面板最大化。
+                            ui.painter().rect_filled(
+                                tab_rect,
+                                4.0,
+                                egui::Color32::from_rgba_unmultiplied(0x00, 0xd4, 0xff, 10),
+                            );
+                            let bar = egui::Rect::from_min_max(
+                                egui::pos2(
+                                    tab_rect.left() + 6.0,
+                                    tab_rect.bottom() - MAXIMIZED_BAR_HEIGHT,
+                                ),
+                                egui::pos2(tab_rect.right() - 6.0, tab_rect.bottom()),
+                            );
+                            if bar.width() > 0.0 {
+                                ui.painter().rect_filled(bar, 1.0, ACCENT_MAXIMIZED);
+                            }
+                        }
 
                         // 类型圆点
                         let dot_center = egui::pos2(tab_rect.left() + 12.0, tab_rect.center().y);
@@ -580,7 +607,7 @@ pub fn render_tab_bar(
                         // 最大化标签在关闭按钮左侧多一个还原图标。
                         // 标签被压到放不下图标时干脆不显示还原入口；
                         // 仍可通过右键菜单或 Ctrl+Shift+X 还原。
-                        let show_restore = tab.layout.is_maximized()
+                        let show_restore = maximized
                             && tab_rect.width()
                                 >= CLOSE_SIZE + TAB_EDGE_GAP + RESTORE_SIZE + TAB_LABEL_CLIP_LEFT;
                         let right_reserve = if show_restore {
@@ -651,11 +678,11 @@ pub fn render_tab_bar(
                             })
                         });
                         if let Some(restore_resp) = &restore_resp {
-                            // 跟随主题的弱/强文本色，浅色主题下也能看清。
+                            // 常态用强调色（最大化状态本身就显眼），悬停提亮。
                             let color = if restore_resp.hovered() {
                                 ui.visuals().strong_text_color()
                             } else {
-                                ui.visuals().weak_text_color()
+                                ACCENT_MAXIMIZED
                             };
                             paint_restore_icon(ui.painter(), restore_rect.center(), color, bg);
                         }
