@@ -125,6 +125,9 @@ pub enum PaneStatus {
     Connecting,
     Connected,
     Failed(String),
+    /// 连接曾经建立、随后传输侧结束（本地 shell 退出、SSH/串口断开）。
+    /// 与 Failed 区分：面板内容仍保留，可以原地重新打开/重连。
+    Exited(String),
 }
 
 impl TerminalPane {

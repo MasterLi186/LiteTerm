@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::render_overlays::{SessionEndedCardAction, SessionEndedKind};
 use crate::tab_manager::PaneStatus;
 
 impl App {
@@ -205,7 +206,9 @@ impl App {
             matches!(tab.tab_type, TabType::Serial { .. }).then(|| match &tab.status {
                 PaneStatus::Connecting => SerialTerminalMenuState::Connecting,
                 PaneStatus::Connected => SerialTerminalMenuState::Connected,
-                PaneStatus::Idle | PaneStatus::Failed(_) => SerialTerminalMenuState::Disconnected,
+                PaneStatus::Idle | PaneStatus::Failed(_) | PaneStatus::Exited(_) => {
+                    SerialTerminalMenuState::Disconnected
+                }
             })
         });
         let active_serial_failure = self.tab_manager.active().and_then(|tab| {
@@ -217,7 +220,22 @@ impl App {
                 Some((self.tab_manager.active_idx, pane_rect, error.clone()))
             })?
         });
+        // 会话已结束（本地 shell 退出 / SSH、串口断开）：在面板内给出提示与恢复入口。
+        let active_session_ended = self.tab_manager.active().and_then(|tab| {
+            let PaneStatus::Exited(reason) = &tab.status else {
+                return None;
+            };
+            let kind = match &tab.tab_type {
+                TabType::Local { .. } => SessionEndedKind::Local,
+                TabType::Ssh { .. } => SessionEndedKind::Ssh,
+                TabType::Serial { .. } => SessionEndedKind::Serial,
+                _ => return None,
+            };
+            let pane_rect = pane_layout_overlay.pane(tab.active_pane_id())?.rect;
+            Some((self.tab_manager.active_idx, pane_rect, kind, reason.clone()))
+        });
         let mut retry_failed_serial = None;
+        let mut session_ended_action = None;
         let active_playback_snapshot = active_playback.as_ref().and_then(|(tab_id, _)| {
             self.recording_playbacks
                 .get(tab_id)
@@ -377,6 +395,12 @@ impl App {
             if let Some((index, pane_rect, error)) = active_serial_failure.as_ref() {
                 if self.render_serial_failure_card(ctx, *pane_rect, error) {
                     retry_failed_serial = Some(*index);
+                }
+            }
+            if let Some((index, pane_rect, kind, reason)) = active_session_ended.as_ref() {
+                if let Some(action) = self.render_session_ended_card(ctx, *pane_rect, *kind, reason)
+                {
+                    session_ended_action = Some((*index, action));
                 }
             }
             term_menu_action = self.render_terminal_context_menu(
@@ -826,6 +850,14 @@ impl App {
         self.handle_terminal_context_action(term_menu_action);
         if let Some(index) = retry_failed_serial {
             self.reconnect_serial_tab(index);
+        }
+        if let Some((index, action)) = session_ended_action {
+            match action {
+                SessionEndedCardAction::Restart => {
+                    self.restart_ended_tab(index);
+                }
+                SessionEndedCardAction::CloseTab => self.request_close_tab(index),
+            }
         }
 
         // After egui may have toggled IME for TextEdits, reassert terminal IME

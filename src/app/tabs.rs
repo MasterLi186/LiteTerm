@@ -1,4 +1,5 @@
 use super::*;
+use crate::tab_manager::PaneStatus;
 
 impl App {
     pub(super) fn open_settings_tab(&mut self) {
@@ -764,5 +765,147 @@ impl App {
         }
         assert_tab_scoped_resource_invariant(&self.file_browsers, &self.sftp_workers);
         self.reconcile_remote_monitors();
+    }
+}
+
+impl App {
+    /// 传输侧已结束（本地 shell 退出 / SSH、串口断开）：标记面板状态并释放附属资源。
+    /// 返回是否真的更新了状态（调用方据此补一帧）。
+    pub(super) fn apply_session_exited(
+        &mut self,
+        tab_id: &str,
+        pane_id: &str,
+        session: &CompletionSessionKey,
+        reason: Option<String>,
+    ) -> bool {
+        let Some(index) = self.tab_manager.find_by_id(tab_id) else {
+            return false;
+        };
+        // 旧会话（重连/重启后）或重复通知一律丢弃：读线程结束时间可能晚于状态切换。
+        let (is_local, is_ssh, is_current) = {
+            let tab = &self.tab_manager.tabs[index];
+            let Some(pane) = tab.pane(pane_id) else {
+                return false;
+            };
+            (
+                matches!(tab.tab_type, TabType::Local { .. }),
+                matches!(tab.tab_type, TabType::Ssh { .. }),
+                // 只有“曾经建立、正在运行”的会话才可能结束：重连/重启流程会先换
+                // 会话再停旧读线程，若再加上状态约束，旧线程迟到的通知一律被丢弃。
+                pane.completion.session() == session
+                    && matches!(pane.status, PaneStatus::Connected),
+            )
+        };
+        if !is_current {
+            return false;
+        }
+        let Some(pane) = self.tab_manager.tabs[index].pane_mut(pane_id) else {
+            return false;
+        };
+        // 本地 shell 退出时底层是 EIO 之类的读取错误，对用户没有意义，不当作提示展示。
+        pane.status = PaneStatus::Exited(if is_local {
+            String::new()
+        } else {
+            reason.unwrap_or_default()
+        });
+        pane.ssh_connected = false;
+        // 该面板的 ZMODEM 控制槽与 API 输出流都已失效。
+        self.end_api_pane_stream(pane_id);
+        self.remove_zmodem_pane(pane_id);
+        if is_ssh {
+            self.remove_sftp_pane(pane_id);
+        }
+        self.invalidate_completion_popup_snapshot();
+        true
+    }
+
+    /// 对已结束/失败的面板执行“重新打开 / 重连”。Enter 与弹窗主按钮都走这里。
+    /// 只是“发起”恢复动作：真正的成功/失败由后续状态或事件体现。
+    pub(super) fn restart_ended_tab(&mut self, index: usize) {
+        let Some(tab) = self.tab_manager.tabs.get(index) else {
+            return;
+        };
+        if !matches!(tab.status, PaneStatus::Exited(_) | PaneStatus::Failed(_)) {
+            return;
+        }
+        match &tab.tab_type {
+            TabType::Local { .. } => self.restart_local_terminal(index),
+            TabType::Ssh { .. } => self.reconnect_ssh_tab(index),
+            TabType::Serial { .. } => self.reconnect_serial_tab(index),
+            _ => {}
+        }
+    }
+
+    /// 本地 shell 退出的面板：原地启动一个新 shell，并重新挂上读线程。
+    /// 复用同一个 TerminalState（屏幕内容由 spawn 清空），外部持有的 Arc 不会失效。
+    pub(super) fn restart_local_terminal(&mut self, index: usize) {
+        let Some(tab) = self.tab_manager.tabs.get(index) else {
+            return;
+        };
+        let TabType::Local { shell_path } = &tab.tab_type else {
+            return;
+        };
+        let shell = shell_path.clone();
+        let tab_id = tab.id.clone();
+        let pane_id = tab.active_pane_id().to_string();
+        let Some(pane) = tab.pane(&pane_id) else {
+            return;
+        };
+        if !matches!(pane.status, PaneStatus::Exited(_) | PaneStatus::Failed(_)) {
+            return;
+        }
+        let session = pane.completion.session().successor();
+        let history_path = pane.completion.history_path().map(str::to_owned);
+        let terminal = pane.terminal.clone();
+        let (cols, rows) = self.grid_size_for_tab_pane(&tab_id, &pane_id);
+
+        self.end_api_pane_stream(&pane_id);
+        self.remove_zmodem_pane(&pane_id);
+
+        let spawn = terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .try_spawn_shell_with_path(&shell, cols, rows, session.clone());
+        let started = {
+            let Some(pane) = self.tab_manager.tabs[index].pane_mut(&pane_id) else {
+                // 面板在启动期间消失：把刚启动的 shell 收掉，避免悬挂。
+                terminal
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .shutdown();
+                return;
+            };
+            match spawn {
+                Ok(()) => {
+                    // 新会话让旧读线程残留的事件全部失效；补全历史路径保留。
+                    pane.completion.reset_session(session.clone());
+                    if let Some(path) = history_path {
+                        pane.completion.set_history_path(path);
+                    }
+                    pane.status = PaneStatus::Connected;
+                    pane.ssh_connected = false;
+                    true
+                }
+                Err(error) => {
+                    // 保持 Exited（而不是 Failed），提示卡片与 Enter 重试入口才不会消失。
+                    pane.status = PaneStatus::Exited(
+                        crate::i18n::tr("重新打开终端失败：{error}").replace("{error}", &error),
+                    );
+                    false
+                }
+            }
+        };
+        self.invalidate_completion_popup_snapshot();
+        if started {
+            self.start_read_loop(tab_id, pane_id, session, terminal);
+        }
+    }
+
+    /// 当前活动标签的面板是否可以“重新打开/重连”（用于拦截 Enter/键盘输入）。
+    /// 已结束（Exited）与打开失败（Failed）都允许；其余状态照常写终端。
+    pub(super) fn active_tab_can_restart(&self) -> bool {
+        self.tab_manager
+            .active()
+            .is_some_and(|tab| matches!(tab.status, PaneStatus::Exited(_) | PaneStatus::Failed(_)))
     }
 }

@@ -342,7 +342,8 @@ impl App {
                     match &pane.status {
                         tab_manager::PaneStatus::Connecting
                         | tab_manager::PaneStatus::Idle
-                        | tab_manager::PaneStatus::Failed(_) => {
+                        | tab_manager::PaneStatus::Failed(_)
+                        | tab_manager::PaneStatus::Exited(_) => {
                             return Err(api::ApiError::not_found("终端写入通道尚未就绪"));
                         }
                         tab_manager::PaneStatus::Connected => {}

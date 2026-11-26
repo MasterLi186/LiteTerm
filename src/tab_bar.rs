@@ -234,6 +234,10 @@ fn context_menu_capabilities(tab_type: &TabType) -> ContextMenuCapabilities {
 }
 
 fn tab_dot_color(tab_type: &TabType, status: &PaneStatus) -> egui::Color32 {
+    // 会话已经结束（本地 shell 退出 / 远端断开）：所有类型统一红点提示。
+    if matches!(status, PaneStatus::Exited(_)) {
+        return egui::Color32::from_rgb(0xf8, 0x51, 0x49);
+    }
     match tab_type {
         TabType::Local { .. } => egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
         TabType::Ssh { .. } => egui::Color32::from_rgb(0x00, 0xd4, 0xff),
@@ -243,7 +247,9 @@ fn tab_dot_color(tab_type: &TabType, status: &PaneStatus) -> egui::Color32 {
             PaneStatus::Connected => egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
             PaneStatus::Connecting => egui::Color32::from_rgb(0xf1, 0xc4, 0x0f),
             PaneStatus::Idle => egui::Color32::from_rgb(0x6e, 0x76, 0x81),
-            PaneStatus::Failed(_) => egui::Color32::from_rgb(0xf8, 0x51, 0x49),
+            PaneStatus::Failed(_) | PaneStatus::Exited(_) => {
+                egui::Color32::from_rgb(0xf8, 0x51, 0x49)
+            }
         },
         TabType::Recording { .. } => egui::Color32::from_rgb(0xff, 0x7b, 0x72),
         TabType::Settings => egui::Color32::from_rgb(0x40, 0xcb, 0xd9),
@@ -531,7 +537,15 @@ pub fn render_tab_bar(
                     for (i, tab) in tab_manager.tabs.iter().enumerate() {
                         let is_active = i == tab_manager.active_idx;
 
-                        let dot_color = tab_dot_color(&tab.tab_type, &tab.status);
+                        // 分屏中任何面板结束都提示红点（活动面板可能仍是正常状态）。
+                        let any_pane_exited = tab
+                            .panes()
+                            .any(|pane| matches!(pane.status, PaneStatus::Exited(_)));
+                        let dot_color = if any_pane_exited {
+                            egui::Color32::from_rgb(0xf8, 0x51, 0x49)
+                        } else {
+                            tab_dot_color(&tab.tab_type, &tab.status)
+                        };
 
                         let bg = if is_active {
                             egui::Color32::from_rgb(0x21, 0x26, 0x2d)

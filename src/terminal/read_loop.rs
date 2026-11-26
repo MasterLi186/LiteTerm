@@ -6,7 +6,9 @@ where
     G: Fn(IntegrationEvent) + Send + 'static,
 {
     let mut reader = {
-        let mut term = terminal.lock().unwrap();
+        let mut term = terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match term.take_reader() {
             Some(r) => r,
             None => {
@@ -31,7 +33,9 @@ where
         };
 
         let events = {
-            let mut term_state = terminal.lock().unwrap();
+            let mut term_state = terminal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             term_state.process_pty_output(&mut parser, &buf[..n])
         };
 
@@ -41,7 +45,10 @@ where
         request_redraw();
     }
 
-    terminal.lock().unwrap().finish_session();
+    terminal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .finish_session();
 }
 
 enum ReaderPumpEvent {
@@ -56,22 +63,30 @@ enum ReaderPumpEvent {
 /// moves the potentially-blocking reader into a detached bounded pump so
 /// cancel/timeout/shutdown commands are polled at a fixed interval even while
 /// the underlying transport is blocked in `read`.
-pub fn read_loop_with_zmodem<F, G, H, V>(
+pub fn read_loop_with_zmodem<F, G, H, V, S>(
     terminal: Arc<Mutex<TerminalState>>,
     request_redraw: F,
     integration_event: G,
     visible_output: V,
     config: crate::zmodem::runtime::RuntimeConfig,
     zmodem_event: H,
+    session_end: S,
 ) where
     F: Fn() + Send + 'static,
     G: Fn(IntegrationEvent) + Send + 'static,
     H: Fn(crate::zmodem::runtime::RuntimeEvent) + Send + 'static,
     V: Fn(&[u8]) + Send + 'static,
+    S: Fn(Option<String>) + Send + 'static,
 {
     let (mut reader, protocol_writer, input_gate) = {
-        let mut term = terminal.lock().unwrap();
+        let mut term = terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(reader) = term.take_reader() else {
+            // 正常情况下启动读线程时 reader 一定刚由 spawn/apply_*_handle 装上；
+            // 走到这里说明会话已被主动关闭或误重复启动，不能贸然发出“已结束”事件
+            // （重复启动时另一条读线程可能仍在正常工作），只记录并清理。
+            log::warn!("终端读线程启动时 reader 已被取走，跳过本次读循环");
             term.finish_session();
             return;
         };
@@ -122,6 +137,9 @@ pub fn read_loop_with_zmodem<F, G, H, V>(
     let mut parser = Processor::new();
     let mut stopped = false;
     let mut discard_through_sequence = 0;
+    // 结束原因只用于 UI 提示：正常 EOF（进程退出/连接关闭）为 None，
+    // 读取错误时记录底层错误文本。
+    let mut end_reason: Option<String> = None;
 
     while !stopped {
         let control = runtime.poll();
@@ -185,7 +203,10 @@ pub fn read_loop_with_zmodem<F, G, H, V>(
                 break;
             }
             Ok(ReaderPumpEvent::Error(error)) => {
+                // Linux 上本地 PTY 的子进程退出后，master 读取常返回 EIO 而不是 EOF，
+                // 因此错误同样视为传输结束，只是把错误文本留给 UI。
                 log::error!("读取错误: {error}");
+                end_reason = Some(error.to_string());
                 let output = runtime.reader_error(&error);
                 for event in output.events {
                     zmodem_event(event);
@@ -197,5 +218,10 @@ pub fn read_loop_with_zmodem<F, G, H, V>(
     }
 
     drop(runtime);
-    terminal.lock().unwrap().finish_session();
+    terminal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .finish_session();
+    // 先完成本地清理再通知：主线程可能立刻在同一面板上重启 shell。
+    session_end(end_reason);
 }

@@ -163,6 +163,14 @@ enum UserEvent {
         path: std::path::PathBuf,
         result: Result<recording::Asciicast, String>,
     },
+    /// 终端传输侧已经结束（本地 shell 退出、SSH 断开、串口断开）。
+    /// reason 是底层读取错误文本（正常 EOF 为 None），仅用于提示。
+    SessionExited {
+        tab_id: String,
+        pane_id: String,
+        session: CompletionSessionKey,
+        reason: Option<String>,
+    },
 }
 
 impl std::fmt::Debug for UserEvent {
@@ -263,6 +271,17 @@ impl std::fmt::Debug for UserEvent {
                 .debug_struct("RecordingLoaded")
                 .field("path", path)
                 .field("result", &if result.is_ok() { "Ok" } else { "Err" })
+                .finish(),
+            UserEvent::SessionExited {
+                tab_id,
+                pane_id,
+                reason,
+                ..
+            } => f
+                .debug_struct("SessionExited")
+                .field("tab_id", tab_id)
+                .field("pane_id", pane_id)
+                .field("reason", reason)
                 .finish(),
         }
     }

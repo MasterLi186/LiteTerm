@@ -509,3 +509,106 @@ impl App {
         }
     }
 }
+
+/// 会话结束卡片针对的终端类型（决定文案与主按钮语义）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SessionEndedKind {
+    Local,
+    Ssh,
+    Serial,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SessionEndedCardAction {
+    Restart,
+    CloseTab,
+}
+
+impl App {
+    /// 传输侧结束后在面板内显示的提示卡片：保留已输出的内容，提供重新打开/重连与关闭。
+    pub(super) fn render_session_ended_card(
+        &self,
+        ctx: &egui::Context,
+        pane_rect: egui::Rect,
+        kind: SessionEndedKind,
+        reason: &str,
+    ) -> Option<SessionEndedCardAction> {
+        let (title, hint, primary) = match kind {
+            SessionEndedKind::Local => (
+                crate::i18n::tr("终端进程已退出").into_owned(),
+                crate::i18n::tr("按 Enter 重新打开终端").into_owned(),
+                crate::i18n::tr("重新打开").into_owned(),
+            ),
+            SessionEndedKind::Ssh => (
+                crate::i18n::tr("SSH 连接已断开").into_owned(),
+                crate::i18n::tr("按 Enter 重新连接").into_owned(),
+                crate::i18n::tr("重新连接").into_owned(),
+            ),
+            SessionEndedKind::Serial => (
+                crate::i18n::tr("串口连接已断开").into_owned(),
+                crate::i18n::tr("按 Enter 重新连接").into_owned(),
+                crate::i18n::tr("重新连接").into_owned(),
+            ),
+        };
+        // 本地 shell 正常退出时 reason 已在上游清空；这里非空只可能是重启失败等
+        // 需要告知用户的原因。
+        let detail: String = reason.trim().chars().take(240).collect();
+        // 宽度不超过面板本身（窄分屏下不能溢出到相邻面板），水平位置也夹在面板内。
+        let width = pane_rect.width().min(480.0);
+        let max_left = (pane_rect.right() - width).max(pane_rect.left());
+        let position = egui::pos2(
+            (pane_rect.center().x - width / 2.0).clamp(pane_rect.left(), max_left),
+            pane_rect.top() + 48.0,
+        );
+        let mut action = None;
+        egui::Area::new(egui::Id::new("session_ended_card"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(position)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(0x16, 0x1b, 0x22))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgb(0xf8, 0x51, 0x49),
+                    ))
+                    .corner_radius(8.0)
+                    .inner_margin(egui::Margin::same(16))
+                    .show(ui, |ui| {
+                        ui.set_width((width - 32.0).max(96.0));
+                        ui.label(
+                            egui::RichText::new(title)
+                                .size(17.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(0xff, 0x7b, 0x72)),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(hint)
+                                .size(13.0)
+                                .color(egui::Color32::from_rgb(0xc9, 0xd1, 0xd9)),
+                        );
+                        if !detail.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(detail)
+                                    .size(12.0)
+                                    .color(egui::Color32::from_rgb(0x8a, 0x92, 0x9b)),
+                            );
+                        }
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(primary).clicked() {
+                                action = Some(SessionEndedCardAction::Restart);
+                            }
+                            if ui
+                                .button(crate::i18n::tr("关闭标签页").into_owned())
+                                .clicked()
+                            {
+                                action = Some(SessionEndedCardAction::CloseTab);
+                            }
+                        });
+                    });
+            });
+        action
+    }
+}

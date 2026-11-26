@@ -76,6 +76,10 @@ impl App {
         let zmodem_tab_id = tab_id.clone();
         let zmodem_pane_id = pane_id.clone();
         let zmodem_session = session.clone();
+        let exit_proxy = self.proxy.clone();
+        let exit_tab_id = tab_id.clone();
+        let exit_pane_id = pane_id.clone();
+        let exit_session = session.clone();
         let recordings = self.recordings.clone();
         let terminal_logs = self.terminal_logs.clone();
         let recording_pane_id = pane_id.clone();
@@ -105,6 +109,14 @@ impl App {
                         pane_id: zmodem_pane_id.clone(),
                         session: zmodem_session.clone(),
                         event,
+                    });
+                },
+                move |reason| {
+                    let _ = exit_proxy.send_event(UserEvent::SessionExited {
+                        tab_id: exit_tab_id.clone(),
+                        pane_id: exit_pane_id.clone(),
+                        session: exit_session.clone(),
+                        reason,
                     });
                 },
             );
@@ -520,6 +532,14 @@ impl App {
 
     fn write_active_terminal_input(&mut self, input: &str, is_paste: bool) {
         self.invalidate_completion_popup_snapshot();
+        // 会话已结束：按键不再写入已关闭的传输通道；回车等价于重新打开/重连。
+        if self.active_tab_can_restart() {
+            if input == "\r" || input == "\n" {
+                let index = self.tab_manager.active_idx;
+                self.restart_ended_tab(index);
+            }
+            return;
+        }
         let index = self.tab_manager.active_idx;
         let Some(tab) = self.tab_manager.tabs.get_mut(index) else {
             return;
@@ -558,6 +578,12 @@ impl App {
 
     pub(super) fn submit_active_bash_line(&mut self) {
         self.invalidate_completion_popup_snapshot();
+        // 会话已结束：回车用于重新打开终端/重新连接，而不是提交一行命令。
+        if self.active_tab_can_restart() {
+            let index = self.tab_manager.active_idx;
+            self.restart_ended_tab(index);
+            return;
+        }
         let index = self.tab_manager.active_idx;
         let proxy = self.proxy.clone();
         let Some(tab) = self.tab_manager.tabs.get_mut(index) else {

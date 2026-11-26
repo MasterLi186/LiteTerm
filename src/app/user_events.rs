@@ -120,6 +120,18 @@ impl App {
                     self.terminal_notice = Some(error);
                 }
             },
+            UserEvent::SessionExited {
+                tab_id,
+                pane_id,
+                session,
+                reason,
+            } => {
+                if self.apply_session_exited(&tab_id, &pane_id, &session, reason) {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
             UserEvent::SerialPorts { generation, result } => {
                 if self.new_tab_selector.apply_serial_scan(generation, result) {
                     // 扫描结果会改变新建标签页弹窗里的串口列表（进而改变弹窗高度），

@@ -90,6 +90,14 @@ pub struct NewTabSelector {
     serial_expanded: bool,
     ssh_section_anim: SectionAnimation,
     serial_section_anim: SectionAnimation,
+    /// 滚动内容中与折叠分组无关的高度（总内容高减去两个分组正文高度）。
+    /// 用于在布局前预测弹窗高度：Area 的居中锚点用的是上一帧尺寸，直接依赖锚点
+    /// 会让弹窗在高度动画时整体滞后半个步长，看起来一顿一顿的。
+    modal_fixed_content: Option<f32>,
+    /// 上一帧弹窗外框的实际尺寸（宽度固定，用于水平居中）。
+    modal_outer_size: Option<egui::Vec2>,
+    /// 预测高度与实际高度的残差（边框/间距等常量误差），每帧学习后补偿。
+    modal_height_bias: f32,
     /// 展开/折叠分组或串口扫描结果改变了弹窗内容高度后，需要立即再渲染一帧：
     /// Area 的居中位置按上一帧尺寸计算，没有这一帧就要等下一次鼠标事件或光标闪烁，
     /// 表现为“列表先动、窗口过一会儿才跟上”。
@@ -114,6 +122,9 @@ impl NewTabSelector {
             serial_expanded: true,
             ssh_section_anim: SectionAnimation::default(),
             serial_section_anim: SectionAnimation::default(),
+            modal_fixed_content: None,
+            modal_outer_size: None,
+            modal_height_bias: 0.0,
             repaint_requested: false,
         }
     }
@@ -121,9 +132,16 @@ impl NewTabSelector {
     pub fn open(&mut self) -> u64 {
         self.shells = load_shell_candidates();
         self.visible = true;
-        // 重新打开时按首帧实测高度直接展示，不播放上一次留下的折叠动画。
-        self.ssh_section_anim = SectionAnimation::default();
-        self.serial_section_anim = SectionAnimation::default();
+        // 关闭期间内容和窗口尺寸都可能变化，弹窗高度缓存按新一次打开重新测量。
+        self.modal_fixed_content = None;
+        self.modal_height_bias = 0.0;
+        // 重新打开时按已测得的高度直接展示，不播放上一次留下的折叠动画。
+        self.ssh_section_anim.reset_for_open(self.ssh_expanded);
+        self.serial_section_anim
+            .reset_for_open(self.serial_expanded);
+        // 首次打开时首帧只能退回锚点定位，测得内容高度后要立刻再出一帧
+        // 切到 fixed_pos 精确定位。
+        self.repaint_requested = true;
         self.begin_serial_scan()
     }
 
@@ -135,6 +153,17 @@ impl NewTabSelector {
     /// 取走“需要立即重绘一帧”的请求（弹窗内容高度变化后重新居中）。
     pub fn take_repaint_request(&mut self) -> bool {
         std::mem::take(&mut self.repaint_requested)
+    }
+
+    /// 折叠/展开动画是否还在进行：事件循环据此持续补帧。
+    /// 展开状态刚翻转、动画还没在下一帧启动时也要算“进行中”，否则点击后的第一帧
+    /// 只能依赖渲染帧内的 request_redraw 补发，出帧不及时动画就会先停一下。
+    pub fn is_animating(&self) -> bool {
+        self.visible
+            && (self.ssh_section_anim.running
+                || self.serial_section_anim.running
+                || self.ssh_section_anim.expanded != self.ssh_expanded
+                || self.serial_section_anim.expanded != self.serial_expanded)
     }
 
     pub fn is_open(&self) -> bool {
@@ -177,6 +206,10 @@ impl NewTabSelector {
 
         let screen = ctx.input(|input| input.screen_rect());
         let Some(geometry) = modal_geometry(screen) else {
+            // 视口退化（例如窗口最小化）时无法布局：直接同步展开状态，
+            // 避免事件循环因为“展开状态与动画状态不一致”而持续空转补帧。
+            self.ssh_section_anim.snap_to(self.ssh_expanded);
+            self.serial_section_anim.snap_to(self.serial_expanded);
             return NewTabAction::None;
         };
         let backdrop_layer = egui::LayerId::new(
@@ -207,139 +240,214 @@ impl NewTabSelector {
         let mut action = NewTabAction::None;
         let mut close_clicked = false;
         let expand_state_before = (self.ssh_expanded, self.serial_expanded);
-        let mut section_animating = false;
-        egui::Area::new(modal_layer.id)
+
+        let modal_width = geometry.rect.width();
+        let modal_max_height = geometry.rect.height();
+        let border_width = 1.0_f32.min(modal_width / 2.0);
+        let modal_content_width = (modal_width - border_width * 2.0).max(0.0);
+        let body_padding = MODAL_PADDING.min(modal_content_width / 2.0).floor();
+        let modal_content_max_height = (modal_max_height - border_width * 2.0).max(0.0);
+        let header_height = MODAL_HEADER_HEIGHT.min(modal_content_max_height);
+        let body_max_height = (modal_content_max_height - header_height).max(0.0);
+
+        // 动画必须在本帧布局前推进：弹窗高度由分组正文高度决定，而居中位置要在创建
+        // Area 之前算好（Area 的锚点按上一帧尺寸计算，直接用它会让弹窗整体滞后半个
+        // 高度步长，展开/收起时表现为一顿一顿的跳动）。
+        let now = ctx.input(|input| input.time);
+        self.ssh_section_anim.step(self.ssh_expanded, now);
+        self.serial_section_anim.step(self.serial_expanded, now);
+        let mut section_animating =
+            self.ssh_section_anim.running || self.serial_section_anim.running;
+
+        // 折叠分组还没测得自然高度时，本帧会直接展开到完整高度，无法预测总高度；
+        // 这时退回锚点定位（只影响打开弹窗后的第一帧）。
+        let heights_known = (!self.ssh_expanded || self.ssh_section_anim.natural > 0.0)
+            && (!self.serial_expanded || self.serial_section_anim.natural > 0.0);
+        let predicted_modal_height = if heights_known {
+            self.modal_fixed_content.map(|fixed| {
+                let content_height =
+                    fixed + self.ssh_section_anim.height + self.serial_section_anim.height;
+                (header_height + content_height.min(body_max_height) + self.modal_height_bias)
+                    .clamp(0.0, modal_max_height)
+            })
+        } else {
+            None
+        };
+
+        let heights_before_layout = (
+            self.ssh_section_anim.height,
+            self.serial_section_anim.height,
+        );
+        let fixed_content_before = self.modal_fixed_content;
+        let mut modal_area = egui::Area::new(modal_layer.id)
             .order(modal_layer.order)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .sense(modal_root_sense())
-            .constrain(false)
-            .show(ctx, |ui| {
-                let modal_width = geometry.rect.width();
-                let modal_max_height = geometry.rect.height();
-                let border_width = 1.0_f32.min(modal_width / 2.0);
-                let modal_content_width = (modal_width - border_width * 2.0).max(0.0);
-                let body_padding = MODAL_PADDING.min(modal_content_width / 2.0).floor();
-                // Area 内容区的 max_rect 取自上一帧的浮层尺寸：折叠分组把弹窗缩小后，
-                // 若不再抬高上限，ScrollArea 的可视高度会一直停留在旧的小尺寸上，
-                // 展开分组时无法把弹窗撑回 80% 视口高度。
-                ui.set_max_height(modal_max_height);
-                egui::Frame::new()
-                    .fill(MODAL_BACKGROUND)
-                    .stroke(egui::Stroke::new(border_width, MODAL_BORDER))
-                    .corner_radius(MODAL_BORDER_RADIUS)
-                    .shadow(egui::Shadow {
-                        offset: [0, 8],
-                        blur: 24,
-                        spread: 0,
-                        color: egui::Color32::from_black_alpha(160),
-                    })
-                    .show(ui, |ui| {
-                        ui.set_width(modal_content_width);
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        let modal_content_max_height =
-                            (modal_max_height - border_width * 2.0).max(0.0);
-                        let header_height = MODAL_HEADER_HEIGHT.min(modal_content_max_height);
-                        let (header_rect, _) = ui.allocate_exact_size(
-                            egui::vec2(modal_content_width, header_height),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().line_segment(
-                            [header_rect.left_bottom(), header_rect.right_bottom()],
-                            egui::Stroke::new(1.0, MODAL_BORDER),
-                        );
+            .constrain(false);
+        modal_area = match predicted_modal_height {
+            Some(height) => {
+                let outer_width = self.modal_outer_size.map_or(modal_width, |size| size.x);
+                modal_area.fixed_pos(egui::pos2(
+                    geometry.rect.center().x - outer_width / 2.0,
+                    geometry.rect.center().y - height / 2.0,
+                ))
+            }
+            None => modal_area.anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO),
+        };
+        let modal_response = modal_area.show(ctx, |ui| {
+            // Area 内容区的 max_rect 取自上一帧的浮层尺寸：折叠分组把弹窗缩小后，
+            // 若不再抬高上限，ScrollArea 的可视高度会一直停留在旧的小尺寸上，
+            // 展开分组时无法把弹窗撑回 80% 视口高度。
+            ui.set_max_height(modal_max_height);
+            egui::Frame::new()
+                .fill(MODAL_BACKGROUND)
+                .stroke(egui::Stroke::new(border_width, MODAL_BORDER))
+                .corner_radius(MODAL_BORDER_RADIUS)
+                .shadow(egui::Shadow {
+                    offset: [0, 8],
+                    blur: 24,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(160),
+                })
+                .show(ui, |ui| {
+                    ui.set_width(modal_content_width);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let (header_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(modal_content_width, header_height),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().line_segment(
+                        [header_rect.left_bottom(), header_rect.right_bottom()],
+                        egui::Stroke::new(1.0, MODAL_BORDER),
+                    );
 
-                        let close_width = 36.0_f32.min(header_rect.width());
-                        let close_rect = egui::Rect::from_min_max(
-                            egui::pos2(header_rect.right() - close_width, header_rect.top()),
-                            header_rect.max,
+                    let close_width = 36.0_f32.min(header_rect.width());
+                    let close_rect = egui::Rect::from_min_max(
+                        egui::pos2(header_rect.right() - close_width, header_rect.top()),
+                        header_rect.max,
+                    );
+                    let close_response = ui.interact(
+                        close_rect,
+                        egui::Id::new("new_tab_selector_close"),
+                        egui::Sense::click(),
+                    );
+                    let title_rect = egui::Rect::from_min_max(
+                        header_rect.min + egui::vec2(MODAL_PADDING, 0.0),
+                        egui::pos2(
+                            (close_rect.left() - 4.0).max(header_rect.left()),
+                            header_rect.bottom(),
+                        ),
+                    );
+                    if title_rect.width() >= 64.0 {
+                        let mut title_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(title_rect)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         );
-                        let close_response = ui.interact(
-                            close_rect,
-                            egui::Id::new("new_tab_selector_close"),
-                            egui::Sense::click(),
-                        );
-                        let title_rect = egui::Rect::from_min_max(
-                            header_rect.min + egui::vec2(MODAL_PADDING, 0.0),
-                            egui::pos2(
-                                (close_rect.left() - 4.0).max(header_rect.left()),
-                                header_rect.bottom(),
-                            ),
-                        );
-                        if title_rect.width() >= 64.0 {
-                            let mut title_ui = ui.new_child(
-                                egui::UiBuilder::new()
-                                    .max_rect(title_rect)
-                                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        title_ui.add(egui::Label::new(
+                            egui::RichText::new(crate::i18n::tr("新建标签页").into_owned())
+                                .size(14.0)
+                                .strong()
+                                .color(MODAL_TEXT),
+                        ));
+                    }
+                    ui.painter().text(
+                        close_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "×",
+                        egui::FontId::proportional(18.0),
+                        if close_response.hovered() {
+                            egui::Color32::WHITE
+                        } else {
+                            WEAK_TEXT
+                        },
+                    );
+                    close_clicked = close_response.clicked();
+
+                    if body_max_height <= 0.0 {
+                        return;
+                    }
+                    let body_content_width = (modal_content_width - body_padding * 2.0).max(0.0);
+                    if body_content_width <= 0.0 {
+                        return;
+                    }
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(body_padding as i8, 0))
+                        .show(ui, |ui| {
+                            let scroll_output = egui::ScrollArea::vertical()
+                                .max_width(body_content_width)
+                                .max_height(body_max_height)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    let content_width = ui.available_width();
+                                    ui.set_width(content_width);
+                                    ui.add_space(MODAL_PADDING);
+                                    draw_shell_section(ui, &self.shells, &mut action);
+                                    draw_section_divider(ui);
+                                    draw_ssh_section_collapsible(
+                                        ui,
+                                        connections,
+                                        &mut self.ssh_expanded,
+                                        &mut self.ssh_section_anim,
+                                        &mut action,
+                                        &mut section_animating,
+                                    );
+                                    draw_section_divider(ui);
+                                    draw_serial_section_collapsible(
+                                        ui,
+                                        &self.serial_scan,
+                                        &mut self.serial_baud_rate,
+                                        &mut self.serial_expanded,
+                                        &mut self.serial_section_anim,
+                                        &mut action,
+                                        &mut section_animating,
+                                    );
+                                    ui.add_space(MODAL_PADDING);
+                                });
+                            // 记录与分组高度无关的内容高度，供下一帧预测弹窗总高度。
+                            self.modal_fixed_content = Some(
+                                (scroll_output.content_size.y
+                                    - self.ssh_section_anim.height
+                                    - self.serial_section_anim.height)
+                                    .max(0.0),
                             );
-                            title_ui.add(egui::Label::new(
-                                egui::RichText::new(crate::i18n::tr("新建标签页").into_owned())
-                                    .size(14.0)
-                                    .strong()
-                                    .color(MODAL_TEXT),
-                            ));
-                        }
-                        ui.painter().text(
-                            close_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "×",
-                            egui::FontId::proportional(18.0),
-                            if close_response.hovered() {
-                                egui::Color32::WHITE
-                            } else {
-                                WEAK_TEXT
-                            },
-                        );
-                        close_clicked = close_response.clicked();
+                        });
+                });
+        });
 
-                        let body_max_height = (modal_content_max_height - header_height).max(0.0);
-                        if body_max_height <= 0.0 {
-                            return;
-                        }
-                        let body_content_width =
-                            (modal_content_width - body_padding * 2.0).max(0.0);
-                        if body_content_width <= 0.0 {
-                            return;
-                        }
-                        egui::Frame::new()
-                            .inner_margin(egui::Margin::symmetric(body_padding as i8, 0))
-                            .show(ui, |ui| {
-                                egui::ScrollArea::vertical()
-                                    .max_width(body_content_width)
-                                    .max_height(body_max_height)
-                                    .auto_shrink([false, true])
-                                    .show(ui, |ui| {
-                                        let content_width = ui.available_width();
-                                        ui.set_width(content_width);
-                                        ui.add_space(MODAL_PADDING);
-                                        draw_shell_section(ui, &self.shells, &mut action);
-                                        draw_section_divider(ui);
-                                        draw_ssh_section_collapsible(
-                                            ui,
-                                            connections,
-                                            &mut self.ssh_expanded,
-                                            &mut self.ssh_section_anim,
-                                            &mut action,
-                                            &mut section_animating,
-                                        );
-                                        draw_section_divider(ui);
-                                        draw_serial_section_collapsible(
-                                            ui,
-                                            &self.serial_scan,
-                                            &mut self.serial_baud_rate,
-                                            &mut self.serial_expanded,
-                                            &mut self.serial_section_anim,
-                                            &mut action,
-                                            &mut section_animating,
-                                        );
-                                        ui.add_space(MODAL_PADDING);
-                                    });
-                            });
-                    });
-            });
+        let outer_size = modal_response.response.rect.size();
+        if outer_size.x.is_finite() && outer_size.y.is_finite() {
+            self.modal_outer_size = Some(outer_size);
+        }
+        // 只有在布局前后分组高度一致时才学习“预测-实际”的常量误差：若布局过程中
+        // 内容高度变了（串口扫描结果到达、滚动条出现导致换行等），残差来自这次变化
+        // 而不是常量误差，学习它会让下一帧的预测反向偏移。
+        let heights_stable = (self.ssh_section_anim.height - heights_before_layout.0).abs() < 0.01
+            && (self.serial_section_anim.height - heights_before_layout.1).abs() < 0.01;
+        let fixed_stable = matches!(
+            (fixed_content_before, self.modal_fixed_content),
+            (Some(before), Some(after)) if (before - after).abs() < 0.01
+        );
+        if let (Some(predicted), true) = (predicted_modal_height, heights_stable && fixed_stable) {
+            let actual = modal_response.response.rect.height();
+            let residual = (actual - predicted).clamp(-4.0, 4.0);
+            self.modal_height_bias = (self.modal_height_bias + residual).clamp(-16.0, 16.0);
+        }
 
-        if section_animating || expand_state_before != (self.ssh_expanded, self.serial_expanded) {
-            // 展开/收起动画期间需要连续出帧；展开状态刚变化时 Area 的居中位置也要到
-            // 下一帧才会按新尺寸计算，因此同样立刻补一帧。
+        // 这一帧刚测到内容固定高度：下一帧就能用 fixed_pos 精确定位，立刻补一帧。
+        let fixed_measured_now =
+            fixed_content_before.is_none() && self.modal_fixed_content.is_some();
+        // 本帧点击切换了分组：立刻用本帧时间为起点启动动画。
+        // 若留给下一帧的 step() 去启动，点击帧和下一帧都不会有任何位移，
+        // 点击后要先静默约 50ms 才开始动，观感就是“不跟手”。
+        let expand_state_after = (self.ssh_expanded, self.serial_expanded);
+        if expand_state_before.0 != expand_state_after.0 {
+            self.ssh_section_anim.begin(expand_state_after.0, now);
+        }
+        if expand_state_before.1 != expand_state_after.1 {
+            self.serial_section_anim.begin(expand_state_after.1, now);
+        }
+        if section_animating || fixed_measured_now || expand_state_before != expand_state_after {
+            // 展开/收起动画期间需要连续出帧；展开状态刚变化时补一帧让动画立刻继续。
             self.repaint_requested = true;
         }
 
@@ -475,15 +583,91 @@ struct SectionAnimation {
     height: f32,
     /// 上一次完整布局测得的正文自然高度，作为展开目标。
     natural: f32,
+    /// 上一次绘制时的展开状态，用来识别用户刚刚折叠/展开。
+    expanded: bool,
+    /// 动画是否进行中；起始时刻用 egui 时间（秒），与帧间隔无关。
+    running: bool,
+    started_at: f64,
+    from: f32,
+    to: f32,
 }
 
-/// 展开/收起动画的时间常数：约 180ms 基本到位。
-const SECTION_ANIM_TAU: f32 = 0.06;
-/// 单帧最多推进的时间，避免久未出帧后第一帧跳过动画。
-const SECTION_ANIM_MAX_DT: f32 = 0.02;
+/// 展开/收起动画时长：固定墙钟时长，不随出帧频率变化。
+/// 取 120ms：折叠面板属于“紧跟随点击”的小范围过渡，180ms 会明显有滞后感。
+const SECTION_ANIM_DURATION: f64 = 0.12;
+
+/// 二次缓出：第一帧就有明显位移（约 1/6 时长走完 30%），
+/// 又不像四次方那样“一步跳到位”，60fps 下各帧位移递减得比较均匀。
+fn ease_out_quad(t: f32) -> f32 {
+    let inv = 1.0 - t;
+    1.0 - inv * inv
+}
+
+impl SectionAnimation {
+    /// 重新打开弹窗：直接按展开状态展示，不播放上一次的折叠动画。
+    fn reset_for_open(&mut self, expanded: bool) {
+        self.snap_to(expanded);
+    }
+
+    /// 不做动画，直接同步到目标展开状态（用于无法布局或重新打开的场合）。
+    fn snap_to(&mut self, expanded: bool) {
+        self.expanded = expanded;
+        self.height = if expanded { self.natural } else { 0.0 };
+        self.running = false;
+        self.started_at = 0.0;
+        self.from = self.height;
+        self.to = self.height;
+    }
+
+    /// 以当前高度为起点，开始向目标展开状态过渡。
+    /// `begin()` 与 `step()` 的状态翻转分支共用，避免两处逻辑分叉。
+    fn start_transition(&mut self, expanded: bool, now: f64) {
+        self.expanded = expanded;
+        self.started_at = now;
+        self.from = self.height;
+        self.to = if expanded { self.natural } else { 0.0 };
+        self.running = self.from != self.to;
+    }
+
+    /// 用户在本帧点击折叠/展开后立即以本帧时间为起点启动动画。
+    ///
+    /// `step()` 在布局之前运行，而折叠状态是布局过程中被点击改掉的，若等下一帧
+    /// 的 `step()` 才启动动画，点击帧和一整个 16ms 帧都会是“没动”的画面，
+    /// 表现为点击后先停顿约 50ms 再猛地缩完。这里把起点对齐到点击帧，
+    /// 下一帧就能按真实流逝时间计算进度。
+    fn begin(&mut self, expanded: bool, now: f64) {
+        self.start_transition(expanded, now);
+    }
+
+    /// 按墙钟时间推进到本帧应显示的高度。必须在布局（以及弹窗定位）之前调用，
+    /// 否则居中位置只能拿到上一帧的高度。
+    fn step(&mut self, expanded: bool, now: f64) {
+        if self.expanded != expanded {
+            self.start_transition(expanded, now);
+        } else if self.running && expanded && self.natural > 0.0 {
+            // 展开过程中正文自然高度变了（例如串口扫描结果到达）：跟随新目标，
+            // 否则动画会停在旧高度，再被“跟随自然高度”分支二次吸附跳一下。
+            self.to = self.natural;
+        }
+        if !self.running {
+            return;
+        }
+        let progress = ((now - self.started_at) / SECTION_ANIM_DURATION) as f32;
+        let progress = progress.clamp(0.0, 1.0);
+        self.height = self.from + (self.to - self.from) * ease_out_quad(progress);
+        if progress >= 1.0 {
+            self.height = self.to;
+            self.running = false;
+        }
+    }
+}
 
 /// 按动画高度裁剪并布局折叠区域正文：正文先按自然高度完整布局，再只露出动画高度，
 /// 外层只分配动画高度，因此弹窗框架会随内容平滑展开/收起，而不是跳变。
+///
+/// 动画进度按墙钟时间计算（而不是逐帧累加 dt）：本应用的帧由 request_redraw 驱动，
+/// 出帧间隔可能不均匀，逐帧累加会导致同样时长内走不完或一次跳过头；墙钟曲线在任何
+/// 帧率下都落在正确位置，动画总时长也固定。
 fn draw_animated_section_body(
     ui: &mut egui::Ui,
     expanded: bool,
@@ -505,6 +689,10 @@ fn draw_animated_section_body(
         if natural.is_finite() && natural > 0.0 {
             anim.natural = natural;
             anim.height = natural;
+            anim.expanded = expanded;
+            anim.running = false;
+            // 高度是这一帧才测出来的，弹窗定位用的是预测值，需要立刻再补一帧。
+            *animating = true;
             ui.allocate_rect(
                 egui::Rect::from_min_size(avail.min, egui::vec2(width, natural)),
                 egui::Sense::hover(),
@@ -513,37 +701,30 @@ fn draw_animated_section_body(
         return;
     }
 
-    let target = if expanded { anim.natural } else { 0.0 };
-    // 本应用的帧由 window.request_redraw() 驱动，egui 不会记录到“上一帧请求了重绘”，
-    // 因此 stable_dt 恒为 predicted_dt(1/60)。若某个输入事件额外触发一次同步渲染，
-    // 动画就会多推进一个固定步长，表现为忽快忽慢。这里改用真实墙钟间隔。
-    let dt = ui
-        .input(|input| input.unstable_dt)
-        .clamp(0.0, SECTION_ANIM_MAX_DT);
-    let ease = 1.0 - (-dt / SECTION_ANIM_TAU).exp();
-    anim.height += (target - anim.height) * ease;
-    if (target - anim.height).abs() < 0.5 {
-        anim.height = target;
-    } else {
-        *animating = true;
-    }
-
-    let visible = anim.height.max(0.0);
-    if visible <= 0.0 && !expanded {
-        return;
-    }
-
+    // 无论高度是否为 0 都要布局正文：完全收起时也靠这次布局测量自然高度，
+    // 这样第一次展开就有真实目标，而不是从 0 直接跳到完整高度。
     let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(avail));
-    // 无论 visible 是否为 0 都必须裁剪：高度为 0 时正文仍要布局（用于测量），
-    // 但不能被画出来。
-    let clip =
-        egui::Rect::from_min_size(avail.min, egui::vec2(width, visible)).intersect(ui.clip_rect());
+    let clip = egui::Rect::from_min_size(avail.min, egui::vec2(width, anim.height.max(0.0)))
+        .intersect(ui.clip_rect());
     body_ui.set_clip_rect(clip);
     add_contents(&mut body_ui);
     let natural = body_ui.min_rect().height();
     if natural.is_finite() && natural > 0.0 {
         anim.natural = natural;
+        // 展开且没有动画时跟随内容变化（例如串口扫描结果到达），避免停在旧高度。
+        // 展开状态刚在本帧翻转（anim.expanded 还是旧值）时不能跟随：动画要到下一帧
+        // 的 step() 才启动，这一帧直接吸附到自然高度就等于取消动画。
+        if expanded
+            && !anim.running
+            && anim.expanded == expanded
+            && (anim.height - natural).abs() >= 0.5
+        {
+            anim.height = natural;
+            *animating = true;
+        }
     }
+
+    let visible = anim.height.max(0.0);
     ui.allocate_rect(
         egui::Rect::from_min_size(avail.min, egui::vec2(width, visible)),
         egui::Sense::hover(),
@@ -1220,9 +1401,25 @@ fn load_shell_candidates() -> Vec<PathBuf> {
             contents.as_deref(),
             Some(OsStr::new(&default_shell)),
             is_executable_file,
-        );
+        )
+        .into_iter()
+        .filter(|path| !is_restricted_shell(path))
+        .collect();
         deduplicate_shell_candidates_by_name(candidates)
     }
+}
+
+/// 受限 shell 不能作为交互式终端使用：rbash 会拒绝重定向输出（应用注入的
+/// bash rc 需要写 /dev/null）并拒绝包含 "/" 的命令名，选中后直接报错退出。
+/// 其它受限模式（rksh 等）同理，按显示名统一剔除。
+///
+/// 只按 `/etc/shells` 条目的文件名过滤，覆盖的是独立的受限 shell 可执行文件；
+/// `bash -r` 这类启动参数无法从列表里看出来，也不在本函数职责内。
+#[cfg(not(windows))]
+fn is_restricted_shell(path: &Path) -> bool {
+    let name = shell_display_name(path).to_ascii_lowercase();
+    matches!(name.as_str(), "rbash" | "rksh")
+        || name.trim_end_matches(|c: char| c.is_ascii_digit()) == "rbash"
 }
 
 /// `/etc/shells` 常同时列出 `/bin/sh`、`/usr/bin/sh` 这类同名的多个路径，

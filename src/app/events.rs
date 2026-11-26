@@ -37,6 +37,20 @@ impl ApplicationHandler<UserEvent> for App {
             }
             next_wake = Some(now + Duration::from_millis(if playback_active { 16 } else { 32 }));
         }
+        // 新建标签页弹窗的折叠动画按墙钟时间推进，需要稳定的出帧节奏：
+        // 只在渲染帧里 request_redraw 依赖 RedrawRequested 的补发，实测会出现
+        // 几十到上百毫秒的空档；这里在事件循环层直接按 16ms 唤醒并补帧。
+        // 若最近 500ms 根本没有渲染（窗口不可见等原因），就不再补帧：
+        // 动画状态只能靠渲染推进，继续空转只会白白耗电。
+        if self.new_tab_selector.is_animating()
+            && now.duration_since(self.last_render_time) < Duration::from_millis(500)
+        {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            let anim_wake = now + Duration::from_millis(16);
+            next_wake = Some(next_wake.map_or(anim_wake, |current| current.min(anim_wake)));
+        }
         if x11_ime_reattach::needs_attention() {
             // 输入法尚未接上：短间隔醒来重试，避免按键被 XIM 吞掉后没人触发恢复。
             // 取较早的 deadline，不能把动画/滚动的下一次唤醒推迟到 300ms 之后。
