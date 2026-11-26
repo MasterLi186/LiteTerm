@@ -230,7 +230,8 @@ struct SshSnapshotSource {
 
 impl SshSnapshotSource {
     fn connect(params: &crate::ssh::ConnectionParams) -> Result<Self, String> {
-        crate::ssh::connect_authenticated(params).map(|session| Self { session })
+        crate::ssh::connect_authenticated(params, crate::ssh::DEFAULT_KEEPALIVE_INTERVAL_SECS)
+            .map(|session| Self { session })
     }
 }
 

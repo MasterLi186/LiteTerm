@@ -13,6 +13,8 @@ use crate::smart_completion::CompletionSessionKey;
 const SSH_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_IO_TIMEOUT_MS: u32 = 10_000;
 const SSH_PENDING_WRITE_CAPACITY: usize = 32;
+/// 非交互式连接（SFTP 工作线程、远端监控）使用的默认保活间隔。
+pub(crate) const DEFAULT_KEEPALIVE_INTERVAL_SECS: u32 = 30;
 
 trait SessionTimeoutControl {
     fn timeout_ms(&self) -> u32;
@@ -364,7 +366,10 @@ impl ShellBootstrap for Ssh2Bootstrap<'_> {
     }
 }
 
-pub(crate) fn connect_authenticated(params: &ConnectionParams) -> Result<ssh2::Session, String> {
+pub(crate) fn connect_authenticated(
+    params: &ConnectionParams,
+    keepalive_interval_secs: u32,
+) -> Result<ssh2::Session, String> {
     log::info!(
         "SSH connecting to {}:{} user={} auth={}",
         params.host,
@@ -435,7 +440,12 @@ pub(crate) fn connect_authenticated(params: &ConnectionParams) -> Result<ssh2::S
         ));
     }
 
-    session.set_keepalive(true, 30);
+    // libssh2 只是配置保活间隔，真正的保活包要在 I/O 循环里周期性调用
+    // keepalive_send 才会发出去（见 connect 的 I/O 线程）。
+    if keepalive_interval_secs > 0 {
+        session.set_keepalive(true, keepalive_interval_secs);
+        log::info!("SSH keepalive 已启用：每 {keepalive_interval_secs}s");
+    }
     log::info!("SSH auth ok");
     Ok(session)
 }
@@ -690,8 +700,9 @@ pub fn connect(
     cols: u16,
     rows: u16,
     integration: Option<CompletionSessionKey>,
+    keepalive_interval_secs: u32,
 ) -> Result<SshHandle, String> {
-    let session = connect_authenticated(params)?;
+    let session = connect_authenticated(params, keepalive_interval_secs)?;
 
     let (mut channel, bash_runtime) = {
         let mut bootstrap = Ssh2Bootstrap::new(&session, cols, rows);
@@ -724,6 +735,9 @@ pub fn connect(
     // SSH I/O thread: reads channel → pipe, reads mpsc → channel
     std::thread::spawn(move || {
         session.set_blocking(false);
+        // 首次保活在一个间隔之后发送；0 表示用户关闭了应用层保活。
+        let mut next_keepalive = (keepalive_interval_secs > 0)
+            .then(|| Instant::now() + Duration::from_secs(u64::from(keepalive_interval_secs)));
         let mut buf = [0u8; 4096];
         let mut output_pending: Option<Vec<u8>> = None;
         let mut writes = VecDeque::<PendingChannelWrite>::new();
@@ -821,6 +835,30 @@ pub fn connect(
                     channel.request_pty_size(new_cols as u32, new_rows as u32, None, None)
                 {
                     log::warn!("SSH resize failed: {error}");
+                }
+            }
+            // 周期性发送 keepalive：VPN/NAT 的空闲超时（通常 5~10 分钟）会把
+            // 长时间没有数据的 SSH 连接踢掉，保活包能持续刷新链路状态。
+            if let Some(deadline) = next_keepalive {
+                if Instant::now() >= deadline {
+                    match session.keepalive_send() {
+                        Ok(seconds) => {
+                            // libssh2 返回距离下次应发送的秒数。
+                            next_keepalive = Some(
+                                Instant::now() + Duration::from_secs(u64::from(seconds.max(1))),
+                            );
+                        }
+                        Err(error) => {
+                            let io_error = std::io::Error::from(error);
+                            if io_error.kind() == std::io::ErrorKind::WouldBlock {
+                                // 非阻塞会话偶发 EAGAIN：稍后重试，不判定断线。
+                                next_keepalive = Some(Instant::now() + Duration::from_secs(1));
+                            } else {
+                                failure = Some(format!("SSH keepalive 失败: {io_error}"));
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             std::thread::sleep(Duration::from_millis(1));

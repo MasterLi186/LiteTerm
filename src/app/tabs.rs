@@ -138,9 +138,17 @@ impl App {
         session: CompletionSessionKey,
     ) {
         let (cols, rows) = self.grid_size_for_tab_pane(&tab_id, &pane_id);
+        // 应用层保活：间隔来自设置（0 表示禁用），用于防止 VPN/NAT 空闲超时断连。
+        let keepalive_interval_secs = self.settings.ssh.keepalive_interval_secs;
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let result = crate::ssh::connect(&params, cols, rows, Some(session.clone()));
+            let result = crate::ssh::connect(
+                &params,
+                cols,
+                rows,
+                Some(session.clone()),
+                keepalive_interval_secs,
+            );
             let event = UserEvent::SshReady {
                 tab_id,
                 pane_id,

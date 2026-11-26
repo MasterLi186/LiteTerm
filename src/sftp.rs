@@ -742,7 +742,8 @@ pub fn sort_entries(entries: &mut [FileEntry]) {
 fn connect_sftp(
     params: &crate::ssh::ConnectionParams,
 ) -> Result<(ssh2::Session, ssh2::Sftp, String), String> {
-    let session = crate::ssh::connect_authenticated(params)?;
+    let session =
+        crate::ssh::connect_authenticated(params, crate::ssh::DEFAULT_KEEPALIVE_INTERVAL_SECS)?;
     let sftp = session
         .sftp()
         .map_err(|e| format!("SFTP 子系统启动失败: {e}"))?;

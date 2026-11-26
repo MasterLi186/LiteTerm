@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ssh::ConnectionParams;
 
@@ -461,7 +461,10 @@ fn run_tunnel_worker(
     }
 
     let connection = resolve_tunnel_connection(&spec.connection)?;
-    let session = crate::ssh::connect_authenticated(&connection)?;
+    let session = crate::ssh::connect_authenticated(
+        &connection,
+        crate::ssh::DEFAULT_KEEPALIVE_INTERVAL_SECS,
+    )?;
     if shutdown_requested(command_rx) {
         send_status(event_tx, id, generation, TunnelStatus::Closing);
         return Ok(());
@@ -477,6 +480,9 @@ fn run_tunnel_worker(
 
     let mut clients = Vec::<TunnelClient>::new();
     let mut pending_opens = VecDeque::<PendingOpen>::new();
+    // 长时间没有转发的隧道也要定期保活，否则会被 VPN/NAT 的空闲超时断开。
+    let mut next_keepalive = Instant::now()
+        + Duration::from_secs(u64::from(crate::ssh::DEFAULT_KEEPALIVE_INTERVAL_SECS));
     loop {
         if shutdown_requested(command_rx) {
             send_status(event_tx, id, generation, TunnelStatus::Closing);
@@ -496,6 +502,23 @@ fn run_tunnel_worker(
                 Err(error) => {
                     log::warn!("SSH tunnel client closed after I/O error: {error}");
                     clients.swap_remove(index);
+                }
+            }
+        }
+
+        if Instant::now() >= next_keepalive {
+            match session.keepalive_send() {
+                Ok(seconds) => {
+                    next_keepalive =
+                        Instant::now() + Duration::from_secs(u64::from(seconds.max(1)));
+                }
+                Err(error) => {
+                    let io_error = std::io::Error::from(error);
+                    if io_error.kind() == std::io::ErrorKind::WouldBlock {
+                        next_keepalive = Instant::now() + Duration::from_secs(1);
+                    } else {
+                        return Err(format!("SSH 隧道保活失败: {io_error}"));
+                    }
                 }
             }
         }
