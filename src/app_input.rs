@@ -883,9 +883,12 @@ pub(super) fn logical_to_physical_pane_rect(
     pixels_per_point: f32,
 ) -> PaneRenderRect {
     let scale = sanitize_pixels_per_point(pixels_per_point);
+    // 终端字形按物理像素 1:1 栅格化，图集采样器是线性过滤；pane 原点一旦落在半像素上
+    // （Linux 的 egui zoom 1.15 会让 324 逻辑点的侧边栏落到 372.6 物理像素），
+    // 每个字形都会被双线性重采样一次，整屏文字发虚。这里把原点吸附到整数物理像素。
     PaneRenderRect::new(
-        logical.left() * scale,
-        logical.top() * scale,
+        (logical.left() * scale).round(),
+        (logical.top() * scale).round(),
         logical.width() * scale,
         logical.height() * scale,
     )
