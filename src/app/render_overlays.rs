@@ -500,16 +500,16 @@ impl App {
                     if item(
                         ui,
                         if maximized {
-                            "还原面板"
+                            "还原面板 (X)"
                         } else {
-                            "最大化面板"
+                            "最大化面板 (X)"
                         },
                         maximize_enabled,
                     ) {
                         term_menu_action = Some("toggle_maximize");
                         close = true;
                     }
-                    if item(ui, "关闭面板", true) {
+                    if item(ui, "关闭面板 (C)", true) {
                         term_menu_action = Some("close_pane");
                         close = true;
                     }

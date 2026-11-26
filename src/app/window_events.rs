@@ -939,7 +939,8 @@ impl App {
                     return;
                 }
                 // 右键菜单打开时支持键盘选择：H 水平分屏、V 垂直分屏（兼容
-                // Terminator 的 O/E 加速键），Esc 关闭菜单。
+                // Terminator 的 O/E 加速键）、X 最大化/还原面板、C 关闭当前面板，
+                // Esc 关闭菜单；与菜单标签里的提示一致。
                 if self.show_terminal_menu {
                     let close_menu = matches!(&event.logical_key, Key::Named(NamedKey::Escape));
                     // 只接受无 Ctrl/Alt/Super 的普通按键，避免误触其它组合键。
@@ -947,30 +948,40 @@ impl App {
                     let plain_key = !menu_modifiers.control_key()
                         && !menu_modifiers.alt_key()
                         && !menu_modifiers.super_key();
-                    let direction = if plain_key {
+                    let menu_action = if plain_key {
                         match &event.logical_key {
                             Key::Character(text)
                                 if text.eq_ignore_ascii_case("h")
                                     || text.eq_ignore_ascii_case("o") =>
                             {
-                                Some(SplitDirection::Horizontal)
+                                Some("split_h")
                             }
                             Key::Character(text)
                                 if text.eq_ignore_ascii_case("v")
                                     || text.eq_ignore_ascii_case("e") =>
                             {
-                                Some(SplitDirection::Vertical)
+                                Some("split_v")
+                            }
+                            Key::Character(text) if text.eq_ignore_ascii_case("x") => {
+                                Some("toggle_maximize")
+                            }
+                            Key::Character(text) if text.eq_ignore_ascii_case("c") => {
+                                Some("close_pane")
                             }
                             _ => None,
                         }
                     } else {
                         None
                     };
-                    if close_menu || direction.is_some() {
+                    if close_menu || menu_action.is_some() {
                         self.show_terminal_menu = false;
-                        if let Some(direction) = direction {
-                            if self.active_tab_supports_split() {
-                                self.split_active_terminal(direction);
+                        if let Some(action) = menu_action {
+                            // 分屏与菜单项一样要求当前标签支持分屏；
+                            // 最大化/关闭面板自身另有条件检查。
+                            if !matches!(action, "split_h" | "split_v")
+                                || self.active_tab_supports_split()
+                            {
+                                self.handle_terminal_context_action(Some(action));
                             }
                         }
                         self.do_render();
