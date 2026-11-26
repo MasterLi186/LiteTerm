@@ -514,8 +514,11 @@ fn draw_animated_section_body(
     }
 
     let target = if expanded { anim.natural } else { 0.0 };
+    // 本应用的帧由 window.request_redraw() 驱动，egui 不会记录到“上一帧请求了重绘”，
+    // 因此 stable_dt 恒为 predicted_dt(1/60)。若某个输入事件额外触发一次同步渲染，
+    // 动画就会多推进一个固定步长，表现为忽快忽慢。这里改用真实墙钟间隔。
     let dt = ui
-        .input(|input| input.stable_dt)
+        .input(|input| input.unstable_dt)
         .clamp(0.0, SECTION_ANIM_MAX_DT);
     let ease = 1.0 - (-dt / SECTION_ANIM_TAU).exp();
     anim.height += (target - anim.height) * ease;
@@ -1206,16 +1209,31 @@ where
 fn load_shell_candidates() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
-        return deduplicate_windows_shell_candidates(crate::terminal::local_shell_paths());
+        deduplicate_windows_shell_candidates(crate::terminal::local_shell_paths())
     }
 
-    let contents = std::fs::read_to_string(SHELLS_FILE).ok();
-    let default_shell = crate::terminal::default_shell_path();
-    shell_candidates_with_fallback(
-        contents.as_deref(),
-        Some(OsStr::new(&default_shell)),
-        is_executable_file,
-    )
+    #[cfg(not(windows))]
+    {
+        let contents = std::fs::read_to_string(SHELLS_FILE).ok();
+        let default_shell = crate::terminal::default_shell_path();
+        let candidates = shell_candidates_with_fallback(
+            contents.as_deref(),
+            Some(OsStr::new(&default_shell)),
+            is_executable_file,
+        );
+        deduplicate_shell_candidates_by_name(candidates)
+    }
+}
+
+/// `/etc/shells` 常同时列出 `/bin/sh`、`/usr/bin/sh` 这类同名的多个路径，
+/// 按 basename 展示时会出现重复按钮；这里按显示名去重并保留首次出现的路径。
+#[cfg(not(windows))]
+fn deduplicate_shell_candidates_by_name(shells: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    shells
+        .into_iter()
+        .filter(|path| seen.insert(shell_display_name(path).to_ascii_lowercase()))
+        .collect()
 }
 
 #[cfg(windows)]
