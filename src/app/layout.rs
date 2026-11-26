@@ -175,8 +175,10 @@ impl App {
         let row = ((y as f32 - rect.y).max(0.0) / cell_height).floor() as usize;
         Some((
             col.min(usize::from(cols.saturating_sub(1))),
-            // 指针落到底部之外时要夹到最后一个可见行；rows 本身是越界索引。
-            row.min(usize::from(rows.saturating_sub(1))),
+            // 渲染器把网格首行画在视口第 1 行（第 0 行留作字形上伸余量），
+            // 所以可视行号范围是 0..=rows，最后一行文字落在视觉行 rows；
+            // 夹到 rows-1 会让最底下一行永远映射成倒数第二行。
+            row.min(usize::from(rows)),
         ))
     }
 
