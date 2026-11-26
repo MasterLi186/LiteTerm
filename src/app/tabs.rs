@@ -84,8 +84,11 @@ impl App {
         action: new_tab_selector::NewTabAction,
         connections: &[sidebar::SshConnection],
     ) -> bool {
+        // 弹窗内容高度变化（展开/折叠分组、串口扫描结果）后需要立即补一帧，
+        // 让 Area 按新尺寸重新居中；否则要等下一次输入事件或光标闪烁。
+        let repaint_requested = self.new_tab_selector.take_repaint_request();
         match action {
-            new_tab_selector::NewTabAction::None => false,
+            new_tab_selector::NewTabAction::None => repaint_requested,
             new_tab_selector::NewTabAction::Close => {
                 self.new_tab_selector.close();
                 true

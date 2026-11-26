@@ -121,7 +121,13 @@ impl App {
                 }
             },
             UserEvent::SerialPorts { generation, result } => {
-                let _ = self.new_tab_selector.apply_serial_scan(generation, result);
+                if self.new_tab_selector.apply_serial_scan(generation, result) {
+                    // 扫描结果会改变新建标签页弹窗里的串口列表（进而改变弹窗高度），
+                    // 必须立刻重绘，不能等下一次鼠标事件或光标闪烁。
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
             }
             UserEvent::SerialReady {
                 tab_id,

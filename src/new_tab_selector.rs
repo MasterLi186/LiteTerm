@@ -88,6 +88,12 @@ pub struct NewTabSelector {
     serial_baud_rate: u32,
     ssh_expanded: bool,
     serial_expanded: bool,
+    ssh_section_anim: SectionAnimation,
+    serial_section_anim: SectionAnimation,
+    /// 展开/折叠分组或串口扫描结果改变了弹窗内容高度后，需要立即再渲染一帧：
+    /// Area 的居中位置按上一帧尺寸计算，没有这一帧就要等下一次鼠标事件或光标闪烁，
+    /// 表现为“列表先动、窗口过一会儿才跟上”。
+    repaint_requested: bool,
 }
 
 impl Default for NewTabSelector {
@@ -106,17 +112,29 @@ impl NewTabSelector {
             serial_baud_rate: crate::serial::DEFAULT_BAUD_RATE,
             ssh_expanded: true,
             serial_expanded: true,
+            ssh_section_anim: SectionAnimation::default(),
+            serial_section_anim: SectionAnimation::default(),
+            repaint_requested: false,
         }
     }
 
     pub fn open(&mut self) -> u64 {
         self.shells = load_shell_candidates();
         self.visible = true;
+        // 重新打开时按首帧实测高度直接展示，不播放上一次留下的折叠动画。
+        self.ssh_section_anim = SectionAnimation::default();
+        self.serial_section_anim = SectionAnimation::default();
         self.begin_serial_scan()
     }
 
     pub fn close(&mut self) {
         self.visible = false;
+        self.repaint_requested = false;
+    }
+
+    /// 取走“需要立即重绘一帧”的请求（弹窗内容高度变化后重新居中）。
+    pub fn take_repaint_request(&mut self) -> bool {
+        std::mem::take(&mut self.repaint_requested)
     }
 
     pub fn is_open(&self) -> bool {
@@ -141,6 +159,10 @@ impl NewTabSelector {
             Ok(ports) => SerialScanState::Ready(ports),
             Err(error) => SerialScanState::Error(error),
         };
+        if self.visible {
+            // 串口列表长度变化会改变弹窗高度，需要再渲染一帧完成重新居中。
+            self.repaint_requested = true;
+        }
         true
     }
 
@@ -184,6 +206,8 @@ impl NewTabSelector {
 
         let mut action = NewTabAction::None;
         let mut close_clicked = false;
+        let expand_state_before = (self.ssh_expanded, self.serial_expanded);
+        let mut section_animating = false;
         egui::Area::new(modal_layer.id)
             .order(modal_layer.order)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -195,6 +219,10 @@ impl NewTabSelector {
                 let border_width = 1.0_f32.min(modal_width / 2.0);
                 let modal_content_width = (modal_width - border_width * 2.0).max(0.0);
                 let body_padding = MODAL_PADDING.min(modal_content_width / 2.0).floor();
+                // Area 内容区的 max_rect 取自上一帧的浮层尺寸：折叠分组把弹窗缩小后，
+                // 若不再抬高上限，ScrollArea 的可视高度会一直停留在旧的小尺寸上，
+                // 展开分组时无法把弹窗撑回 80% 视口高度。
+                ui.set_max_height(modal_max_height);
                 egui::Frame::new()
                     .fill(MODAL_BACKGROUND)
                     .stroke(egui::Stroke::new(border_width, MODAL_BORDER))
@@ -284,26 +312,36 @@ impl NewTabSelector {
                                         ui.set_width(content_width);
                                         ui.add_space(MODAL_PADDING);
                                         draw_shell_section(ui, &self.shells, &mut action);
-                                        ui.add_space(20.0);
+                                        draw_section_divider(ui);
                                         draw_ssh_section_collapsible(
                                             ui,
                                             connections,
                                             &mut self.ssh_expanded,
+                                            &mut self.ssh_section_anim,
                                             &mut action,
+                                            &mut section_animating,
                                         );
-                                        ui.add_space(20.0);
+                                        draw_section_divider(ui);
                                         draw_serial_section_collapsible(
                                             ui,
                                             &self.serial_scan,
                                             &mut self.serial_baud_rate,
                                             &mut self.serial_expanded,
+                                            &mut self.serial_section_anim,
                                             &mut action,
+                                            &mut section_animating,
                                         );
                                         ui.add_space(MODAL_PADDING);
                                     });
                             });
                     });
             });
+
+        if section_animating || expand_state_before != (self.ssh_expanded, self.serial_expanded) {
+            // 展开/收起动画期间需要连续出帧；展开状态刚变化时 Area 的居中位置也要到
+            // 下一帧才会按新尺寸计算，因此同样立刻补一帧。
+            self.repaint_requested = true;
+        }
 
         if backdrop_clicked || close_clicked {
             return self.apply_action(NewTabAction::Close);
@@ -339,6 +377,18 @@ fn modal_geometry(viewport: egui::Rect) -> Option<ModalGeometry> {
 
 fn modal_root_sense() -> egui::Sense {
     egui::Sense::click()
+}
+
+/// Shell / SSH / 串口三大类之间的分隔线。
+fn draw_section_divider(ui: &mut egui::Ui) {
+    ui.add_space(16.0);
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().line_segment(
+        [rect.left_center(), rect.right_center()],
+        egui::Stroke::new(1.0, MODAL_BORDER),
+    );
+    ui.add_space(16.0);
 }
 
 fn draw_section_header(ui: &mut egui::Ui, marker: &str, marker_color: egui::Color32, label: &str) {
@@ -418,6 +468,85 @@ fn draw_collapsible_section_header(
     }
 }
 
+/// 折叠区域的展开/收起动画状态（逻辑像素）。
+#[derive(Clone, Copy, Debug, Default)]
+struct SectionAnimation {
+    /// 当前显示的正文高度。
+    height: f32,
+    /// 上一次完整布局测得的正文自然高度，作为展开目标。
+    natural: f32,
+}
+
+/// 展开/收起动画的时间常数：约 180ms 基本到位。
+const SECTION_ANIM_TAU: f32 = 0.06;
+/// 单帧最多推进的时间，避免久未出帧后第一帧跳过动画。
+const SECTION_ANIM_MAX_DT: f32 = 0.02;
+
+/// 按动画高度裁剪并布局折叠区域正文：正文先按自然高度完整布局，再只露出动画高度，
+/// 外层只分配动画高度，因此弹窗框架会随内容平滑展开/收起，而不是跳变。
+fn draw_animated_section_body(
+    ui: &mut egui::Ui,
+    expanded: bool,
+    anim: &mut SectionAnimation,
+    animating: &mut bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let avail = ui.available_rect_before_wrap();
+    let width = avail.width();
+    if !(width.is_finite() && width > 0.0) {
+        return;
+    }
+
+    // 首次布局（尚未测得自然高度）：直接完整展示，避免打开弹窗时从 0 开始展开。
+    if expanded && anim.natural <= 0.0 {
+        let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(avail));
+        add_contents(&mut body_ui);
+        let natural = body_ui.min_rect().height();
+        if natural.is_finite() && natural > 0.0 {
+            anim.natural = natural;
+            anim.height = natural;
+            ui.allocate_rect(
+                egui::Rect::from_min_size(avail.min, egui::vec2(width, natural)),
+                egui::Sense::hover(),
+            );
+        }
+        return;
+    }
+
+    let target = if expanded { anim.natural } else { 0.0 };
+    let dt = ui
+        .input(|input| input.stable_dt)
+        .clamp(0.0, SECTION_ANIM_MAX_DT);
+    let ease = 1.0 - (-dt / SECTION_ANIM_TAU).exp();
+    anim.height += (target - anim.height) * ease;
+    if (target - anim.height).abs() < 0.5 {
+        anim.height = target;
+    } else {
+        *animating = true;
+    }
+
+    let visible = anim.height.max(0.0);
+    if visible <= 0.0 && !expanded {
+        return;
+    }
+
+    let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(avail));
+    // 无论 visible 是否为 0 都必须裁剪：高度为 0 时正文仍要布局（用于测量），
+    // 但不能被画出来。
+    let clip =
+        egui::Rect::from_min_size(avail.min, egui::vec2(width, visible)).intersect(ui.clip_rect());
+    body_ui.set_clip_rect(clip);
+    add_contents(&mut body_ui);
+    let natural = body_ui.min_rect().height();
+    if natural.is_finite() && natural > 0.0 {
+        anim.natural = natural;
+    }
+    ui.allocate_rect(
+        egui::Rect::from_min_size(avail.min, egui::vec2(width, visible)),
+        egui::Sense::hover(),
+    );
+}
+
 fn draw_shell_section(ui: &mut egui::Ui, shells: &[PathBuf], action: &mut NewTabAction) {
     draw_section_header(ui, "$", ACCENT_CYAN, "Shell 环境");
     ui.add_space(8.0);
@@ -431,44 +560,46 @@ fn draw_shell_section(ui: &mut egui::Ui, shells: &[PathBuf], action: &mut NewTab
         return;
     }
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-        ui.spacing_mut().button_padding = egui::vec2(12.0, 6.0);
-        for shell in shells {
-            let label = shell_display_name(shell);
-            let text_width = ui
-                .painter()
-                .layout_no_wrap(
-                    label.to_string(),
-                    egui::FontId::proportional(12.0),
-                    MODAL_TEXT,
-                )
-                .size()
-                .x;
-            let response = ui
-                .scope(|ui| {
-                    let visuals = &mut ui.style_mut().visuals.widgets;
-                    visuals.inactive.weak_bg_fill = SHELL_BACKGROUND;
-                    visuals.inactive.bg_stroke = egui::Stroke::new(1.0, MODAL_BORDER);
-                    visuals.inactive.fg_stroke = egui::Stroke::new(1.0, MODAL_TEXT);
-                    visuals.hovered.weak_bg_fill = SHELL_BACKGROUND;
-                    visuals.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
-                    visuals.hovered.fg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
-                    visuals.active.weak_bg_fill = SHELL_BACKGROUND;
-                    visuals.active.bg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
-                    visuals.active.fg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
-                    ui.add(
-                        egui::Button::new(label)
-                            .wrap_mode(egui::TextWrapMode::Extend)
-                            .min_size(egui::vec2(text_width + 24.0, 28.0))
-                            .corner_radius(4.0),
+    // 按钮样式作用域必须包住整个 horizontal_wrapped 行：若每个按钮各自 ui.scope，
+    // 按钮宽度不会参与外层换行计算，一排按钮会越过弹窗宽度，把 Body 和整个弹窗撑宽，
+    // 导致标题栏（和右上角关闭按钮）与弹窗真实右边缘错位。
+    ui.scope(|ui| {
+        let visuals = &mut ui.style_mut().visuals.widgets;
+        visuals.inactive.weak_bg_fill = SHELL_BACKGROUND;
+        visuals.inactive.bg_stroke = egui::Stroke::new(1.0, MODAL_BORDER);
+        visuals.inactive.fg_stroke = egui::Stroke::new(1.0, MODAL_TEXT);
+        visuals.hovered.weak_bg_fill = SHELL_BACKGROUND;
+        visuals.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
+        visuals.hovered.fg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
+        visuals.active.weak_bg_fill = SHELL_BACKGROUND;
+        visuals.active.bg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
+        visuals.active.fg_stroke = egui::Stroke::new(1.0, ACCENT_CYAN);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            ui.spacing_mut().button_padding = egui::vec2(12.0, 6.0);
+            for shell in shells {
+                let label = shell_display_name(shell);
+                let text_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        label.to_string(),
+                        egui::FontId::proportional(12.0),
+                        MODAL_TEXT,
                     )
-                })
-                .inner;
-            if response.clicked() {
-                *action = NewTabAction::OpenShell(shell.clone());
+                    .size()
+                    .x;
+                let response = ui.add(
+                    egui::Button::new(label)
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .min_size(egui::vec2(text_width + 24.0, 28.0))
+                        .corner_radius(4.0),
+                );
+                if response.clicked() {
+                    *action = NewTabAction::OpenShell(shell.clone());
+                }
             }
-        }
+        });
     });
 }
 
@@ -482,14 +613,15 @@ fn draw_ssh_section_collapsible(
     ui: &mut egui::Ui,
     connections: &[SshConnection],
     expanded: &mut bool,
+    anim: &mut SectionAnimation,
     action: &mut NewTabAction,
+    animating: &mut bool,
 ) {
     draw_collapsible_section_header(ui, "@", ACCENT_GREEN, "SSH 连接", expanded);
-    if !*expanded {
-        return;
-    }
-    ui.add_space(8.0);
-    draw_ssh_section_body(ui, connections, action);
+    draw_animated_section_body(ui, *expanded, anim, animating, |ui| {
+        ui.add_space(8.0);
+        draw_ssh_section_body(ui, connections, action);
+    });
 }
 
 fn draw_ssh_section_body(
@@ -634,14 +766,15 @@ fn draw_serial_section_collapsible(
     scan: &SerialScanState,
     baud_rate: &mut u32,
     expanded: &mut bool,
+    anim: &mut SectionAnimation,
     action: &mut NewTabAction,
+    animating: &mut bool,
 ) {
     draw_collapsible_section_header(ui, "~", ACCENT_YELLOW, "串口设备", expanded);
-    if !*expanded {
-        return;
-    }
-    ui.add_space(8.0);
-    draw_serial_section_body(ui, scan, baud_rate, action);
+    draw_animated_section_body(ui, *expanded, anim, animating, |ui| {
+        ui.add_space(8.0);
+        draw_serial_section_body(ui, scan, baud_rate, action);
+    });
 }
 
 fn draw_serial_section_body(
