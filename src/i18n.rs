@@ -158,7 +158,6 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "输入 SSH 密码" => "Enter SSH password",
         "全选" => "Select all",
         "清空缓存" => "Clear scrollback",
-        "搜索 (Ctrl+F)" => "Search (Ctrl+F)",
         "终端主题" => "Terminal theme",
         "⏹ 停止录制日志" => "⏹ Stop log recording",
         "⏺ 开始录制日志" => "⏺ Start log recording",

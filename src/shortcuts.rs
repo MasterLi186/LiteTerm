@@ -192,7 +192,8 @@ impl Default for ShortcutSettings {
         Self {
             new_tab: "Ctrl+Shift+T".to_string(),
             close_tab: "Ctrl+Shift+W".to_string(),
-            search: "Ctrl+F".to_string(),
+            // 不能占用 Ctrl+F：vim 等全屏程序里它是翻页键，需要透传给终端。
+            search: "Ctrl+Shift+F".to_string(),
             copy: "Ctrl+Shift+C".to_string(),
             paste: "Ctrl+Shift+V".to_string(),
             next_tab: "Ctrl+Tab".to_string(),

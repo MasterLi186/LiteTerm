@@ -773,23 +773,6 @@
     }
 
     #[test]
-    fn ctrl_or_command_f_is_the_primary_find_shortcut() {
-        use winit::keyboard::{Key, ModifiersState};
-
-        let key = Key::Character("f".into());
-        assert!(super::is_primary_find_shortcut(&key, ModifiersState::CONTROL));
-        assert!(super::is_primary_find_shortcut(&key, ModifiersState::SUPER));
-        assert!(!super::is_primary_find_shortcut(
-            &key,
-            ModifiersState::CONTROL | ModifiersState::SHIFT
-        ));
-        assert!(!super::is_primary_find_shortcut(
-            &Key::Character("g".into()),
-            ModifiersState::CONTROL
-        ));
-    }
-
-    #[test]
     #[should_panic(expected = "禁止同步渲染或 present")]
     fn terminal_menu_executor_rejects_render_now_and_present_work() {
         let mut transition = super::terminal_context_menu_press_transition((321.5, 123.25), 1.0);

@@ -216,19 +216,8 @@ impl App {
             return;
         }
 
-        if keyboard_route == Some(KeyboardInputRoute::App)
-            && !has_dialog
-            && self
-                .tab_manager
-                .active()
-                .is_some_and(|tab| tab.tab_type.is_terminal())
-            && matches!(&event, WindowEvent::KeyboardInput { event, .. }
-                if is_primary_find_shortcut(&event.logical_key, self.modifiers.state()))
-        {
-            self.open_active_tab_search();
-            self.do_render();
-            return;
-        }
+        // 注意：搜索快捷键只走下方可配置的 ShortcutSettings::Search 匹配，
+        // 不再硬编码拦截 Ctrl/Cmd+F —— vim 等程序里 Ctrl+F 是翻页，必须放行。
 
         match &event {
             WindowEvent::MouseInput {

@@ -364,6 +364,12 @@ impl App {
             // 菜单打开时可直接按 O/E 选择分屏方向，标签里给出提示。
             let horizontal_menu_label = format!("{horizontal_split_label} (H)");
             let vertical_menu_label = format!("{vertical_split_label} (V)");
+            // 搜索快捷键可能被用户改过（默认 Ctrl+Shift+F），菜单提示跟随实际绑定。
+            let search_menu_label = format!(
+                "{} ({})",
+                crate::i18n::tr("搜索"),
+                self.settings.shortcuts.search
+            );
             let menu_response = egui::Window::new("terminal_ctx_menu")
                 .title_bar(false)
                 .resizable(false)
@@ -429,7 +435,7 @@ impl App {
                         close = true;
                     }
                     ui.separator();
-                    if item(ui, "搜索 (Ctrl+F)", true) {
+                    if item(ui, &search_menu_label, true) {
                         term_menu_action = Some("search");
                         close = true;
                     }

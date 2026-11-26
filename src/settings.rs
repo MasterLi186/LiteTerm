@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn old_settings_without_shortcuts_receive_defaults() {
         let settings: Settings = toml::from_str("[terminal]\nfont = 'Ubuntu Mono'\n").unwrap();
-        assert_eq!(settings.shortcuts.search, "Ctrl+F");
+        assert_eq!(settings.shortcuts.search, "Ctrl+Shift+F");
     }
 
     #[test]

@@ -453,17 +453,6 @@ pub(super) fn tilde_key_sequence(code: u8, modifier: Option<u8>) -> String {
     }
 }
 
-pub(super) fn is_primary_find_shortcut(
-    key: &Key,
-    modifiers: winit::keyboard::ModifiersState,
-) -> bool {
-    let command_modifier = modifiers.control_key() || modifiers.super_key();
-    command_modifier
-        && !modifiers.alt_key()
-        && !modifiers.shift_key()
-        && matches!(key, Key::Character(character) if character.eq_ignore_ascii_case("f"))
-}
-
 pub(super) fn terminal_input_blocked(
     settings_panel_visible: bool,
     has_sidebar_dialog: bool,
