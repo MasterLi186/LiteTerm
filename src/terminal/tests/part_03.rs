@@ -277,14 +277,8 @@ VIEW_NEEDLE_F\r\n";
         terminal.process_pty_output(parser, payload);
     }
 
-    fn visible_grid_is_empty(terminal: &TerminalState) -> bool {
-        let term = terminal.term().expect("fixture must initialize term");
-        (0..terminal.rows() as i32)
-            .all(|line| term.grid()[Line(line)][..].iter().all(|cell| cell.c == ' '))
-    }
-
     #[test]
-    fn clear_display_clears_viewport_without_writing_escape_bytes_to_shell() {
+    fn clear_display_keeps_cursor_line_without_writing_escape_bytes_to_shell() {
         let mut terminal = TerminalState::new();
         terminal.init_term(40, 3);
         let mut parser = TestProcessor::new();
@@ -293,11 +287,23 @@ VIEW_NEEDLE_F\r\n";
         terminal.clear_display(false);
 
         let term = terminal.term().expect("fixture must initialize term");
-        assert!(visible_grid_is_empty(&terminal));
-        assert_eq!(term.grid().cursor.point, Point::new(Line(0), Column(0)));
+        // 光标行（shell 提示符/当前输入行）保留在首行，光标列不变。
+        let kept: String = term.grid()[Line(0)][..]
+            .iter()
+            .take(8)
+            .map(|cell| cell.c)
+            .collect();
+        assert_eq!(kept, "CONTENT ");
+        assert_eq!(term.grid().cursor.point, Point::new(Line(0), Column(7)));
+        assert!(
+            (1..terminal.rows() as i32).all(|line| term.grid()[Line(line)][..]
+                .iter()
+                .all(|cell| cell.c == ' ')),
+            "clear must blank everything except the preserved cursor line"
+        );
         assert!(
             term.grid().history_size() > 0,
-            "plain clear must preserve visible content in scrollback"
+            "plain clear must preserve previous content in scrollback"
         );
         assert!(
             terminal.take_pty_write_events().is_empty(),
@@ -306,11 +312,17 @@ VIEW_NEEDLE_F\r\n";
     }
 
     #[test]
-    fn clear_display_with_scrollback_removes_viewport_and_history() {
+    fn clear_display_with_scrollback_keeps_viewport_and_drops_history() {
         let mut terminal = TerminalState::new();
         terminal.init_term(40, 3);
         let mut parser = TestProcessor::new();
         search_feed_scrollback_history(&mut terminal, &mut parser);
+        let cursor_before = terminal
+            .term()
+            .expect("fixture must initialize term")
+            .grid()
+            .cursor
+            .point;
         assert!(
             terminal
                 .term()
@@ -324,10 +336,17 @@ VIEW_NEEDLE_F\r\n";
         terminal.clear_display(true);
 
         let term = terminal.term().expect("fixture must initialize term");
-        assert!(visible_grid_is_empty(&terminal));
         assert_eq!(term.grid().history_size(), 0);
-        assert_eq!(term.grid().cursor.point, Point::new(Line(0), Column(0)));
+        assert_eq!(term.grid().cursor.point, cursor_before);
         assert_eq!(terminal.scroll_offset, 0);
+        // 可见屏幕保持不动：至少还能看到最后几行输出（不再是被清空的空白屏）。
+        let view: String = (0..terminal.rows() as i32)
+            .flat_map(|line| term.grid()[Line(line)][..].iter().map(|cell| cell.c))
+            .collect();
+        assert!(
+            view.contains("VIEW_NEEDLE_"),
+            "clearing scrollback must keep the visible screen"
+        );
         assert!(
             terminal.take_pty_write_events().is_empty(),
             "clear control sequences must never be sent to the shell"

@@ -509,15 +509,53 @@ impl TerminalState {
     /// `[2J` instead of clearing the emulator.
     pub fn clear_display(&mut self, include_scrollback: bool) {
         let mut parser = Processor::new();
-        let sequence = if include_scrollback {
-            // Clear the viewport first so any lines moved into history are also
-            // removed by the final "erase saved lines" operation.
-            b"\x1b[2J\x1b[H\x1b[3J".as_slice()
-        } else {
-            b"\x1b[2J\x1b[H".as_slice()
-        };
-        self.process_pty_output(&mut parser, sequence);
+        if include_scrollback {
+            // 清空缓存：只丢弃回滚历史，可见屏幕（包括当前 shell 提示符）保持不动。
+            self.process_pty_output(&mut parser, b"\x1b[3J");
+            self.scroll_offset = 0;
+            return;
+        }
+        // 清屏：先保存光标所在行（通常就是 shell 提示符），清空视图后把它放回首行，
+        // 光标回到该行原来的列。这样清屏后仍能看到提示符，和 WindTerm 的效果一致；
+        // 顺带把提示符行留在顶部，shell 后续输出会从下面继续。
+        let saved_line = self.capture_cursor_line();
+        self.process_pty_output(&mut parser, b"\x1b[2J\x1b[H");
+        self.restore_line_at_top(saved_line);
         self.scroll_offset = 0;
+    }
+
+    /// 拷贝光标所在的可见行；备用屏（vim 等）或尚未初始化终端时返回 None。
+    fn capture_cursor_line(&self) -> Option<(usize, Vec<Cell>)> {
+        let term = self.term.as_ref()?;
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return None;
+        }
+        let grid = term.grid();
+        let point = grid.cursor.point;
+        if point.line.0 < 0 {
+            return None;
+        }
+        let row = &grid[point.line];
+        let cells = (0..self.cols as usize)
+            .map(|column| row[Column(column)].clone())
+            .collect();
+        Some((point.column.0, cells))
+    }
+
+    /// 清屏后把保存的行写回可见首行，并把光标放到该行的原列。
+    fn restore_line_at_top(&mut self, saved: Option<(usize, Vec<Cell>)>) {
+        let Some((column, cells)) = saved else {
+            return;
+        };
+        let Some(term) = self.term.as_mut() else {
+            return;
+        };
+        let grid = term.grid_mut();
+        for (index, cell) in cells.into_iter().enumerate() {
+            grid[Line(0)][Column(index)] = cell;
+        }
+        grid.cursor.point = Point::new(Line(0), Column(column));
+        self.mark_render_dirty();
     }
 }
 

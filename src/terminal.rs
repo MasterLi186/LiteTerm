@@ -8,7 +8,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::StdSyncHandler;
