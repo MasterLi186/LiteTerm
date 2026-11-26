@@ -948,6 +948,8 @@ pub struct Sidebar {
     pub connections_visible: bool,
     // 连接右键菜单
     pub conn_context_menu: Option<(usize, egui::Pos2)>,
+    /// 右键“删除”后待确认的连接：确认前不写盘，避免误触直接删掉配置。
+    pub delete_conn_confirmation: Option<SshConnection>,
     collapsed_groups: std::collections::HashSet<String>,
     // Dialog visibility
     pub show_new_connection: bool,
@@ -1027,6 +1029,7 @@ impl Sidebar {
             connection_notice: None,
             connections_visible: true,
             conn_context_menu: None,
+            delete_conn_confirmation: None,
             collapsed_groups: std::collections::HashSet::new(),
             show_new_connection: false,
             show_key_manager: false,

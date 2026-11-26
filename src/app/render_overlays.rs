@@ -174,22 +174,8 @@ impl App {
                             };
                         }
                         "delete" => {
-                            // 从 connections.toml 删除。不能按 "host:port" 反推存储键：
-                            // 历史配置里键可能与 host 字段不一致（旧版本改过 host 后键没同步），
-                            // 反推删除会静默失败。改按连接身份逐项匹配。
-                            let mut store = crate::connections::ConnectionStore::load();
-                            for (_, group) in store.groups.iter_mut() {
-                                group.hosts.retain(|_, host| {
-                                    !(host.host == conn.host
-                                        && host.port == conn.port
-                                        && host.user == conn.user
-                                        && host.label == conn.label)
-                                });
-                            }
-                            if let Err(e) = store.save() {
-                                log::warn!("[SIDEBAR] 删除失败: {}", e);
-                            }
-                            self.sidebar.reload();
+                            // 只登记待删除项，弹框确认后才写盘，避免误触直接删掉配置。
+                            self.sidebar.delete_conn_confirmation = Some(conn);
                         }
                         _ => {}
                     }
@@ -274,6 +260,82 @@ impl App {
                 self.sidebar.password_error.clear();
             }
         }
+    }
+
+    /// 侧栏右键“删除”的二次确认：只有点“删除”才真正从 connections.toml 移除。
+    pub(super) fn render_delete_connection_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(conn) = self.sidebar.delete_conn_confirmation.clone() else {
+            return;
+        };
+        let mut cancel = false;
+        let mut confirm = false;
+        let modal =
+            egui::Modal::new(egui::Id::new("delete_connection_confirmation")).show(ctx, |ui| {
+                ui.set_max_width(440.0);
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr("确认删除").into_owned())
+                        .size(16.0)
+                        .strong(),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        crate::i18n::tr("确定删除连接 {label} 吗？")
+                            .replace("{label}", &conn.label),
+                    )
+                    .size(14.0),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!("{}@{}:{}", conn.user, conn.host, conn.port))
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(0x8b, 0x94, 0x9e)),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button(crate::i18n::tr("取消").into_owned()).clicked() {
+                        cancel = true;
+                    }
+                    if ui
+                        .button(
+                            egui::RichText::new(crate::i18n::tr("删除").into_owned())
+                                .color(egui::Color32::from_rgb(0xf8, 0x51, 0x49)),
+                        )
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                });
+            });
+        if modal.should_close() {
+            cancel = true;
+        }
+        if confirm {
+            self.delete_saved_connection(&conn);
+            self.sidebar.delete_conn_confirmation = None;
+        } else if cancel {
+            self.sidebar.delete_conn_confirmation = None;
+        }
+    }
+
+    /// 从 connections.toml 删除指定连接。
+    ///
+    /// 不能按 `host:port` 反推存储键：历史配置里键可能与 host 字段不一致
+    /// （旧版本改过 host 后键没同步），反推删除会静默失败。按连接身份逐项匹配。
+    fn delete_saved_connection(&mut self, conn: &sidebar::SshConnection) {
+        let mut store = crate::connections::ConnectionStore::load();
+        for group in store.groups.values_mut() {
+            group.hosts.retain(|_, host| {
+                !(host.host == conn.host
+                    && host.port == conn.port
+                    && host.user == conn.user
+                    && host.label == conn.label)
+            });
+        }
+        if let Err(e) = store.save() {
+            log::warn!("[SIDEBAR] 删除失败: {}", e);
+        }
+        self.sidebar.reload();
     }
 
     pub(super) fn render_terminal_context_menu(

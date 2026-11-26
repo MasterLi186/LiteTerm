@@ -17,6 +17,7 @@ impl App {
         self.sidebar.password_prompt.is_some()
             || self.sidebar.show_new_connection
             || self.sidebar.show_key_manager
+            || self.sidebar.delete_conn_confirmation.is_some()
     }
 
     pub(super) fn active_zmodem_has_overlay(&self) -> bool {

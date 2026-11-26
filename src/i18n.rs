@@ -137,6 +137,7 @@ pub(crate) fn tr<'a>(chinese: &'a str) -> Cow<'a, str> {
         "＋文件" => "+ File",
         "上级目录" => "Parent directory",
         "确认删除" => "Confirm deletion",
+        "确定删除连接 {label} 吗？" => "Delete connection {label}?",
         "新建文件" => "New file",
         "新建目录" => "New folder",
         "创建" => "Create",

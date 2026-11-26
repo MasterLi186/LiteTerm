@@ -373,7 +373,8 @@ impl App {
             let sidebar_modal_visible = blocking_dialog_visible(
                 self.sidebar.password_prompt.is_some()
                     || self.sidebar.show_new_connection
-                    || self.sidebar.show_key_manager,
+                    || self.sidebar.show_key_manager
+                    || self.sidebar.delete_conn_confirmation.is_some(),
                 self.new_tab_selector.is_open(),
             );
             if !zmodem_overlay_visible
@@ -391,6 +392,7 @@ impl App {
 
             self.render_connection_context_menu(ctx);
             self.render_ssh_password_prompt(ctx);
+            self.render_delete_connection_confirmation(ctx);
             self.render_close_tab_confirmation(ctx);
             if let Some((index, pane_rect, error)) = active_serial_failure.as_ref() {
                 if self.render_serial_failure_card(ctx, *pane_rect, error) {
