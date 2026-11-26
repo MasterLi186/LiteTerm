@@ -166,6 +166,16 @@ impl App {
             None
         };
         let pane_layout_overlay = self.pane_layout.clone();
+        // 分屏时给活动面板描边，明确键盘/输入焦点所在；单面板标签保持现状不描边，
+        // 最大化时整块区域就是焦点，也不画满屏边框。
+        let focused_pane_border = self
+            .tab_manager
+            .active()
+            .filter(|tab| {
+                tab.tab_type.is_terminal() && !tab.layout.is_maximized() && tab.panes().len() > 1
+            })
+            .and_then(|tab| pane_layout_overlay.pane(tab.active_pane_id()))
+            .map(|pane| pane.rect);
         let drag_upload_state = self.drag_upload.clone();
         let drag_upload_overlay = self.active_drag_upload_target().and_then(|target| {
             pane_layout_overlay
@@ -268,6 +278,15 @@ impl App {
                     divider.rect,
                     0.0,
                     egui::Color32::from_rgb(0x30, 0x36, 0x3d),
+                );
+            }
+            // 当前焦点面板的边框（仅分屏时）：内侧 1.5px 强调色描边，不遮挡终端字形。
+            if let Some(rect) = focused_pane_border {
+                pane_painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(0x00, 0xd4, 0xff)),
+                    egui::StrokeKind::Inside,
                 );
             }
             if let Some((target, pane_rect)) = drag_upload_overlay.as_ref() {
