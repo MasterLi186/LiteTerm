@@ -908,4 +908,42 @@ impl App {
             .active()
             .is_some_and(|tab| matches!(tab.status, PaneStatus::Exited(_) | PaneStatus::Failed(_)))
     }
+
+    /// 终端通过 OSC 0/2 设置了标题（Claude 等 agent 用它标注当前任务）：
+    /// 同步成标签名，和常见终端“标题跟随 shell”的行为一致。
+    ///
+    /// 只有发出事件的面板仍是该标签的活动面板时才更新，避免分屏里后台终端
+    /// 抢走标签名；标题过滤控制字符并限制长度，重复标题不触发重绘。
+    pub(super) fn apply_terminal_title(
+        &mut self,
+        tab_id: &str,
+        pane_id: &str,
+        session: &CompletionSessionKey,
+        title: &str,
+    ) -> bool {
+        /// 与 terminal-title 脚本的 80 字符上限一致，避免超长标题撑坏标签栏。
+        const MAX_TITLE_CHARS: usize = 80;
+        let Some(index) = self.tab_manager.find_by_id(tab_id) else {
+            return false;
+        };
+        let tab = &self.tab_manager.tabs[index];
+        let current = tab
+            .pane(pane_id)
+            .is_some_and(|pane| pane.completion.session() == session);
+        if !current || tab.active_pane_id() != pane_id {
+            return false;
+        }
+        let cleaned: String = title
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .take(MAX_TITLE_CHARS)
+            .collect();
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() || cleaned == tab.label.as_str() {
+            return false;
+        }
+        self.tab_manager.tabs[index].label = cleaned.to_string();
+        self.invalidate_completion_popup_snapshot();
+        true
+    }
 }

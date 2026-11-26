@@ -174,6 +174,8 @@ impl Dimensions for TermDimensions {
 #[derive(Clone)]
 pub struct Listener {
     terminal_reply_sink: Arc<Mutex<TerminalReplySink>>,
+    /// 终端通过 OSC 0/2 设置的标题（窗口/标签标题），由读线程取出后送到 UI。
+    title_sink: Arc<Mutex<Option<String>>>,
 }
 
 const MAX_PENDING_TERMINAL_REPLIES: usize = 32;
@@ -342,24 +344,35 @@ impl TerminalReplySink {
 
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
-        if let Event::PtyWrite(text) = event {
-            let writer = {
-                let mut sink = self.terminal_reply_sink.lock().unwrap();
-                if !sink.allowed {
-                    if sink.defer_disallowed {
-                        sink.push_deferred(text);
+        match event {
+            Event::PtyWrite(text) => {
+                let writer = {
+                    let mut sink = self.terminal_reply_sink.lock().unwrap();
+                    if !sink.allowed {
+                        if sink.defer_disallowed {
+                            sink.push_deferred(text);
+                            return;
+                        }
+                        log::debug!("忽略 canonical PTY 输出中的终端协议查询");
                         return;
                     }
-                    log::debug!("忽略 canonical PTY 输出中的终端协议查询");
-                    return;
-                }
-                let Some(writer) = sink.writer.clone() else {
-                    sink.push_pending(text);
-                    return;
+                    let Some(writer) = sink.writer.clone() else {
+                        sink.push_pending(text);
+                        return;
+                    };
+                    writer
                 };
-                writer
-            };
-            enqueue_terminal_reply(&writer, &text);
+                enqueue_terminal_reply(&writer, &text);
+            }
+            Event::Title(title) => {
+                // 只保留最新的标题；ui 线程按需取走（OSC 0/2，Claude 等 agent 用它更新标题）。
+                let mut slot = self
+                    .title_sink
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *slot = Some(title);
+            }
+            _ => {}
         }
     }
 }
@@ -782,6 +795,8 @@ pub enum IntegrationEvent {
         session: CompletionSessionKey,
         path: String,
     },
+    /// 终端设置的标题（OSC 0/2）。会话校验由上层 UserEvent 携带的 session 完成。
+    Title(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -836,6 +851,8 @@ pub struct TerminalState {
     serial_io_done_rx: Option<mpsc::Receiver<crate::serial::SerialExit>>,
     serial_join: Option<JoinHandle<()>>,
     terminal_reply_sink: Option<Arc<Mutex<TerminalReplySink>>>,
+    /// Listener 写入的最新终端标题（OSC 0/2），由输出处理流程取出转成 IntegrationEvent。
+    title_sink: Arc<Mutex<Option<String>>>,
     cols: u16,
     rows: u16,
     pub scroll_offset: i32,

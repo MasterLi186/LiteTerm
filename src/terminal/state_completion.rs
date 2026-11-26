@@ -312,7 +312,9 @@ impl TerminalState {
                 }
                 self.prune_invalid_selection();
                 self.finish_terminal_reply_batch();
-                return Vec::new();
+                let mut events = Vec::new();
+                self.collect_title_event(&mut events);
+                return events;
             }
         };
 
@@ -375,7 +377,20 @@ impl TerminalState {
         self.prune_invalid_selection();
         self.invalidate_ambiguous_prompt();
         self.finish_terminal_reply_batch();
+        self.collect_title_event(&mut events);
         events
+    }
+
+    /// 取出 Listener 在本批输出里记录的最新 OSC 标题，转成集成事件。
+    fn collect_title_event(&self, events: &mut Vec<IntegrationEvent>) {
+        let title = self
+            .title_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(title) = title {
+            events.push(IntegrationEvent::Title(title));
+        }
     }
 
     pub fn cols(&self) -> u16 {

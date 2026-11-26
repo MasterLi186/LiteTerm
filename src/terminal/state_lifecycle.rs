@@ -17,6 +17,7 @@ impl TerminalState {
             serial_io_done_rx: None,
             serial_join: None,
             terminal_reply_sink: None,
+            title_sink: Arc::new(Mutex::new(None)),
             cols: 80,
             rows: 24,
             scroll_offset: 0,
@@ -85,11 +86,17 @@ impl TerminalState {
             rows: rows as usize,
         };
         let terminal_reply_sink = Arc::new(Mutex::new(TerminalReplySink::default()));
+        // 新会话从干净的标题开始，避免沿用上一个会话遗留的 OSC 标题。
+        *self
+            .title_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.term = Some(Term::new(
             config,
             &dims,
             Listener {
                 terminal_reply_sink: Arc::clone(&terminal_reply_sink),
+                title_sink: Arc::clone(&self.title_sink),
             },
         ));
         self.terminal_reply_sink = Some(terminal_reply_sink);

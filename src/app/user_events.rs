@@ -241,6 +241,15 @@ impl App {
                         }
                     }
                 }
+                terminal::IntegrationEvent::Title(title) => {
+                    // OSC 0/2 标题：只更新标签名，session 校验沿用外层 event_session，
+                    // 面板已重连/重启时旧标题不会覆盖新会话。
+                    if self.apply_terminal_title(&tab_id, &pane_id, &event_session, &title) {
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
             },
             UserEvent::CompletionCandidateWritten {
                 tab_id,

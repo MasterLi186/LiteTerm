@@ -203,6 +203,7 @@ impl std::fmt::Debug for UserEvent {
             UserEvent::TerminalIntegration { tab_id, event, .. } => {
                 let kind = match event {
                     terminal::IntegrationEvent::HistoryPath { .. } => "HistoryPath",
+                    terminal::IntegrationEvent::Title(_) => "Title",
                 };
                 write!(f, "TerminalIntegration({}, {})", tab_id, kind)
             }
