@@ -89,6 +89,8 @@ pub(super) struct App {
     mouse_position: (f64, f64),
     terminal_wheel_accumulator: TerminalWheelAccumulator,
     terminal_wheel_pane_id: Option<PaneId>,
+    /// Ctrl+滚轮字号缩放的像素滚动余量（触控板平滑滚动用）。
+    font_zoom_remainder: f32,
     selection_auto_scroll_lines: i32,
     selection_auto_scroll_at: Instant,
     pending_terminal_link: Option<(String, terminal_links::TerminalLink)>,
@@ -297,6 +299,7 @@ impl App {
             mouse_position: (0.0, 0.0),
             terminal_wheel_accumulator: TerminalWheelAccumulator::default(),
             terminal_wheel_pane_id: None,
+            font_zoom_remainder: 0.0,
             selection_auto_scroll_lines: 0,
             selection_auto_scroll_at: Instant::now(),
             pending_terminal_link: None,

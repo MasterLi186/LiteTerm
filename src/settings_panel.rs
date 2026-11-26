@@ -7,8 +7,8 @@ use crate::themes::{all_themes, theme_by_name};
 
 mod ui;
 
-const MIN_FONT_SIZE: f32 = 8.0;
-const MAX_FONT_SIZE: f32 = 48.0;
+pub(crate) const MIN_FONT_SIZE: f32 = 8.0;
+pub(crate) const MAX_FONT_SIZE: f32 = 48.0;
 const MIN_SCROLLBACK_LINES: u32 = 100;
 const MAX_SCROLLBACK_LINES: u32 = 1_000_000;
 

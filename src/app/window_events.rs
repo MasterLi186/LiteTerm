@@ -825,6 +825,14 @@ impl App {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.pending_terminal_link = None;
+                // Ctrl+滚轮：只调整本窗口的运行期字号（不写配置、不影响其它实例），
+                // 与 Terminator 的 Ctrl+滚轮缩放一致。
+                if self.modifiers.state().control_key()
+                    && self.zoom_terminal_font(&delta, settings_panel_visible, has_blocking_dialog)
+                {
+                    self.do_render();
+                    return;
+                }
                 let hovered_pane_id = self.pane_id_at(self.mouse_position.0, self.mouse_position.1);
                 // 拖拽选区期间滚轮锁定在选区所在 pane（指针移出该区域也继续扩展），
                 // 这是有意压过“滚轮跟随指针所在 pane”的默认行为。
@@ -1318,5 +1326,68 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+impl App {
+    /// Ctrl+滚轮缩放当前窗口字号。返回 true 表示本次滚轮已被消费（不再滚动终端）。
+    ///
+    /// 只改运行期字号：本实例的所有标签共享新字号，其它 LiteTerm 窗口/实例不受影响，
+    /// 也不会写回 `native-settings.toml`，重启后仍按配置字号显示。
+    fn zoom_terminal_font(
+        &mut self,
+        delta: &winit::event::MouseScrollDelta,
+        settings_panel_visible: bool,
+        has_blocking_dialog: bool,
+    ) -> bool {
+        // 只在指针位于终端面板内、且没有设置面板/模态框时缩放。
+        let over_terminal = self
+            .pane_id_at(self.mouse_position.0, self.mouse_position.1)
+            .is_some();
+        if !over_terminal
+            || !should_pass_pointer_to_terminal(settings_panel_visible, has_blocking_dialog, true)
+        {
+            return false;
+        }
+        let steps = match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
+            winit::event::MouseScrollDelta::PixelDelta(position) => {
+                // 触控板平滑滚动：按 24 逻辑像素一档折算，避免一次滑动跳很多级。
+                self.font_zoom_remainder += position.y as f32 / 24.0;
+                let whole = self.font_zoom_remainder.trunc();
+                self.font_zoom_remainder -= whole;
+                whole
+            }
+        };
+        if steps == 0.0 {
+            return true;
+        }
+        let current = self.settings.terminal.font_size;
+        let next = (current + steps).clamp(
+            crate::settings_panel::MIN_FONT_SIZE,
+            crate::settings_panel::MAX_FONT_SIZE,
+        );
+        if (next - current).abs() < 0.01 {
+            return true;
+        }
+        self.settings.terminal.font_size = next;
+        let scale_factor = self
+            .window
+            .as_ref()
+            .map(|window| window.scale_factor())
+            .unwrap_or(1.0);
+        if let (Some(renderer), Some(gpu)) = (self.renderer.as_mut(), self.gpu.as_ref()) {
+            renderer.set_font(
+                gpu,
+                &self.settings.terminal.font,
+                crate::font_support::terminal_font_physical_size(next, scale_factor),
+            );
+        }
+        self.sync_terminal_size();
+        self.invalidate_completion_popup_snapshot();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+        true
     }
 }
