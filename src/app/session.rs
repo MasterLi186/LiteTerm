@@ -110,4 +110,70 @@ impl App {
             log::warn!("保存标签页会话失败：{error}");
         }
     }
+
+    /// 记录一次正常（非最大化/全屏）状态下的窗口尺寸（逻辑像素）。
+    pub(super) fn remember_normal_window_size(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let scale = window.scale_factor();
+        if !(scale.is_finite() && scale > 0.0) {
+            return;
+        }
+        let width = size.width as f32 / scale as f32;
+        let height = size.height as f32 / scale as f32;
+        if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 {
+            self.window_normal_size = Some((width, height));
+        }
+    }
+
+    /// 退出时记录窗口尺寸与最大化状态，下次启动按记录恢复。
+    pub(super) fn save_window_state(&mut self) {
+        if self.window_state_saved {
+            return;
+        }
+        self.window_state_saved = true;
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let maximized = window.is_maximized();
+        let fullscreen = window.fullscreen().is_some();
+        let inner = window.inner_size();
+        let scale = window.scale_factor();
+        let current_logical = (inner.width > 0 && inner.height > 0 && scale > 0.0)
+            .then(|| {
+                (
+                    inner.width as f32 / scale as f32,
+                    inner.height as f32 / scale as f32,
+                )
+            })
+            .filter(|(width, height)| width.is_finite() && height.is_finite());
+
+        let mut state = self.window_state;
+        state.maximized = maximized;
+        if !maximized && !fullscreen {
+            if let Some((width, height)) = current_logical {
+                state.width = width;
+                state.height = height;
+            }
+        } else if let Some((width, height)) = self.window_normal_size {
+            // 最大化/全屏时保留最大化前的正常尺寸；若记录值与当前窗口尺寸一致，
+            // 说明它被最大化时的 Resized 事件污染过，退回上次保存值。
+            let polluted = current_logical.is_some_and(|(current_width, current_height)| {
+                (current_width - width).abs() <= 2.0 && (current_height - height).abs() <= 2.0
+            });
+            if !polluted {
+                state.width = width;
+                state.height = height;
+            }
+        }
+        state.sanitize();
+        if let Err(error) = state.save() {
+            log::warn!("保存窗口状态失败：{error}");
+        }
+        self.window_state = state;
+    }
 }

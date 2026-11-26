@@ -509,6 +509,7 @@ impl App {
         match event {
             WindowEvent::CloseRequested => {
                 self.save_workspace_session();
+                self.save_window_state();
                 if let Some(mut server) = self.api_server.take() {
                     server.stop();
                 }
@@ -536,6 +537,15 @@ impl App {
                     plan_window_geometry_update(WindowGeometryEventKind::Resized),
                     WindowGeometryUpdatePlan::ResizeSurfaceAndSyncAndRender,
                 );
+                // 只有正常状态下的尺寸才作为下次启动的默认窗口大小；最大化/全屏时
+                // 的尺寸不能覆盖它。
+                let keep_normal_size = !self
+                    .window
+                    .as_ref()
+                    .is_some_and(|window| window.is_maximized() || window.fullscreen().is_some());
+                if keep_normal_size {
+                    self.remember_normal_window_size(size);
+                }
                 if let Some(gpu) = &mut self.gpu {
                     gpu.resize(size.width, size.height);
                 }

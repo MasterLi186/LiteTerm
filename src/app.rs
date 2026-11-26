@@ -114,6 +114,11 @@ pub(super) struct App {
     window_resize_interaction: Option<WindowResizeInteraction>,
     pending_workspace_session: Option<workspace_session::WorkspaceSession>,
     workspace_session_saved: bool,
+    /// 上次退出时记录的窗口状态（尺寸与最大化），用于创建窗口。
+    window_state: window_state::WindowState,
+    /// 最近一次处于正常（非最大化/全屏）状态时的逻辑尺寸，退出时写回。
+    window_normal_size: Option<(f32, f32)>,
+    window_state_saved: bool,
     batch_dialog: batch_command::BatchCommandDialog,
     tunnel_registry: tunnel::TunnelRegistry,
     tunnel_manager: tunnel_manager::TunnelManager,
@@ -195,6 +200,14 @@ impl App {
                 None
             }
         };
+        let initial_window_state = match window_state::WindowState::load() {
+            Ok(state) => state,
+            Err(error) => {
+                log::warn!("加载窗口状态失败：{error}");
+                window_state::WindowState::default()
+            }
+        };
+        let window_normal_size = Some((initial_window_state.width, initial_window_state.height));
         Self {
             window: None,
             gpu: None,
@@ -305,6 +318,9 @@ impl App {
             window_resize_interaction: None,
             pending_workspace_session,
             workspace_session_saved: false,
+            window_state: initial_window_state,
+            window_normal_size,
+            window_state_saved: false,
             batch_dialog: batch_command::BatchCommandDialog::default(),
             tunnel_registry: tunnel::TunnelRegistry::new(),
             tunnel_manager: tunnel_manager::TunnelManager::new(),

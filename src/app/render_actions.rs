@@ -384,10 +384,20 @@ impl App {
                 }
             }
             tab_bar::TabBarAction::ToggleMaximize => {
-                if let Some(window) = &self.window {
+                let toggle = self.window.as_ref().and_then(|window| {
                     // 全屏时 winit 只记下最大化状态、退出全屏后才生效，这里直接忽略。
-                    if window.fullscreen().is_none() {
-                        window.set_maximized(!window.is_maximized());
+                    window
+                        .fullscreen()
+                        .is_none()
+                        .then(|| (!window.is_maximized(), window.inner_size()))
+                });
+                if let Some((maximize, size)) = toggle {
+                    if maximize {
+                        // 最大化前先记住正常尺寸，避免被最大化后的 Resized 覆盖。
+                        self.remember_normal_window_size(size);
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.set_maximized(maximize);
                     }
                 }
             }

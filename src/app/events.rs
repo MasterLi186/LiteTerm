@@ -53,10 +53,18 @@ impl ApplicationHandler<UserEvent> for App {
         if self.window.is_some() {
             return;
         }
+        // 恢复上次退出时的窗口尺寸/最大化状态；没有记录时才使用默认尺寸。
         let mut attrs = Window::default_attributes()
             .with_title("LiteTerm")
-            .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 400.0))
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
+            .with_min_inner_size(winit::dpi::LogicalSize::new(
+                crate::window_state::MIN_WIDTH,
+                crate::window_state::MIN_HEIGHT,
+            ))
+            .with_inner_size(winit::dpi::LogicalSize::new(
+                self.window_state.width,
+                self.window_state.height,
+            ))
+            .with_maximized(self.window_state.maximized);
 
         // macOS 使用系统红黄绿按钮（全屏/缩放/边缘缩放都由系统处理）：标题栏透明、
         // 隐藏标题文字、内容延伸到标题栏下方，标签栏仍画在窗口最顶部。
@@ -211,6 +219,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.save_workspace_session();
+        self.save_window_state();
         if let Some(mut server) = self.api_server.take() {
             server.stop();
         }

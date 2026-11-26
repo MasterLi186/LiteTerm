@@ -62,6 +62,7 @@ mod themes;
 mod tunnel;
 mod tunnel_manager;
 mod window_icon;
+mod window_state;
 mod workspace_session;
 mod x11_ime_reattach;
 mod zmodem;

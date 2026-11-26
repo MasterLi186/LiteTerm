@@ -123,6 +123,7 @@ node scripts/generate-themes.mjs   # 从 assets/themes.ts 生成 src/themes_gene
 | `connections.toml` | 分组 + SSH 连接书签（TOML） |
 | `credentials.enc` | 密码 AES-256-GCM 加密文件，PBKDF2（hostname+username）派生密钥，绑定机器 |
 | `native-session.toml` | 上次标签页会话（仅本地/SSH/串口，最多 64 个） |
+| `native-window.toml` | 上次退出时的窗口逻辑尺寸与最大化状态（下次启动恢复） |
 | `native_cmd_history.json` / `native_cmd_favorites.json` / `native_quick_commands.json` | 底部命令栏历史/收藏/快捷命令 |
 | `native-api-token` / `native-api-port` | HTTP API 发现文件 |
 | `crash.log`、`crash.log.old` | panic/SIGSEGV/SIGBUS/SIGABRT 崩溃记录 |
